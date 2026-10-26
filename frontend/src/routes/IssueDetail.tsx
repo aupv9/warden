@@ -114,7 +114,7 @@ export function IssueDetail({
           <Skeleton height={56} />
           <div className="card stack" style={{ gap: 10 }}>
             <Skeleton width="30%" />
-            <Skeleton height={88} style={{ background: "#2a2d35" }} />
+            <Skeleton height={88} style={{ background: "var(--code-bg)", opacity: 0.85 }} />
           </div>
         </div>
       </Loading>

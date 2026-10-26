@@ -1,7 +1,8 @@
-/* Visual tokens ("Quiet precision", light theme). Text colours are checked for 4.5:1 against
+/* Visual tokens ("Quiet precision"): light by default, dark below. Text colours are checked for 4.5:1 against
    the backgrounds they sit on: --faint is the lightest allowed text colour and is never placed
    on --hover-strong, --nav-active or --accent-tint-strong (it drops below 4.5:1 there). */
 :root {
+  color-scheme: light;
   /* Surfaces */
   --ground: #fbfbfc;
   --surface: #ffffff;
@@ -35,6 +36,12 @@
   --primary-bg: #111318;
   --primary-hover: #2a2d35;
   --primary-fg: #ffffff;
+  --accent-fg: #ffffff; /* text/icons on a solid accent fill */
+  --focus-ring: rgba(79, 70, 229, 0.2);
+  --scrim: rgba(17, 19, 24, 0.32);
+  --toast-bg: #111318;
+  --toast-fg: #ffffff;
+  --toast-icon: #3dd68c;
 
   /* Danger / overdue */
   --danger: #d1343a;
@@ -97,4 +104,159 @@
   --gap: 16px;
   --shadow-hairline: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-pop: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.1);
+}
+
+/* Dark theme: follows the OS unless the viewer picked Light or Dark (data-theme on <html>,
+   see lib/theme.ts). Same contrast rule: --faint stays ≥ 4.5:1 on every surface it is used
+   on, including --hover-strong, --nav-active and --accent-tint. The primary button inverts
+   (light on dark), and severity/status colours are lifted so marks stay distinct. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #0e0f12;
+    --surface: #15171b;
+    --sidebar-bg: #111216;
+    --hover: #1c1e23;
+    --hover-strong: #23262c;
+    --row-hover: #191b20;
+    --nav-active: #24272e;
+    --group-bg: #121418;
+
+    --line: #24272d;
+    --line-soft: #1d1f24;
+    --control-line: #2e3138;
+    --control-line-strong: #3a3e46;
+
+    --ink: #edeef0;
+    --text-2: #c5c8ce;
+    --muted: #a1a5ad;
+    --faint: #8e929b;
+
+    --accent: #8f8bff;
+    --accent-hover: #aaa7ff;
+    --accent-tint: #1d1c33;
+    --accent-tint-strong: #2a2850;
+    --accent-line: #4a4699;
+
+    --primary-bg: #edeef0;
+    --primary-hover: #ffffff;
+    --primary-fg: #111318;
+    --accent-fg: #111318;
+    --focus-ring: rgba(143, 139, 255, 0.32);
+    --scrim: rgba(0, 0, 0, 0.55);
+    --toast-bg: #edeef0;
+    --toast-fg: #111318;
+    --toast-icon: #1f8a55;
+
+    --danger: #ff6b6f;
+    --danger-line: #5c2326;
+    --danger-tint: #2a1416;
+
+    --sev-critical: #f2555a;
+    --sev-high: #ff802b;
+    --sev-medium: #ffc53d;
+    --sev-low: #9497a2;
+    --sev-info: #6b6f78;
+
+    --st-open: #8e929b;
+    --st-progress: #8f8bff;
+    --st-track: #33315c;
+    --st-reopened: #f5a524;
+    --st-fixed: #8f8bff;
+    --st-verified: #3dd68c;
+    --st-closed: #7a7e87;
+    --success-text: #4cd38f;
+
+    --msg-error-bg: #2a1416;
+    --msg-error-fg: #ffa3a6;
+    --msg-error-line: #5c2326;
+    --msg-warn-bg: #2a1f0e;
+    --msg-warn-fg: #ffc97a;
+    --msg-warn-line: #5c4520;
+    --msg-info-bg: #15171b;
+    --skeleton: #22252b;
+
+    --code-bg: #0a0b0d;
+    --code-fg: #e6e8eb;
+    --code-ln: #80848d;
+    --code-hl-bg: #3a1619;
+    --code-hl-bar: #f2555a;
+
+    --shadow-hairline: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0e0f12;
+  --surface: #15171b;
+  --sidebar-bg: #111216;
+  --hover: #1c1e23;
+  --hover-strong: #23262c;
+  --row-hover: #191b20;
+  --nav-active: #24272e;
+  --group-bg: #121418;
+
+  --line: #24272d;
+  --line-soft: #1d1f24;
+  --control-line: #2e3138;
+  --control-line-strong: #3a3e46;
+
+  --ink: #edeef0;
+  --text-2: #c5c8ce;
+  --muted: #a1a5ad;
+  --faint: #8e929b;
+
+  --accent: #8f8bff;
+  --accent-hover: #aaa7ff;
+  --accent-tint: #1d1c33;
+  --accent-tint-strong: #2a2850;
+  --accent-line: #4a4699;
+
+  --primary-bg: #edeef0;
+  --primary-hover: #ffffff;
+  --primary-fg: #111318;
+  --accent-fg: #111318;
+  --focus-ring: rgba(143, 139, 255, 0.32);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --toast-bg: #edeef0;
+  --toast-fg: #111318;
+  --toast-icon: #1f8a55;
+
+  --danger: #ff6b6f;
+  --danger-line: #5c2326;
+  --danger-tint: #2a1416;
+
+  --sev-critical: #f2555a;
+  --sev-high: #ff802b;
+  --sev-medium: #ffc53d;
+  --sev-low: #9497a2;
+  --sev-info: #6b6f78;
+
+  --st-open: #8e929b;
+  --st-progress: #8f8bff;
+  --st-track: #33315c;
+  --st-reopened: #f5a524;
+  --st-fixed: #8f8bff;
+  --st-verified: #3dd68c;
+  --st-closed: #7a7e87;
+  --success-text: #4cd38f;
+
+  --msg-error-bg: #2a1416;
+  --msg-error-fg: #ffa3a6;
+  --msg-error-line: #5c2326;
+  --msg-warn-bg: #2a1f0e;
+  --msg-warn-fg: #ffc97a;
+  --msg-warn-line: #5c4520;
+  --msg-info-bg: #15171b;
+  --skeleton: #22252b;
+
+  --code-bg: #0a0b0d;
+  --code-fg: #e6e8eb;
+  --code-ln: #80848d;
+  --code-hl-bg: #3a1619;
+  --code-hl-bar: #f2555a;
+
+  --shadow-hairline: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
 }
