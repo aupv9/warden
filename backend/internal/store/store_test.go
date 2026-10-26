@@ -163,14 +163,19 @@ func TestBuildExceptionAndAuditLists(t *testing.T) {
 
 func TestProjectQuery(t *testing.T) {
 	id := uuid.New()
-	sql, a := projectQuery(service.Visibility{OrgID: uuid.New(), UserID: uuid.New()}, &id, time.Now())
+	sql, a := projectQuery(service.Visibility{OrgID: uuid.New(), UserID: uuid.New()}, &id, time.Now(), false)
 	checkParams(t, sql, a)
-	if !strings.Contains(sql, "pm.user_id IS NOT NULL") || !strings.Contains(sql, "p.id = ") {
+	// One project by id: archived or not.
+	if !strings.Contains(sql, "pm.user_id IS NOT NULL") || !strings.Contains(sql, "p.id = ") || strings.Contains(sql, "archived_at IS NULL") {
 		t.Fatal(sql)
 	}
-	sql, a = projectQuery(service.Visibility{OrgID: uuid.New(), UserID: uuid.New(), All: true}, nil, time.Now())
+	sql, a = projectQuery(service.Visibility{OrgID: uuid.New(), UserID: uuid.New(), All: true}, nil, time.Now(), false)
 	checkParams(t, sql, a)
-	if strings.Contains(sql, "pm.user_id IS NOT NULL") {
+	if strings.Contains(sql, "pm.user_id IS NOT NULL") || !strings.Contains(sql, "p.archived_at IS NULL") {
+		t.Fatal(sql)
+	}
+	sql, _ = projectQuery(service.Visibility{OrgID: uuid.New(), UserID: uuid.New(), All: true}, nil, time.Now(), true)
+	if strings.Contains(sql, "archived_at IS NULL") {
 		t.Fatal(sql)
 	}
 }

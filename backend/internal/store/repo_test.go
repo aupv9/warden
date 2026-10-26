@@ -258,7 +258,7 @@ func TestRepoMembers(t *testing.T) {
 func TestRepoProjectsAndScans(t *testing.T) {
 	org, user, proj, scan := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	desc := "d"
-	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now}
+	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now, nil}
 	scanRow := []any{scan, org, proj, "queued", "a.zip", int64(10), []string{"trivy"}, nil, service.ScanStats{Total: 2},
 		now, now, nil, nil, "key", "sum", user, "a@b.c", "A"}
 	r, _ := repoWith(on(map[string][][]any{
@@ -272,7 +272,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 		"DELETE FROM project_member WHERE project_id": {{1}},
 	}))
 	v := service.Visibility{OrgID: org, UserID: user}
-	if p, err := r.Projects(ctx, v, now); err != nil || len(p) != 1 || *p[0].MyRole != rbac.Owner || p[0].LastScan.ID != scan || p[0].PastSLA != 6 {
+	if p, err := r.Projects(ctx, v, now, false); err != nil || len(p) != 1 || *p[0].MyRole != rbac.Owner || p[0].LastScan.ID != scan || p[0].PastSLA != 6 {
 		t.Fatal(p, err)
 	}
 	if p, err := r.Project(ctx, v, proj, now); err != nil || p.OpenBySeverity.Info != 5 {
@@ -328,7 +328,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 		// QueryRow on no rows: ErrNoRows mapped to ErrNotFound.
 		t.Fatal(n, oldest, err)
 	}
-	nullRole, _ := repoWith(on(map[string][][]any{"SELECT (SELECT pm.role": {{nil}}, "LEFT JOIN LATERAL": {{proj, "WEB", "Web", nil, nil, nil, now, 0, 0, 0, 0, 0, 0, nil, nil, nil, nil}}}))
+	nullRole, _ := repoWith(on(map[string][][]any{"SELECT (SELECT pm.role": {{nil}}, "LEFT JOIN LATERAL": {{proj, "WEB", "Web", nil, nil, nil, now, 0, 0, 0, 0, 0, 0, nil, nil, nil, nil, nil}}}))
 	if role, err := nullRole.ProjectRole(ctx, proj, user); err != nil || role != "" {
 		t.Fatal(role, err)
 	}

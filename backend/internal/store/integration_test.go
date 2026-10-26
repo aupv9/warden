@@ -322,7 +322,7 @@ func TestIssueWorkflowRules(t *testing.T) {
 	if sum.OpenIssues != 1 || sum.PastSLA != 1 {
 		t.Fatalf("%+v", sum)
 	}
-	projects := must(w.svc.Projects(ctx, w.actor("WFLdev", f.id)))
+	projects := must(w.svc.Projects(ctx, w.actor("WFLdev", f.id), ""))
 	if len(projects.Items) != 1 || projects.Items[0].OpenBySeverity.High != 1 || projects.Items[0].LastScan == nil || *projects.Items[0].MyRole != rbac.Developer {
 		t.Fatalf("%+v", projects)
 	}

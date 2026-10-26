@@ -112,6 +112,8 @@ func Config(opts Options) (*river.Config, error) {
 	river.AddWorker(workers, &ScanWorker{Env: opts.Env, MaxRuntime: opts.ScanTimeout + finalizeTimeout + time.Minute})
 	river.AddWorker(workers, PurgeExpiredSourcesWorker{Env: opts.Env})
 	river.AddWorker(workers, ReopenExpiredRiskAcceptedWorker{Env: opts.Env})
+	river.AddWorker(workers, DispatchNotificationsWorker{Env: opts.Env})
+	river.AddWorker(workers, SLADigestWorker{Env: opts.Env})
 	cfg.Workers = workers
 	cfg.Queues = map[string]river.QueueConfig{
 		QueueScan:          {MaxWorkers: opts.ScanSlots},
@@ -129,6 +131,12 @@ func Config(opts Options) (*river.Config, error) {
 		river.NewPeriodicJob(HourlyAt(15),
 			func() (river.JobArgs, *river.InsertOpts) { return ReopenExpiredRiskAcceptedArgs{}, nil },
 			&river.PeriodicJobOpts{ID: "reopen_expired_risk_accepted"}),
+		river.NewPeriodicJob(river.PeriodicInterval(time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return DispatchNotificationsArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "dispatch_notifications", RunOnStart: true}),
+		river.NewPeriodicJob(DailyAt(opts.Env.DigestHour),
+			func() (river.JobArgs, *river.InsertOpts) { return SLADigestArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "sla_digest"}),
 	}
 	return cfg, nil
 }

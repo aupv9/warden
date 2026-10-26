@@ -131,14 +131,19 @@ func TestReopenExpiredRiskAccepted(t *testing.T) {
 			return nil
 		}},
 		dbtest.Step{Prefix: "INSERT INTO issue_event", Affected: 1},
+		dbtest.Step{Prefix: "INSERT INTO outbox_event", Affected: 1},
 	)
 	if err := env.ReopenExpiredRiskAccepted(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// Two orgs × two exceptions expired; one issue reopened per org, with an event each.
+	// Two orgs × two exceptions expired; one issue reopened per org, with an
+	// event and an issue.reopened notification each.
 	if len(db.Calls("UPDATE exception_request")) != 4 || len(db.Calls("UPDATE issue SET status = 'reopened'")) != 2 ||
-		len(db.Calls("INSERT INTO issue_event")) != 2 {
+		len(db.Calls("INSERT INTO issue_event")) != 2 || len(db.Calls("INSERT INTO outbox_event")) != 2 {
 		t.Fatal(len(db.Calls("")))
+	}
+	if c := db.Calls("INSERT INTO outbox_event")[0]; c.Args[1] != "issue.reopened" || !strings.Contains(string(c.Args[2].([]byte)), reopen.String()) {
+		t.Fatalf("%+v", c)
 	}
 }
 
@@ -165,6 +170,7 @@ func TestReopenExpiredEdgeCases(t *testing.T) {
 		{Prefix: "UPDATE exception_request", Err: errors.New("down")},
 		{Prefix: "UPDATE issue SET status = 'reopened'", Err: errors.New("down")},
 		{Prefix: "INSERT INTO issue_event", Err: errors.New("down")},
+		{Prefix: "INSERT INTO outbox_event", Err: errors.New("down")},
 	} {
 		base := []dbtest.Step{
 			{Prefix: "SELECT x.id, x.issue_id", Rows: [][]any{{uuid.New(), uuid.New(), "risk_accepted", "low"}}},
@@ -172,6 +178,7 @@ func TestReopenExpiredEdgeCases(t *testing.T) {
 			{Prefix: "UPDATE exception_request", Affected: 1},
 			{Prefix: "UPDATE issue SET status = 'reopened'", Affected: 1},
 			{Prefix: "INSERT INTO issue_event", Affected: 1},
+			{Prefix: "INSERT INTO outbox_event", Affected: 1},
 		}
 		for i := range base {
 			if base[i].Prefix == bad.Prefix {
@@ -215,7 +222,7 @@ func TestConfig(t *testing.T) {
 		t.Fatal("no env: workers cancel, nothing periodic")
 	}
 	cfg, err = Config(Options{ScanTimeout: 30 * time.Minute, ScanSlots: 3, Env: &Env{}})
-	if err != nil || len(cfg.PeriodicJobs) != 2 || cfg.Queues[QueueScan].MaxWorkers != 3 {
+	if err != nil || len(cfg.PeriodicJobs) != 4 || cfg.Queues[QueueScan].MaxWorkers != 3 {
 		t.Fatalf("%+v %v", cfg, err)
 	}
 	// Rescue must not fire while a scan (timeout + finalization) can still be running.
@@ -333,9 +340,21 @@ func TestNewEnv(t *testing.T) {
 	cfg.Scan.HMACKey = config.Secret(strings.Repeat("k", 64))
 	cfg.Scan.ScratchDir, cfg.Scan.MirrorDir, cfg.Scan.SandboxRuntime = "rel/scratch", "/mirror", "runc"
 	cfg.Scan.Images = testImages
+	cfg.SMTP = config.SMTPSection{Host: "localhost", Port: 1025, From: "warden@localhost", PublicBaseURL: "javascript:alert(1)"}
+	if _, err := NewEnv(cfg, nil, &fakeStore{}, quietLog()); err == nil {
+		t.Fatal("bad public base URL accepted")
+	}
+	cfg.SMTP.PublicBaseURL, cfg.SMTP.From = "https://warden.example/", "not an address"
+	if _, err := NewEnv(cfg, nil, &fakeStore{}, quietLog()); err == nil {
+		t.Fatal("bad from address accepted")
+	}
+	cfg.SMTP.From, cfg.SMTP.DigestHour = "warden@example.com", 6
 	env, err := NewEnv(cfg, nil, &fakeStore{}, quietLog())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if env.PublicBaseURL != "https://warden.example" || env.DigestHour != 6 || env.Mailer == nil {
+		t.Fatalf("%+v", env.Settings)
 	}
 	if !strings.HasSuffix(env.ScratchDir, "/rel/scratch") || env.ScratchDir[0] != '/' || env.AbandonUploadAfter != time.Hour {
 		t.Fatalf("%+v", env.Settings)
