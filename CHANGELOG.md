@@ -30,6 +30,7 @@ All notable changes to Warden are listed here. The format follows
 - Web UI redesign: a quiet light theme (Inter, indigo accent, severity marks), issue triage
   with saved views, filter chips, issues grouped by severity and a split view (list beside
   the open issue), keyboard shortcuts (J/K, Enter, Esc, A, X, /) and a ⌘K command palette.
+- Dark theme: follows the OS by default, with a System / Light / Dark switch in the sidebar.
 - The frontend's API types are checked against the backend's OpenAPI document in CI.
 - UI/UX design for the first usable release ([`frontend/DESIGN.md`](frontend/DESIGN.md)):
   - core flows (scan, triage, fix, exception, access)

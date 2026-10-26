@@ -74,7 +74,10 @@ Desktop width (1440 px) unless marked as phone (390 px).
 ### 10. Empty state
 ![No issues match the filters](design/10-empty-state.png)
 
-### 11. Phone (390 px)
+### 11. Dark theme
+![Issue triage in the dark theme](design/14-dark-issue-triage.png)
+
+### 12. Phone (390 px)
 <img src="design/11-phone-issue-list.png" alt="Phone: issue list as stacked rows" width="260"> <img src="design/12-phone-issue.png" alt="Phone: issue page with vertical stepper" width="260"> <img src="design/13-phone-menu.png" alt="Phone: navigation drawer open" width="260">
 
 ## Issue triage
@@ -273,7 +276,7 @@ is disabled and shows a spinner; errors appear in the dialog, which stays open.
 
 ## Phone layout
 
-Below 800 px (screenshots in section 11):
+Below 800 px (screenshots in section 12):
 
 - The sidebar becomes a 56 px light top bar: a 44 px menu button (`aria-expanded`,
   `aria-controls`), the logo, the org name (truncated) and the user's initials. The menu opens
@@ -335,6 +338,27 @@ Status is a small icon beside its label: open (grey ring), assigned (indigo half
 progress (indigo ring with a filled quarter), reopened (amber `#D97706` dashed ring), fixed
 (indigo check), verified (green `#2B9A66` check), false positive and risk accepted (grey
 slashed ring).
+
+### Dark theme
+
+The app follows the operating system (`prefers-color-scheme`) unless the viewer picks
+System, Light or Dark with the switch at the bottom of the sidebar (also in the phone menu).
+The choice is stored per browser (`warden.theme` in localStorage, ignored if invalid) and
+applied before the first render as `data-theme` on `<html>`; no inline script, so a strict
+CSP still works. Dark tokens use the same names, with the same 4.5:1 rule:
+
+| Token | Dark value |
+|---|---|
+| Ground / surface / sidebar | `#0E0F12` / `#15171B` / `#111216` |
+| Hover / active nav | `#1C1E23`, `#23262C` / `#24272E` |
+| Lines | `#24272D` dividers, `#2E3138` controls |
+| Ink / text 2 / muted / faint | `#EDEEF0` / `#C5C8CE` / `#A1A5AD` / `#8E929B` |
+| Accent | `#8F8BFF` (hover `#AAA7FF`), tints `#1D1C33` / `#2A2850` |
+| Primary button | inverted: `#EDEEF0` with `#111318` text |
+| Danger | `#FF6B6F` |
+| Severity | Critical `#F2555A`, High `#FF802B`, Medium `#FFC53D`, Low `#9497A2`, Info `#6B6F78` |
+| Messages | errors `#2A1416` / `#FFA3A6`, warnings `#2A1F0E` / `#FFC97A` |
+| Code blocks | `#0A0B0D`, flagged line `#3A1619` |
 
 - **Type:** Inter 400/500/600 for text, JetBrains Mono 400/500 for issue keys, paths, rules
   and code; both self-hosted (`@fontsource`), no requests to font CDNs. Base size 13 px;
