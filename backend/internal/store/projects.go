@@ -11,13 +11,15 @@ import (
 	"github.com/aupv9/warden/backend/internal/service"
 )
 
-func projectQuery(v service.Visibility, projectID *uuid.UUID, now time.Time) (string, args) {
+// projectQuery lists visible projects; archived ones only when includeArchived
+// or when asking for one project by id (archived projects stay readable).
+func projectQuery(v service.Visibility, projectID *uuid.UUID, now time.Time, includeArchived bool) (string, args) {
 	var a args
 	user := a.add(v.UserID)
 	nowP := a.add(now)
 	q := `SELECT p.id, p.key, p.name, p.description, p.default_tools, pm.role::text, p.created_at,
 			sev.critical, sev.high, sev.medium, sev.low, sev.info, sev.past_sla,
-			ls.id, ls.status::text, ls.created_at, ls.finished_at
+			ls.id, ls.status::text, ls.created_at, ls.finished_at, p.archived_at
 		FROM project p
 		LEFT JOIN project_member pm ON pm.project_id = p.id AND pm.user_id = ` + user + `
 		LEFT JOIN LATERAL (
@@ -33,7 +35,10 @@ func projectQuery(v service.Visibility, projectID *uuid.UUID, now time.Time) (st
 			SELECT s.id, s.status, s.created_at, s.finished_at FROM scan s
 			WHERE s.project_id = p.id ORDER BY s.created_at DESC, s.id DESC LIMIT 1
 		) ls ON true
-		WHERE p.org_id = ` + a.add(v.OrgID) + ` AND p.archived_at IS NULL`
+		WHERE p.org_id = ` + a.add(v.OrgID)
+	if !includeArchived && projectID == nil {
+		q += ` AND p.archived_at IS NULL`
+	}
 	if !v.All {
 		q += ` AND pm.user_id IS NOT NULL`
 	}
@@ -53,7 +58,7 @@ func scanProject(row pgx.CollectableRow) (service.Project, error) {
 	)
 	err := row.Scan(&p.ID, &p.Key, &p.Name, &p.Description, &p.DefaultTools, &role, &p.CreatedAt,
 		&p.OpenBySeverity.Critical, &p.OpenBySeverity.High, &p.OpenBySeverity.Medium, &p.OpenBySeverity.Low,
-		&p.OpenBySeverity.Info, &p.PastSLA, &lsID, &lsStatus, &lsCreated, &lsFinish)
+		&p.OpenBySeverity.Info, &p.PastSLA, &lsID, &lsStatus, &lsCreated, &lsFinish, &p.ArchivedAt)
 	if role != nil {
 		r := rbac.Role(*role)
 		p.MyRole = &r
@@ -67,14 +72,14 @@ func scanProject(row pgx.CollectableRow) (service.Project, error) {
 	return p, err
 }
 
-func (r *Repo) Projects(ctx context.Context, v service.Visibility, now time.Time) ([]service.Project, error) {
-	q, a := projectQuery(v, nil, now)
+func (r *Repo) Projects(ctx context.Context, v service.Visibility, now time.Time, includeArchived bool) ([]service.Project, error) {
+	q, a := projectQuery(v, nil, now, includeArchived)
 	rows, _ := r.tx.Query(ctx, q, a...)
 	return collect(rows, scanProject)
 }
 
 func (r *Repo) Project(ctx context.Context, v service.Visibility, projectID uuid.UUID, now time.Time) (service.Project, error) {
-	q, a := projectQuery(v, &projectID, now)
+	q, a := projectQuery(v, &projectID, now, true)
 	rows, _ := r.tx.Query(ctx, q, a...)
 	p, err := pgx.CollectExactlyOneRow(rows, scanProject)
 	return p, mapErr(err)
@@ -83,7 +88,7 @@ func (r *Repo) Project(ctx context.Context, v service.Visibility, projectID uuid
 func (r *Repo) ProjectRole(ctx context.Context, projectID, userID uuid.UUID) (rbac.Role, error) {
 	var role *string
 	err := r.tx.QueryRow(ctx, `SELECT (SELECT pm.role::text FROM project_member pm WHERE pm.project_id = p.id AND pm.user_id = $2)
-		FROM project p WHERE p.id = $1 AND p.archived_at IS NULL`, projectID, userID).Scan(&role)
+		FROM project p WHERE p.id = $1`, projectID, userID).Scan(&role)
 	if err != nil || role == nil {
 		return "", mapErr(err)
 	}

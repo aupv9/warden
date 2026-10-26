@@ -154,6 +154,7 @@ type Project struct {
 	OpenBySeverity SeverityCounts `json:"open_by_severity"`
 	PastSLA        int            `json:"past_sla"`
 	LastScan       *LastScan      `json:"last_scan"`
+	ArchivedAt     *Time          `json:"archived_at"`
 	CreatedAt      Time           `json:"created_at"`
 }
 

@@ -75,6 +75,9 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		if err != nil {
 			return notFound(err)
 		}
+		if project.ArchivedAt != nil {
+			return errProjectArchived()
+		}
 		tools := project.DefaultTools
 		if in.Tools != nil {
 			tools = *in.Tools
@@ -158,6 +161,9 @@ func (s *Service) StartScan(ctx context.Context, a *Actor, scanID uuid.UUID) (Sc
 		if !rbac.Can(rbac.RunScan, a.OrgRole, role, false) {
 			return errForbidden()
 		}
+		if err := requireNotArchived(ctx, r, sc.ProjectID); err != nil {
+			return err
+		}
 		pre = sc
 		return nil
 	})
@@ -199,6 +205,9 @@ func (s *Service) StartScan(ctx context.Context, a *Actor, scanID uuid.UUID) (Sc
 		case "pending_upload":
 		default:
 			return errConflict("the scan has already finished")
+		}
+		if err := requireNotArchived(ctx, r, sc.ProjectID); err != nil {
+			return err // archived meanwhile
 		}
 		if err := r.MarkScanQueued(ctx, scanID); err != nil {
 			return err
