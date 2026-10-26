@@ -1,0 +1,82 @@
+rules:
+  - id: warden.unsafe-archive-extract
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Archive read without Warden's validator. Use zipcheck.Extract
+      (backend/internal/scan/zipcheck), which enforces zip-slip, zip-bomb, symlink and
+      size limits.
+    pattern-either:
+      - pattern: zip.OpenReader(...)
+      - pattern: zip.NewReader(...)
+      - pattern: tar.NewReader(...)
+      - pattern: gzip.NewReader(...)
+    paths:
+      exclude: ["backend/internal/scan/zipcheck/", "*_test.go"]
+    metadata:
+      cwe: ["CWE-22: Path Traversal", "CWE-409: Improper Handling of Highly Compressed Data"]
+      security-severity: "9.1"
+
+  - id: warden.docker-socket-in-sandbox
+    languages: [go, yaml, generic]
+    severity: ERROR
+    message: The Docker socket must never be mounted into a scanner sandbox.
+    pattern-regex: "/var/run/docker\\.sock\\s*:"
+    paths:
+      include: ["backend/internal/scan/", "scanners/"]
+    metadata:
+      cwe: ["CWE-250: Execution with Unnecessary Privileges"]
+      security-severity: "9.5"
+
+  - id: warden.exec-via-shell
+    languages: [go]
+    severity: ERROR
+    message: Use an argv list; never run commands through a shell in Warden (sandbox argv must not be shell-parsed).
+    patterns:
+      - pattern-either:
+          - pattern: exec.Command($SH, ...)
+          - pattern: exec.CommandContext($CTX, $SH, ...)
+      - metavariable-regex:
+          metavariable: $SH
+          regex: ^"(/bin/|/usr/bin/)?(sh|bash|zsh|dash|ash)"$
+    metadata:
+      cwe: ["CWE-78: OS Command Injection"]
+
+  - id: warden.jwt-unverified
+    languages: [go]
+    severity: ERROR
+    message: >-
+      JWT parsed without signature verification, or without restricting the algorithm
+      to RS256 (jwt.WithValidMethods). Use auth.Verifier.
+    pattern-either:
+      - pattern: jwt.ParseUnverified(...)
+      - pattern: $P.ParseUnverified(...)
+      - pattern: jwt.Parse($TOKEN, $KEYFUNC)
+      - pattern: jwt.ParseWithClaims($TOKEN, $CLAIMS, $KEYFUNC)
+      - pattern: jwt.UnsafeAllowNoneSignatureType
+    paths:
+      exclude: ["*_test.go"]
+    metadata:
+      cwe: ["CWE-347: Improper Verification of Cryptographic Signature"]
+      security-severity: "9.8"
+
+  - id: warden.tls-verify-disabled
+    languages: [go]
+    severity: ERROR
+    message: TLS verification disabled. Warden requires verified TLS 1.2+ for every outbound connection.
+    pattern-either:
+      - pattern: |
+          tls.Config{..., InsecureSkipVerify: true, ...}
+      - pattern: $C.InsecureSkipVerify = true
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+
+  - id: warden.rls-setting-not-fail-closed
+    languages: [go, generic]
+    severity: WARNING
+    message: >-
+      Use current_setting('app.org_id', true) so an unset tenant yields no rows
+      instead of an error that callers might catch and retry without scoping.
+    pattern-regex: "current_setting\\('app\\.org_id'\\)"
+    paths:
+      include: ["backend/"]

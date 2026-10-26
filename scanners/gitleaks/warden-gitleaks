@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+gitleaks dir /src \
+  --config /data/gitleaks.toml \
+  --gitleaks-ignore-path /opt/warden/noignore \
+  --report-format sarif --report-path /tmp/raw.sarif \
+  --exit-code 0 --no-banner --log-level warn
+exec warden-redact -key-file /run/warden/hmac /tmp/raw.sarif /out/result.sarif
