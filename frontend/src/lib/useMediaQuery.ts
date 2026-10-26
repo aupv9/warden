@@ -16,3 +16,9 @@ export function useMediaQuery(query: string): boolean {
 export function useIsPhone(): boolean {
   return useMediaQuery("(max-width: 800px)");
 }
+
+/** From 1200 px the issue list and an opened issue sit side by side (split view). */
+export const SPLIT_QUERY = "(min-width: 1200px)";
+export function useIsWide(): boolean {
+  return useMediaQuery(SPLIT_QUERY);
+}

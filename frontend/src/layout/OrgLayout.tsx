@@ -1,15 +1,35 @@
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
+import { NavLink, Outlet, useLocation, useParams } from "react-router";
 import { isMockMode } from "../api/client";
 import { useOrgSummary } from "../api/hooks/orgs";
+import { useProjects } from "../api/hooks/projects";
 import type { Me, MeOrg } from "../api/types";
 import { useCurrentUser } from "../auth/AuthGate";
 import { signOut } from "../auth/oidc";
-import { CloseIcon, MenuIcon, ShieldIcon } from "../components/Icons";
+import { Avatar, ProjectDot } from "../components/Avatar";
+import { Count } from "../components/Badges";
+import { CommandPalette } from "../components/CommandPalette";
+import {
+  AuditIcon,
+  CheckIcon,
+  CloseIcon,
+  ExceptionsIcon,
+  IssuesIcon,
+  MembersIcon,
+  MenuIcon,
+  ProjectsIcon,
+  SearchIcon,
+  ShieldIcon,
+  SignOutIcon,
+  UpDownIcon,
+} from "../components/Icons";
+import { Kbd } from "../components/PageHeader";
+import { Popover } from "../components/Popover";
 import { NotFoundState } from "../components/States";
-import { initials } from "../lib/format";
 import { can, ORG_ROLE_LABELS } from "../lib/permissions";
+import { useShortcuts } from "../lib/shortcuts";
+import { SPLIT_QUERY } from "../lib/useMediaQuery";
 import { usePageTitle } from "../lib/usePageTitle";
 import { rememberOrg } from "./lastOrg";
 
@@ -53,31 +73,62 @@ export function NotFoundPage() {
   const me = useCurrentUser();
   return (
     <Shell me={me}>
-      <NotFoundState />
+      <div className="page-body">
+        <NotFoundState />
+      </div>
     </Shell>
   );
+}
+
+/** An unknown page inside an org: the org's shell stays, the content says "Not found". */
+export function OrgNotFound() {
+  usePageTitle("Not found");
+  const { orgId } = useOrgCtx();
+  return (
+    <div className="page-body">
+      <NotFoundState backTo={`/orgs/${orgId}/projects`} />
+    </div>
+  );
+}
+
+// Moving between the issue list and an issue in the split view is not a page change: the list
+// keeps its scroll position and focus is handled by the list itself.
+const ISSUES_PATH = /^\/orgs\/[^/]+\/issues(\/[^/]+)?$/;
+function isSplitMove(from: string, to: string): boolean {
+  return ISSUES_PATH.test(from) && ISSUES_PATH.test(to) && window.matchMedia(SPLIT_QUERY).matches;
 }
 
 export function Shell({ me, org, minimal, children }: { me: Me; org?: MeOrg; minimal?: boolean; children: ReactNode }) {
   const mainRef = useRef<HTMLElement>(null);
   const { pathname } = useLocation();
-  const first = useRef(true);
+  const prevPath = useRef(pathname);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const drawerId = useId();
 
   // On navigation (not filter changes) move focus to the content, so keyboard and screen-reader
   // users start at the new page; and close the phone menu.
   useEffect(() => {
     setMenuOpen(false);
-    if (first.current) {
-      first.current = false;
-      return;
-    }
+    const from = prevPath.current;
+    prevPath.current = pathname;
+    if (from === pathname || isSplitMove(from, pathname)) return;
     // preventScroll: focusing <main> would scroll it under the sticky phone top bar.
     window.scrollTo(0, 0);
     mainRef.current?.focus({ preventScroll: true });
   }, [pathname]);
 
+  useShortcuts({
+    palette: () => {
+      if (!org) return false;
+      setPaletteOpen(true);
+    },
+  });
+
+  const openPalette = () => {
+    setMenuOpen(false);
+    setPaletteOpen(true);
+  };
   const displayName = me.name?.trim() || me.email;
   return (
     <div className="shell">
@@ -98,23 +149,24 @@ export function Shell({ me, org, minimal, children }: { me: Me; org?: MeOrg; min
           </button>
         )}
         <NavLink to={org ? `/orgs/${org.id}/projects` : "/"} className="brand">
-          <ShieldIcon size={24} />
+          <ShieldIcon size={20} />
           Warden
         </NavLink>
         <span className="org">{org ? `· ${org.name}` : ""}</span>
-        <span className="avatar" title={displayName} aria-hidden="true">
-          {initials(displayName)}
+        <span className="topbar-avatar" title={displayName}>
+          <Avatar name={displayName} size={28} />
         </span>
       </header>
-      <Sidebar me={me} org={org} minimal={minimal} />
+      <Sidebar me={me} org={org} minimal={minimal} onOpenPalette={openPalette} />
       {!minimal && (
         <Drawer id={drawerId} open={menuOpen} onClose={() => setMenuOpen(false)}>
-          <Sidebar me={me} org={org} onClose={() => setMenuOpen(false)} />
+          <Sidebar me={me} org={org} onClose={() => setMenuOpen(false)} onOpenPalette={openPalette} />
         </Drawer>
       )}
       <main id="main" className="main" ref={mainRef} tabIndex={-1}>
         {children}
       </main>
+      {org && <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />}
     </div>
   );
 }
@@ -148,49 +200,41 @@ function Drawer({ id, open, onClose, children }: { id: string; open: boolean; on
   );
 }
 
-function Sidebar({ me, org, minimal, onClose }: { me: Me; org?: MeOrg; minimal?: boolean; onClose?: () => void }) {
-  const navigate = useNavigate();
+function Sidebar({
+  me,
+  org,
+  minimal,
+  onClose,
+  onOpenPalette,
+}: {
+  me: Me;
+  org?: MeOrg;
+  minimal?: boolean;
+  onClose?: () => void;
+  onOpenPalette: () => void;
+}) {
   const displayName = me.name?.trim() || me.email;
   return (
     <aside className="sidebar">
-      <div className="row" style={{ gap: 4, flexWrap: "nowrap" }}>
+      <div className="sidebar-top">
+        <OrgSwitcher me={me} org={org} minimal={minimal} />
         {onClose && (
-          <button type="button" className="icon-btn" aria-label="Close menu" onClick={onClose} style={{ color: "#fff" }}>
-            <CloseIcon size={22} />
+          <button type="button" className="icon-btn" aria-label="Close menu" onClick={onClose}>
+            <CloseIcon size={18} />
           </button>
         )}
-        <NavLink to={org ? `/orgs/${org.id}/projects` : "/"} className="brand">
-          <ShieldIcon />
-          Warden
-        </NavLink>
       </div>
-      {minimal ? (
-        <span className="org-switch">No organization</span>
-      ) : (
-        me.orgs.length > 0 && (
-          <label className="org-switch">
-            Organization
-            {me.orgs.length > 1 ? (
-              <select value={org?.id ?? ""} onChange={(e) => navigate(`/orgs/${e.target.value}/projects`)}>
-                {!org && <option value="">Choose…</option>}
-                {me.orgs.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <span className="org-name">{me.orgs[0]?.name}</span>
-            )}
-          </label>
-        )
+      {org && (
+        <button type="button" className="jump-btn" onClick={onOpenPalette}>
+          <SearchIcon />
+          <span>Search or jump to…</span>
+          <Kbd>⌘K</Kbd>
+        </button>
       )}
       {org && <OrgNav org={org} />}
       {!minimal && (
         <div className="user-box">
-          <span className="avatar" aria-hidden="true">
-            {initials(displayName)}
-          </span>
+          <Avatar name={displayName} size={24} />
           <div className="who">
             <strong title={displayName}>{displayName}</strong>
             <span>
@@ -199,8 +243,8 @@ function Sidebar({ me, org, minimal, onClose }: { me: Me; org?: MeOrg; minimal?:
             </span>
           </div>
           {!isMockMode && (
-            <button type="button" onClick={() => void signOut()}>
-              Sign out
+            <button type="button" className="icon-btn" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}>
+              <SignOutIcon />
             </button>
           )}
         </div>
@@ -209,25 +253,101 @@ function Sidebar({ me, org, minimal, onClose }: { me: Me; org?: MeOrg; minimal?:
   );
 }
 
+function OrgSwitcher({ me, org, minimal }: { me: Me; org?: MeOrg; minimal?: boolean }) {
+  const label = minimal ? "Warden" : (org?.name ?? "Choose an organization");
+  if (minimal || me.orgs.length <= 1) {
+    return (
+      <div className="org-switch static">
+        <ShieldIcon />
+        <span className="org-name">{minimal ? "Warden" : (org?.name ?? me.orgs[0]?.name ?? "Warden")}</span>
+      </div>
+    );
+  }
+  return (
+    <Popover
+      buttonClassName="org-switch"
+      buttonLabel={`Organization: ${label}. Switch organization`}
+      panelLabel="Organizations"
+      button={
+        <>
+          <ShieldIcon />
+          <span className="org-name">{label}</span>
+          <UpDownIcon />
+        </>
+      }
+    >
+      {(close) => (
+        <ul className="menu-list" aria-label="Organizations">
+          {me.orgs.map((o) => (
+            <li key={o.id}>
+              <NavLink to={`/orgs/${o.id}/projects`} className="menu-item" aria-current={o.id === org?.id ? "true" : undefined} onClick={() => close(false)}>
+                <span className="grow">{o.name}</span>
+                <span className="faint">{ORG_ROLE_LABELS[o.role]}</span>
+                {o.id === org?.id && <CheckIcon size={14} />}
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Popover>
+  );
+}
+
+const SIDEBAR_PROJECTS = 8;
+
 function OrgNav({ org }: { org: MeOrg }) {
   const summary = useOrgSummary(org.id);
+  const projects = useProjects(org.id);
   const pending = summary.data?.exceptions_pending ?? 0;
+  const open = summary.data?.open_issues;
   const base = `/orgs/${org.id}`;
+  const list = projects.data ?? [];
   return (
     <nav className="nav" aria-label="Main">
-      <NavLink to={`${base}/projects`}>Projects</NavLink>
-      <NavLink to={`${base}/issues`}>Issues</NavLink>
-      <NavLink to={`${base}/exceptions`}>
-        Exceptions
-        {pending > 0 && (
-          <span className="count">
-            {pending}
-            <span className="visually-hidden"> to review</span>
-          </span>
-        )}
+      <NavLink to={`${base}/projects`} end>
+        <ProjectsIcon />
+        <span className="grow">All projects</span>
       </NavLink>
-      <NavLink to={`${base}/members`}>Members</NavLink>
-      {can("view_audit_log", org.role) && <NavLink to={`${base}/audit-log`}>Audit log</NavLink>}
+      <NavLink to={`${base}/issues`}>
+        <IssuesIcon />
+        <span className="grow">Issues</span>
+        {open !== undefined && open > 0 && <Count label="open">{open}</Count>}
+      </NavLink>
+      <NavLink to={`${base}/exceptions`}>
+        <ExceptionsIcon />
+        <span className="grow">Exceptions</span>
+        {pending > 0 && <Count label="to review">{pending}</Count>}
+      </NavLink>
+
+      {list.length > 0 && (
+        <>
+          <h2 className="nav-head">Projects</h2>
+          {list.slice(0, SIDEBAR_PROJECTS).map((p) => (
+            <NavLink key={p.id} to={`${base}/projects/${p.id}`}>
+              <ProjectDot projectKey={p.key} />
+              <span className="grow ellipsis">{p.name}</span>
+              <span className="nav-key">{p.key}</span>
+            </NavLink>
+          ))}
+          {list.length > SIDEBAR_PROJECTS && (
+            <NavLink to={`${base}/projects`} end className="nav-more">
+              <span className="grow">All {list.length} projects</span>
+            </NavLink>
+          )}
+        </>
+      )}
+
+      <h2 className="nav-head">Organization</h2>
+      <NavLink to={`${base}/members`}>
+        <MembersIcon />
+        <span className="grow">Members</span>
+      </NavLink>
+      {can("view_audit_log", org.role) && (
+        <NavLink to={`${base}/audit-log`}>
+          <AuditIcon />
+          <span className="grow">Audit log</span>
+        </NavLink>
+      )}
     </nav>
   );
 }

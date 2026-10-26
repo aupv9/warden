@@ -1,9 +1,10 @@
 # Warden web UI: design spec (v0.1)
 
 This is the target for the first usable release of the web UI: a team uploads code, sees
-issues, and works them to closed. The screens below are wireframes. Copy, names and numbers in
-them are examples. The wireframes live on a design canvas that only maintainers can open;
-this file is the source of truth for contributors.
+issues, and works them to closed. The images below are screenshots of the app running on its
+mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
+design concepts live on a canvas that only maintainers can open; this file is the source of
+truth for contributors.
 
 ## Flows
 
@@ -30,31 +31,30 @@ enforces them anyway.
 |---|---|---|---|
 | 1 | Projects | everyone | Org summary (open issues, Critical + High, past SLA, exceptions to review); a card per project with open issues by severity, your role, the last scan and the number past SLA; an empty state for a project with no scan |
 | 2 | Upload & scans (project) | owner, developer, security lead | Drop zone with the real limits (200 MB zipped, 1 GB unpacked, 100,000 files); scanner checkboxes (project defaults); live progress per scanner (queued, running, succeeded, failed, timeout); scan history with new / fixed / reopened counts, *partial* (a scanner failed) and *rejected* (archive refused, with the reason) |
-| 3 | Issue list | everyone with access | Search (title, rule, file, `WEB-41`); filters for project, status (default: active), assignee, scanner, severity chips with counts, "past SLA only"; bulk assign; sorted by due date |
-| 4 | Issue detail | everyone with access | Severity, status, SLA due date; location with the masked snippet; how to fix; comments; details (assignee, rule, CWE/CVE, package and fixed version, first and last scan seen, number of scans it appeared in); workflow steps; history from `issue_event`. Actions: start progress, reassign, request exception |
+| 3 | Issue list | everyone with access | Saved views (Active, Assigned to me, Past SLA, Secrets); search (title, rule, file, `WEB-41`); filter chips for severity, status, project, assignee, scanner, past SLA; grouped by severity; bulk assign; sorted by due date. See "Issue triage" |
+| 4 | Issue detail | everyone with access | Opens beside the list on wide screens, as a page otherwise. Severity, status, SLA due date; status stepper; location with the masked snippet; what was found; how to fix; comments; details (assignee, rule, CWE/CVE, package and fixed version, first and last scan seen, number of scans it appeared in); activity from `issue_event`. Actions: start progress, reassign, request exception |
 | 5 | Exceptions | security lead decides; others see their own | Tabs: pending, approved, rejected, expiring soon. A queue on the left and a review panel on the right: reason, "accepted until" (≤ 180 days), decision note (required to reject), approve or reject |
 | 6 | Members & roles | org admin, security lead, project owner | Org members with org role, projects, MFA, status; project roles per project; the permission matrix, read-only, generated from `rbac.Matrix` |
 | 7 | Audit log | org admin, security lead | Filters for action, actor and date range; one row per entry (time, actor, action, target, IP) that expands to show the entry's `data`; a note that the log is append-only and hash-chained |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation.
-States, the upload flow, dialogs and the phone layout are specified below the wireframes.
+States, the upload flow, dialogs and the phone layout are specified below the screenshots.
 
-## Wireframes
+## Screens in the app
 
-Desktop width (1440 px) unless marked as phone (390 px). Names, numbers and files are
-examples. Sheets 10 and 11 show the content area only.
+Desktop width (1440 px) unless marked as phone (390 px).
 
 ### 1. Projects
-![Projects: org summary and project cards](design/01-projects.png)
+![Projects: stat strip and compact project cards](design/01-projects.png)
 
 ### 2. Upload & scans
-![Upload and scans: drop zone, live scanner progress, scan history](design/02-upload-and-scans.png)
+![Project Scans tab: drop zone, scanner choice, scan progress, scan history](design/02-upload-and-scans.png)
 
 ### 3. Issue list
-![Issue list: search, filters, severity chips, results table](design/03-issue-list.png)
+![Issue list: saved views, filter chips, issues grouped by severity, shortcut footer](design/03-issue-list.png)
 
-### 4. Issue detail
-![Issue detail: masked secret, how to fix, comments, details, workflow, history](design/04-issue-detail.png)
+### 4. Issue triage (split view)
+![An issue open beside the list: stepper, masked snippet, how to fix, comments](design/04-issue-triage.png)
 
 ### 5. Exceptions
 ![Exceptions: pending queue and review panel](design/05-exceptions.png)
@@ -63,22 +63,47 @@ examples. Sheets 10 and 11 show the content area only.
 ![Members and roles: org members, project roles, permission matrix](design/06-members-and-roles.png)
 
 ### 7. Audit log
-![Audit log: append-only note, filters, entries with one expanded](design/07-audit-log.png)
+![Audit log: append-only note, filters, entries](design/07-audit-log.png)
 
-### 8. Upload flow states
-![Upload flow: checking the file, uploading, upload failed, hourly limit, archive rejected, scan cancelled, scan history with every status](design/08-upload-states.png)
+### 8. Command palette (⌘K)
+![Command palette: jump to an issue, a project or a page](design/08-command-palette.png)
 
-### 9. Dialogs
-![Dialogs: new project, assign, request exception, add org member](design/09-dialogs.png)
+### 9. Assign dialog
+![Assign dialog: searchable list of project members](design/09-assign-dialog.png)
 
-### 10. Loading and empty states
-![Loading skeletons for a list and a detail page; empty states](design/10-states-loading-empty.png)
+### 10. Empty state
+![No issues match the filters](design/10-empty-state.png)
 
-### 11. Errors and messages
-![Load error, sign-in error, 403 and 404 pages, toasts, version conflict, form and conflict errors](design/11-states-errors-messages.png)
+### 11. Phone (390 px)
+<img src="design/11-phone-issue-list.png" alt="Phone: issue list as stacked rows" width="260"> <img src="design/12-phone-issue.png" alt="Phone: issue page with vertical stepper" width="260"> <img src="design/13-phone-menu.png" alt="Phone: navigation drawer open" width="260">
 
-### 12. Phone (390 px)
-<img src="design/12-mobile-issue-list.png" alt="Phone: issue list as stacked rows" width="260"> <img src="design/13-mobile-issue-detail.png" alt="Phone: issue detail with sections stacked" width="260"> <img src="design/14-mobile-menu.png" alt="Phone: navigation menu open" width="260">
+## Issue triage
+
+- **Saved views** in the header are presets of the URL filters: Active (default), Assigned to me
+  (`assignee=me`), Past SLA (`past_sla=true`), Secrets (`tool=gitleaks`). Search, sort and project
+  are kept when switching.
+- **Filter chips** read as sentences ("Severity is Critical, High"), each with its own remove
+  button; "+ Filter" adds severity, status, project, assignee, scanner or past SLA. "Group by"
+  (severity or none, remembered per browser) and "Sort" sit on the right.
+- **Groups** are collapsible with counts. Medium, Low and Info start collapsed when they hold 10
+  or more issues, unless the open issue is in them.
+- **Split view** from 1200 px: `/orgs/:org/issues/:id?<filters>` keeps the list on the left
+  (compact rows, the open issue marked with an indigo bar) and the issue on the right, with
+  previous/next/close controls and "n of m". Below 1200 px the issue is a page with a
+  "‹ Issues / KEY" link back to the filtered list. Only known filters are carried in links.
+- **Keyboard** (never while typing in a field or while a dialog is open):
+
+  | Key | Action |
+  |---|---|
+  | `J` / `K` | Next / previous issue (the open pane follows) |
+  | `Enter` | Open the selected issue |
+  | `Esc` | Close the pane, focus back on its row |
+  | `A` | Assign (bulk selection, else the open or selected issue, if allowed) |
+  | `X` | Add or remove the selected issue from the bulk selection |
+  | `/` | Focus the search box |
+  | `⌘K` / `Ctrl+K` | Command palette: jump to an issue by key or title, a project, or a page |
+
+  A footer bar shows these hints on the issue list.
 
 ## Audit log
 
@@ -192,7 +217,7 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 
 ## Upload flow
 
-What the New scan card shows at each step (wireframe 8):
+What the New scan card shows at each step:
 
 1. **Choose a file.** The browser checks the extension (`.zip`), the name (≤ 255 characters, no
    `/` or `\`) and the size (≤ 200 MB) before anything is sent.
@@ -209,7 +234,7 @@ What the New scan card shows at each step (wireframe 8):
    (`expires_at`, 15 minutes); after that it cancels the old scan and starts again from step 3,
    without hashing again. The user doesn't see the difference.
 6. `POST …/start`. `UPLOAD_MISMATCH` shows the upload-failed card with its own message. On
-   success the right-hand card becomes "Scan in progress" (wireframe 2).
+   success the right-hand card becomes "Scan progress" (screenshot 2).
 7. **Finished:** Completed, Partial, Failed or Rejected. A rejected archive shows the full
    message from the table above, the code, "Nothing was scanned and no issues changed" and
    "Upload a new .zip". A cancelled scan shows who cancelled it, when, each scanner's state, and
@@ -221,7 +246,7 @@ scan is queued or running, and stop when it finishes.
 
 ## Dialogs
 
-All dialogs (wireframe 9): modal, `role="dialog"`, `aria-modal="true"`, `aria-labelledby` on the
+All dialogs (screenshot 9 shows one): modal, `role="dialog"`, `aria-modal="true"`, `aria-labelledby` on the
 title; focus starts on the first field, stays in the dialog, Esc and the 44 px close button
 cancel, and focus returns to the button that opened it. The primary button is on the right
 and says what it does ("Create project", not "OK"). While the request runs, the primary button
@@ -248,9 +273,9 @@ is disabled and shows a spinner; errors appear in the dialog, which stays open.
 
 ## Phone layout
 
-Below 800 px (wireframes 12–14):
+Below 800 px (screenshots in section 11):
 
-- The sidebar becomes a 56 px dark top bar: a 44 px menu button (`aria-expanded`,
+- The sidebar becomes a 56 px light top bar: a 44 px menu button (`aria-expanded`,
   `aria-controls`), the logo, the org name (truncated) and the user's initials. The menu opens
   as a 304 px drawer from the left over a dimmed page, with the org switcher, the navigation,
   the user and "Sign out". Esc, the close button or a tap outside closes it.
@@ -261,8 +286,8 @@ Below 800 px (wireframes 12–14):
   the sort select side by side, then the severity chips in one row that scrolls sideways. No
   checkboxes and no bulk assign on phones.
 - Issue detail: a 44 px "‹ Issues" back link; the actions under the title, primary full width
-  and the other two side by side; then the cards in one column in the desktop order (location,
-  how to fix, comments, details, workflow, history). The code snippet scrolls sideways inside
+  and the others side by side; then the sections in one column in the desktop order (status
+  stepper, shown vertically; where; what was found; how to fix; comments; details; activity). The code snippet scrolls sideways inside
   its block (`tabindex="0"` so keyboard users can scroll it).
 - Page padding is 16 px; every control stays at least 44 px tall.
 
@@ -281,42 +306,49 @@ Below 800 px (wireframes 12–14):
 
 ## Visual system
 
-Warden has its own look, not tied to any company brand.
+Quiet and light: neutral greys, one indigo accent, severity as small coloured marks next to
+their label. Tokens live in `frontend/src/styles/tokens.css`.
 
 | Token | Value | Use |
 |---|---|---|
-| Ink | `#0B1220` | Text; sidebar background; code block background |
-| Muted | `#556070` | Secondary text (≥ 4.5:1 on white) |
-| Ground | `#F4F6F8` | Page background |
-| Surface | `#FFFFFF` | Cards, tables |
-| Line | `#DDE2E8` / `#EDF0F3` | Borders / row dividers |
-| Accent | `#0F766E` (hover `#115E59`) | Primary buttons, links, progress, selected state |
-| Accent tint | `#F0FDFA` / `#99F6E4` | Selected chips, drop zone, success pills |
-| Sidebar active | `#134E4A` on `#5EEAD4` text | Current navigation item |
+| Ground | `#FBFBFC` | Page background |
+| Surface | `#FFFFFF` | Panels, tables, header bars |
+| Sidebar | `#F6F6F8` | Sidebar; active item `#E9E9EE` |
+| Hover | `#F3F4F6` / `#EEEFF2`; rows `#F8F8FA` | Hover backgrounds |
+| Lines | `#ECEDF0` dividers, `#F1F2F4` rows, `#E3E5E8` controls, `#D3D6DB` chips | Borders |
+| Ink | `#111318` | Text; primary button (white text, hover `#2A2D35`); code blocks |
+| Text 2 / muted / faint | `#3F4450` / `#5E6470` / `#6B7079` | Secondary text; faint is the lightest text colour and is never used on `#EEEFF2` or `#E9E9EE` |
+| Accent | `#4F46E5` (hover `#4338CA`) | Links, focus rings, selection, active tabs; tints `#F5F5FF` / `#E8E7FC` |
+| Danger | `#D1343A` | Overdue and past-SLA text |
 
-Severity, by the usual security-tool convention, also differing in lightness:
+Severity is a 8 px square (radius 2) beside its label, never colour alone:
 
-| Severity | Badge |
+| Severity | Mark |
 |---|---|
-| Critical | `#9F1239`, white text |
-| High | `#C2410C`, white text |
-| Medium | `#FEF3C7`, text `#92400E` |
-| Low | `#E2E8F0`, text `#334155` |
+| Critical | `#E5484D` |
+| High | `#F76B15` |
+| Medium | `#FFB224` |
+| Low | `#8B8D98` |
+| Info | `#C1C4CB` |
 
-"Past SLA" text and the highlighted secret line in a code snippet use the Critical color.
+Status is a small icon beside its label: open (grey ring), assigned (indigo half ring), in
+progress (indigo ring with a filled quarter), reopened (amber `#D97706` dashed ring), fixed
+(indigo check), verified (green `#2B9A66` check), false positive and risk accepted (grey
+slashed ring).
 
-- **Type:** IBM Plex Sans for text; IBM Plex Mono for code, rule IDs, file paths and issue keys
-  (`WEB-41`).
-- **Shapes:** cards have a 12 px radius and a 1 px border with no shadow; buttons and status
-  pills are fully rounded (pills).
-- **Sizes:** controls are at least 44 px tall, and dense table controls at least 36 px. Page
-  padding is 32 × 40 px and the gap between cards is 16–20 px.
-- **Layout:** a 232 px dark sidebar beside fluid content. Below 800 px the sidebar becomes a
-  top bar with a menu button and tables become stacked rows (see "Phone layout").
-- **Messages:** error banners and toasts `#FFF1F2` with text `#881337` and a `#9F1239` border;
-  warnings `#FFFBEB` with text `#78350F` and a `#F59E0B` border; skeleton bars `#E2E7EC`.
-- **Accessibility:** use real `<button>`, `<a>`, `<label>` and `<input>` elements;
-  `aria-label` on icon-only controls; text contrast of at least 4.5:1.
+- **Type:** Inter 400/500/600 for text, JetBrains Mono 400/500 for issue keys, paths, rules
+  and code; both self-hosted (`@fontsource`), no requests to font CDNs. Base size 13 px;
+  numbers are tabular.
+- **Shapes and sizes:** radius 6 for controls, 8 for panels, 2 for marks; 1 px borders and
+  almost no shadow. Controls 32 px, table rows 46 px, header bars 52 px, sidebar 224 px; on
+  phones every target is at least 44 px.
+- **Code blocks:** `#111318` background, `#E6E8EB` text, `#8B8D98` line numbers; the flagged
+  line `#4A1D22` with a `#E5484D` bar.
+- **Messages:** errors `#FEF2F2` with text `#9B1C1F`; warnings `#FFF8EB` with text `#7A2E0B`;
+  skeleton bars `#EDEEF1`.
+- **Accessibility:** real `<button>`, `<a>`, `<label>` and `<input>` elements; `aria-label`
+  on icon-only controls; visible indigo focus rings; every text/background pair at least
+  4.5:1; reduced motion respected.
 
 ## Open decisions
 
@@ -327,7 +359,7 @@ In the v0.1 API contract and being built (the UI can rely on them once they land
 - An "Expiring soon" tab for accepted risks (`?status=expiring`, 14 days).
 - Cancel a scan, including a running one.
 
-In the wireframes but not in the API contract:
+In the design but not in the API contract:
 
 - Export the issue list as CSV.
 - Show users who are deactivated in the identity provider. The API has only Warden's own

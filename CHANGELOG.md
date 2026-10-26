@@ -27,12 +27,14 @@ All notable changes to Warden are listed here. The format follows
 - Web UI for all core screens: projects, upload and scans (in-browser SHA-256 with
   progress), issue list and detail, exceptions, members and roles, audit log; loading,
   empty and error states; phone layout.
+- Web UI redesign: a quiet light theme (Inter, indigo accent, severity marks), issue triage
+  with saved views, filter chips, issues grouped by severity and a split view (list beside
+  the open issue), keyboard shortcuts (J/K, Enter, Esc, A, X, /) and a ⌘K command palette.
 - The frontend's API types are checked against the backend's OpenAPI document in CI.
 - UI/UX design for the first usable release ([`frontend/DESIGN.md`](frontend/DESIGN.md)):
   - core flows (scan, triage, fix, exception, access)
   - wireframes for six screens, with images in `frontend/design/`: projects, upload and
     scans, issue list, issue detail, exceptions, members and roles
   - security rules for the UI
-  - a visual system of its own: dark sidebar, teal accent, severity colors that differ in
-    lightness, IBM Plex type
+  - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)

@@ -7,7 +7,7 @@ import { isApiError } from "../api/client";
 import { flattenPages } from "../api/paging";
 import { TOOLS } from "../api/types";
 import type { Limits, Scan, Tool } from "../api/types";
-import { Pill, ScanStatusPill, ToolStatusPill } from "../components/Badges";
+import { DotMark, ScanStatusMark, ToolStatusMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { FileIcon, UploadIcon } from "../components/Icons";
@@ -61,7 +61,7 @@ export function ProjectScansTab() {
   const openPicker = canRun ? () => picker.current?.click() : undefined;
 
   return (
-    <div className="stack">
+    <div className="page-body">
       <div className="grid grid-2">
         {canRun ? (
           <NewScan pickerRef={picker} onStarted={(scan) => select(scan.id)} />
@@ -123,7 +123,7 @@ export function ProjectScansTab() {
 export function NoScansYet({ onUpload, uploadTo }: { onUpload?: () => void; uploadTo?: string }) {
   return (
     <EmptyState
-      icon={<UploadIcon size={22} />}
+      icon={<UploadIcon size={18} />}
       title="No scans yet"
       action={
         onUpload ? (
@@ -143,12 +143,12 @@ export function NoScansYet({ onUpload, uploadTo }: { onUpload?: () => void; uplo
 }
 
 function historyStatus(s: Scan, limits: Limits): { pill: React.ReactNode; note?: string } {
-  if (isRejected(s)) return { pill: <Pill tone="danger">Rejected</Pill>, note: scanErrorMessages(s.error_code!, limits).short };
+  if (isRejected(s)) return { pill: <DotMark tone="danger">Rejected</DotMark>, note: scanErrorMessages(s.error_code!, limits).short };
   if (s.status === "failed")
-    return { pill: <Pill tone="danger">Failed</Pill>, note: s.error_code ? scanErrorMessages(s.error_code, limits).short : undefined };
-  if (s.status === "queued") return { pill: <ScanStatusPill status="queued">Queued · waiting for a worker</ScanStatusPill> };
-  if (s.status === "partial") return { pill: <ScanStatusPill status="partial">Partial · a scanner failed</ScanStatusPill> };
-  return { pill: <ScanStatusPill status={s.status} /> };
+    return { pill: <DotMark tone="danger">Failed</DotMark>, note: s.error_code ? scanErrorMessages(s.error_code, limits).short : undefined };
+  if (s.status === "queued") return { pill: <ScanStatusMark status="queued">Queued · waiting for a worker</ScanStatusMark> };
+  if (s.status === "partial") return { pill: <ScanStatusMark status="partial">Partial · a scanner failed</ScanStatusMark> };
+  return { pill: <ScanStatusMark status={s.status} /> };
 }
 
 function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boolean; onSelect: () => void }) {
@@ -516,17 +516,17 @@ function ScanPanel({
           : "Scan finished";
 
   const pill = rejected ? (
-    <Pill tone="danger">Rejected</Pill>
+    <DotMark tone="danger">Rejected</DotMark>
   ) : s.status === "running" ? (
-    <ScanStatusPill status="running">{`Running · ${done} of ${total} done`}</ScanStatusPill>
+    <ScanStatusMark status="running">{`Running · ${done} of ${total} done`}</ScanStatusMark>
   ) : s.status === "queued" ? (
-    <ScanStatusPill status="queued">Queued · waiting for a worker</ScanStatusPill>
+    <ScanStatusMark status="queued">Queued · waiting for a worker</ScanStatusMark>
   ) : s.status === "partial" && failedTool ? (
-    <ScanStatusPill status="partial">
+    <ScanStatusMark status="partial">
       {`Partial · ${TOOL_LABELS[failedTool.tool]} ${failedTool.status === "timeout" ? "timed out" : "failed"}`}
-    </ScanStatusPill>
+    </ScanStatusMark>
   ) : (
-    <ScanStatusPill status={s.status} />
+    <ScanStatusMark status={s.status} />
   );
 
   return (
@@ -589,7 +589,7 @@ function ScanPanel({
                   )}
                 </td>
                 <td>
-                  <ToolStatusPill status={r.status} />
+                  <ToolStatusMark status={r.status} />
                 </td>
                 <td className="num">{r.findings_count ?? "–"}</td>
                 <td className="num nowrap">{formatDuration(r.duration_ms)}</td>

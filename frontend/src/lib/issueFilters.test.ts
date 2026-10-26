@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyView,
+  currentView,
   DEFAULT_FILTERS,
+  issueHref,
+  issueListHref,
   describeFilters,
   hasActiveFilters,
   issueFiltersToApiQuery,
@@ -103,5 +107,38 @@ describe("issue filters → API query", () => {
     const q = issueFiltersToApiQuery({ ...DEFAULT_FILTERS, status: "all", project: P1 }, "fixed-project");
     expect(q.status).toHaveLength(8);
     expect(q.project_id).toBe("fixed-project");
+  });
+});
+
+describe("saved views", () => {
+  it("are presets of the URL filters that keep search, sort and project", () => {
+    const base = { ...DEFAULT_FILTERS, q: "aws", sort: "-severity" as const, project: P1, severity: ["low" as const] };
+    expect(applyView(base, "mine")).toEqual({ ...DEFAULT_FILTERS, q: "aws", sort: "-severity", project: P1, assignee: "me" });
+    expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "secrets")).toString()).toBe("tool=gitleaks");
+    expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "past_sla")).toString()).toBe("past_sla=true");
+    expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "active")).toString()).toBe("");
+  });
+
+  it("know which view the filters are, or none", () => {
+    expect(currentView(DEFAULT_FILTERS)).toBe("active");
+    expect(currentView({ ...DEFAULT_FILTERS, assignee: "me", q: "x" })).toBe("mine");
+    expect(currentView({ ...DEFAULT_FILTERS, tool: "gitleaks" })).toBe("secrets");
+    expect(currentView({ ...DEFAULT_FILTERS, tool: "gitleaks", pastSla: true })).toBeNull();
+  });
+});
+
+describe("split view links", () => {
+  it("carry the list's filters to the issue and back", () => {
+    const f = { ...DEFAULT_FILTERS, severity: ["critical" as const], pastSla: true };
+    expect(issueHref("o1", "i1", f)).toBe("/orgs/o1/issues/i1?severity=critical&past_sla=true");
+    expect(issueListHref("o1", f)).toBe("/orgs/o1/issues?severity=critical&past_sla=true");
+    expect(issueHref("o1", "i1", DEFAULT_FILTERS)).toBe("/orgs/o1/issues/i1");
+    expect(issueListHref("o1", DEFAULT_FILTERS)).toBe("/orgs/o1/issues");
+  });
+
+  it("only carry validated filters (the URL is untrusted)", () => {
+    const f = parseIssueFilters(new URLSearchParams("severity=critical&next=//evil.example&status=<x>"));
+    expect(issueListHref("o1", f)).toBe("/orgs/o1/issues?severity=critical");
+    expect(issueHref("o1", "a/b", DEFAULT_FILTERS)).toBe("/orgs/o1/issues/a%2Fb");
   });
 });

@@ -7,13 +7,14 @@ import type { BulkAssignBody, Comment, Issue, IssueEvent, IssuePage, ItemList, T
 const orgBase = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}`;
 const issuePath = (orgId: string, issueId: string) => `${orgBase(orgId)}/issues/${encodeURIComponent(issueId)}`;
 
-export function useIssues(orgId: string, query: QueryParams) {
+export function useIssues(orgId: string, query: QueryParams, enabled = true) {
   return useInfiniteQuery({
     queryKey: qk.issues(orgId, query),
     queryFn: ({ pageParam, signal }) =>
       api<IssuePage>(`${orgBase(orgId)}/issues`, { query: { ...query, cursor: pageParam }, signal }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled,
   });
 }
 

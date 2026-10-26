@@ -5,7 +5,10 @@ import { fieldErrors } from "../api/errors";
 import { useAddOrgMember, useChangeOrgRole, useOrgMembers, useRemoveOrgMember } from "../api/hooks/orgs";
 import { ORG_ROLES } from "../api/types";
 import type { OrgMember, OrgRole } from "../api/types";
-import { Pill } from "../components/Badges";
+import { Avatar } from "../components/Avatar";
+import { DotMark } from "../components/Badges";
+import { CheckIcon, PlusIcon } from "../components/Icons";
+import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
@@ -33,29 +36,29 @@ export function MembersPage() {
   const manage = can("manage_users", org.role);
 
   return (
-    <>
-      <header className="page-head">
-        <div className="titles">
-          <h1>Members</h1>
-          <p className="muted">People sign in with your identity provider. Add them here to give them a role.</p>
-        </div>
-        {manage && (
-          <div className="actions">
+    <div className="page">
+      <PageHeader
+        title="Members"
+        actions={
+          manage ? (
             <Button variant="primary" onClick={() => setAdding(true)}>
-              Add member
+              <PlusIcon /> Add member
             </Button>
-          </div>
-        )}
-      </header>
-      <OrgMembersCard />
-      <div className="grid grid-2">
-        <ProjectRolesCard />
-        <MatrixCard />
+          ) : undefined
+        }
+      />
+      <div className="page-body">
+        <p className="faint small">People sign in with your identity provider. Add them here to give them a role.</p>
+        <OrgMembersCard />
+        <div className="grid grid-2">
+          <ProjectRolesCard />
+          <MatrixCard />
+        </div>
       </div>
       <Dialog open={adding} onClose={() => setAdding(false)} title={`Add a member to ${org.name}`}>
         <AddMemberForm onDone={() => setAdding(false)} />
       </Dialog>
-    </>
+    </div>
   );
 }
 
@@ -82,9 +85,9 @@ function OrgMembersCard() {
       title="Organization"
       titleId="org-members-h"
       flush
-      actions={members.data ? <span className="muted">{members.data.length} members</span> : undefined}
+      actions={members.data ? <span className="faint num">{members.data.length} members</span> : undefined}
     >
-      <div style={{ padding: "0 20px" }}>
+      <div style={{ padding: "0 16px" }}>
         <ActionError
           error={change.error}
           overrides={{
@@ -113,11 +116,14 @@ function OrgMembersCard() {
           {members.data.map((m) => (
             <tr key={m.user.id}>
               <td>
-                {userName(m.user)}
-                {m.user.id === me.id && <span className="muted"> (you)</span>}
-                <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>
-                  {m.user.email}
-                </div>
+                <span className="person-cell">
+                  <Avatar name={userName(m.user)} size={24} />
+                  <span>
+                    {userName(m.user)}
+                    {m.user.id === me.id && <span className="faint"> (you)</span>}
+                    <span className="sub">{m.user.email}</span>
+                  </span>
+                </span>
               </td>
               <td data-label="Org role">
                 {manage ? (
@@ -143,9 +149,9 @@ function OrgMembersCard() {
               </td>
               <td data-label="Projects">{projectsText(m)}</td>
               <td data-label="MFA">
-                {m.mfa === null ? <span className="muted">Unknown</span> : <Pill tone={m.mfa ? "success" : "default"}>{m.mfa ? "On" : "Off"}</Pill>}
+                {m.mfa === null ? <span className="faint">Unknown</span> : <DotMark tone={m.mfa ? "success" : "neutral"}>{m.mfa ? "On" : "Off"}</DotMark>}
               </td>
-              <td data-label="Status">{m.user.is_active ? "Active" : <span className="muted">Deactivated</span>}</td>
+              <td data-label="Status">{m.user.is_active ? "Active" : <span className="faint">Deactivated</span>}</td>
               {manage && (
                 <td className="no-label" style={{ textAlign: "right" }}>
                   <Button size="sm" onClick={() => setRemoving(m)}>
@@ -238,7 +244,7 @@ function AddMemberForm({ onDone }: { onDone: () => void }) {
           ))}
         </div>
       </fieldset>
-      <p className="muted" style={{ fontSize: 13 }}>
+      <p className="muted small">
         Warden doesn't send invitations. Project roles are set on each project's Members tab.
       </p>
       <div className="dialog-actions">
@@ -272,21 +278,30 @@ function MatrixCard() {
       >
         {perms.map((p) => (
           <tr key={p}>
-            <th scope="row" style={{ textTransform: "none", letterSpacing: 0, fontSize: 13, color: "var(--ink)", fontWeight: 500, whiteSpace: "normal" }}>
+            <th scope="row" className="row-head">
               {PERM_LABELS[p]}
             </th>
             {MATRIX_ROLES.map((r) => {
               const cell = matrixCell(p, r);
               return (
-                <td key={r} style={{ textAlign: "center", fontSize: 13 }} className={cell === "–" ? "muted" : undefined}>
-                  {cell === "Yes" ? <strong style={{ color: "var(--accent)" }}>Yes</strong> : cell === "–" ? <span aria-label="No">–</span> : cell}
+                <td key={r} style={{ textAlign: "center" }} className={cell === "–" ? "faint" : undefined}>
+                  {cell === "Yes" ? (
+                    <span className="yes">
+                      <CheckIcon size={14} />
+                      <span className="visually-hidden">Yes</span>
+                    </span>
+                  ) : cell === "–" ? (
+                    <span aria-label="No">–</span>
+                  ) : (
+                    <span className="small">{cell}</span>
+                  )}
                 </td>
               );
             })}
           </tr>
         ))}
       </Table>
-      <p className="muted" style={{ padding: "12px 20px 20px", fontSize: 12 }}>
+      <p className="faint small" style={{ padding: "12px 16px 16px" }}>
         Org admin, security lead and member are org roles; owner, developer and viewer are per project. A person has the
         permissions of both.
       </p>

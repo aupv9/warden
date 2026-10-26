@@ -5,11 +5,12 @@ import { api, isApiError } from "../api/client";
 import { useBulkAssign, useTransitionIssue } from "../api/hooks/issues";
 import { qk } from "../api/keys";
 import type { IssueStatus, ItemList, ProjectMember, UserRef } from "../api/types";
+import { Avatar } from "../components/Avatar";
 import { Pill } from "../components/Badges";
 import { Button } from "../components/Button";
 import { ActionError, SkeletonBlock } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
-import { initials, userName } from "../lib/format";
+import { userName } from "../lib/format";
 import { PROJECT_ROLE_LABELS } from "../lib/permissions";
 import { showToast } from "../lib/toast";
 
@@ -160,9 +161,7 @@ export function AssignForm({
             {shown.map((m) => (
               <label key={m.user.id} className="choice-card" style={{ alignItems: "center" }}>
                 <input type="radio" name="assignee" value={m.user.id} checked={assignee === m.user.id} onChange={() => setAssignee(m.user.id)} style={{ marginTop: 0 }} />
-                <span className="avatar light" aria-hidden="true">
-                  {initials(userName(m.user))}
-                </span>
+                <Avatar name={userName(m.user)} size={24} />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <strong>{userName(m.user)}</strong>
                   {currentIds.has(m.user.id) && <span className="muted"> (current)</span>}

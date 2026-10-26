@@ -77,9 +77,9 @@ function CenterCard({ children }: { children: ReactNode }) {
   return (
     <main className="center-page">
       <div className="card">
-        <div className="row" style={{ gap: 10 }}>
-          <ShieldIcon />
-          <strong style={{ fontSize: 20 }}>Warden</strong>
+        <div className="row" style={{ gap: 8 }}>
+          <ShieldIcon size={22} />
+          <strong style={{ fontSize: 15 }}>Warden</strong>
         </div>
         {children}
       </div>
@@ -98,7 +98,7 @@ function Splash() {
 function SignIn({ failed }: { failed: boolean }) {
   return (
     <CenterCard>
-      <h1 style={{ fontSize: 22 }}>Sign in to Warden</h1>
+      <h1 className="state-title">Sign in to Warden</h1>
       {failed ? (
         // One message for every cause (expired, revoked, wrong audience, inactive account...);
         // the reason is logged on the server only.

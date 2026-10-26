@@ -7,7 +7,7 @@ export function RouteError() {
   return (
     <main className="center-page">
       <div className="card">
-        <h1 style={{ fontSize: 22 }}>{notFound ? "Not found" : "Something went wrong"}</h1>
+        <h1 className="state-title">{notFound ? "Not found" : "Something went wrong"}</h1>
         <p className="muted">
           {notFound
             ? "This page doesn't exist, or you don't have access to it."

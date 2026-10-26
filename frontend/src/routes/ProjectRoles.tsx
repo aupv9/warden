@@ -4,6 +4,7 @@ import { useOrgMembers } from "../api/hooks/orgs";
 import { useProjectMembers, useProjects, useRemoveProjectMember, useSetProjectMember } from "../api/hooks/projects";
 import { PROJECT_ROLES } from "../api/types";
 import type { Project, ProjectMember, ProjectRole } from "../api/types";
+import { Avatar } from "../components/Avatar";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
@@ -69,7 +70,7 @@ function ProjectRolesTable({ project }: { project: Project }) {
 
   return (
     <>
-      <div style={{ padding: "0 20px" }}>
+      <div style={{ padding: "0 16px" }}>
         <ActionError error={setRole.error} overrides={{ VALIDATION_FAILED: "That person isn't a member of this organization." }} />
       </div>
       {members.data.length === 0 ? (
@@ -90,10 +91,13 @@ function ProjectRolesTable({ project }: { project: Project }) {
           {members.data.map((m) => (
             <tr key={m.user.id}>
               <td>
-                {userName(m.user)}
-                <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>
-                  {m.user.email}
-                </div>
+                <span className="person-cell">
+                  <Avatar name={userName(m.user)} size={24} />
+                  <span>
+                    {userName(m.user)}
+                    <span className="sub">{m.user.email}</span>
+                  </span>
+                </span>
               </td>
               <td data-label="Role">
                 {manage ? (
@@ -129,7 +133,7 @@ function ProjectRolesTable({ project }: { project: Project }) {
         </Table>
       )}
       {manage && (
-        <div style={{ padding: 20 }}>
+        <div style={{ padding: 16 }}>
           <Button onClick={() => setAdding(true)}>Add to project</Button>
         </div>
       )}

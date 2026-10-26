@@ -105,9 +105,33 @@ describe("every screen renders with mock data", () => {
     expect(t).toContain("Warden stores only its first 4 characters");
     expect(t).toContain("Reassign");
     expect(html).toContain("Write a comment. Never paste secrets here.");
-    expect(t).toContain("History");
+    expect(t).toContain("Activity");
     const pkg = text(await render(`${org()}/issues/${db.issues[2]!.id}`));
     expect(pkg).toContain("upgrade to v0.23.0");
+  });
+
+  it("split view links: the list's filters travel to the issue and back", async () => {
+    const issue = db.issues[0]!;
+    const list = await render(`${org()}/issues?severity=critical&past_sla=true`);
+    // Row links open the issue with the same filters in the query string.
+    expect(list).toContain(`href="/orgs/${db.ORG_ID}/issues/${issue.id}?severity=critical&amp;past_sla=true"`);
+    // Below 1200 px (and in server rendering) the issue is its own page; its back link
+    // returns to the filtered list. Unknown query parameters are not carried over.
+    const page = await render(`${org()}/issues/${issue.id}?severity=critical&past_sla=true&evil=1`);
+    expect(page).toContain(`href="/orgs/${db.ORG_ID}/issues?severity=critical&amp;past_sla=true"`);
+    expect(page).not.toContain("evil");
+    // From a project's tab, the project becomes a filter on the org-wide list.
+    const web = db.projects[0]!;
+    const tab = await render(`${org()}/projects/${web.id}/issues`);
+    expect(tab).toContain(`href="/orgs/${db.ORG_ID}/issues/${issue.id}?project=${web.id}"`);
+  });
+
+  it("saved views are presets of the URL filters", async () => {
+    const t = await render(`${org()}/issues?assignee=me`);
+    expect(t).toMatch(/<a[^>]*aria-current="true"[^>]*>Assigned to me</);
+    expect(t).not.toMatch(/<a[^>]*aria-current="true"[^>]*>Active</);
+    expect(t).toContain(`href="/orgs/${db.ORG_ID}/issues?tool=gitleaks"`);
+    expect(t).toContain(`href="/orgs/${db.ORG_ID}/issues?past_sla=true"`);
   });
 
   it("issue that doesn't exist shows the generic 404", async () => {

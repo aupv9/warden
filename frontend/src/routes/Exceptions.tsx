@@ -5,12 +5,13 @@ import { useDecideException, useExceptions } from "../api/hooks/exceptions";
 import { useOrgSummary } from "../api/hooks/orgs";
 import { flattenPages } from "../api/paging";
 import type { ExceptionRequest, ExceptionTab } from "../api/types";
-import { Pill, SeverityBadge } from "../components/Badges";
+import { Pill, SeverityMark } from "../components/Badges";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { focusFirstInvalid, TextArea, TextField } from "../components/Field";
 import { CheckIcon } from "../components/Icons";
-import { LoadMore, Table } from "../components/Table";
+import { LoadMore } from "../components/Table";
+import { PageHeader, Segmented } from "../components/PageHeader";
 import { ActionError, EmptyState, ErrorState, SkeletonRows } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import {
@@ -68,30 +69,26 @@ export function ExceptionsPage() {
     );
 
   return (
-    <>
-      <header className="page-head">
-        <div className="titles">
-          <h1>Exceptions</h1>
-          <p className="muted">
+    <div className="page">
+      <PageHeader title="Exceptions">
+        <Segmented label="Exception status" as="tablist">
+          {TABS.map((t) => (
+            <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} onClick={() => go({ tab: t.id })}>
+              {t.label}
+              {t.id === "pending" && isLead && (summary.data?.exceptions_pending ?? 0) > 0 && (
+                <span className="seg-count num">{summary.data?.exceptions_pending}</span>
+              )}
+            </button>
+          ))}
+        </Segmented>
+      </PageHeader>
+
+      <div className="review-split" role="tabpanel" aria-label={TABS.find((t) => t.id === tab)?.label}>
+        <section className="review-queue" aria-label="Requests">
+          <p className="queue-intro">
             Requests to close an issue as a false positive or an accepted risk. Only a security lead can decide.
             {!isLead && " You see the requests you made."}
           </p>
-        </div>
-      </header>
-
-      <div className="tabs" role="tablist" aria-label="Exception status">
-        {TABS.map((t) => (
-          <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} onClick={() => go({ tab: t.id })}>
-            {t.label}
-            {t.id === "pending" && isLead && (summary.data?.exceptions_pending ?? 0) > 0 && (
-              <span className="pill">{summary.data?.exceptions_pending}</span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      <div className="layout-review" role="tabpanel">
-        <Card flush aria-label="Requests">
           {list.isPending ? (
             <SkeletonRows label="exception requests" />
           ) : list.isError ? (
@@ -100,61 +97,49 @@ export function ExceptionsPage() {
             <EmptyTab tab={tab} isLead={isLead} />
           ) : (
             <>
-              <Table
-                caption="Exception requests"
-                head={
-                  <tr>
-                    <th>Issue</th>
-                    <th>Type</th>
-                    <th>Requested by</th>
-                    <th>Until</th>
-                    <th>{tab === "pending" ? "Waiting" : "Decided"}</th>
-                  </tr>
-                }
-              >
-                {items.map((e) => (
-                  <tr key={e.id} className={e.id === selected?.id ? "selected" : undefined}>
-                    <td style={{ minWidth: 200 }}>
-                      <button type="button" className="row-button" onClick={() => go({ id: e.id })} aria-pressed={e.id === selected?.id}>
-                        <span className="mono muted" style={{ fontWeight: 500 }}>
-                          {e.issue.key}
-                        </span>{" "}
-                        {e.issue.title}
+              <ul className="queue-list">
+                {items.map((e) => {
+                  const on = e.id === selected?.id;
+                  return (
+                    <li key={e.id} className={on ? "queue-row is-open" : "queue-row"}>
+                      <button type="button" className="queue-item" onClick={() => go({ id: e.id })} aria-current={on ? "true" : undefined}>
+                        <span className="q-line">
+                          <span className="key">{e.issue.key}</span>
+                          <SeverityMark severity={e.issue.severity} />
+                          <Pill>{EXCEPTION_TYPE_LABELS[e.type]}</Pill>
+                          <span className="q-due muted">
+                            {tab === "pending" ? `waiting ${age(e.created_at)}` : `decided ${relativeTime(e.decided_at)}`}
+                          </span>
+                        </span>
+                        <span className="q-title">{e.issue.title}</span>
+                        <span className="q-meta">
+                          <span>Requested by {userName(e.requested_by)}</span>
+                          {e.expires_at && (
+                            <span>
+                              until {formatDate(e.expires_at)} ({daysUntil(e.expires_at)} days)
+                            </span>
+                          )}
+                        </span>
                       </button>
-                      <div style={{ marginTop: 4 }}>
-                        <SeverityBadge severity={e.issue.severity} />
-                      </div>
-                    </td>
-                    <td data-label="Type">
-                      <Pill>{EXCEPTION_TYPE_LABELS[e.type]}</Pill>
-                    </td>
-                    <td data-label="Requested by" className="nowrap">
-                      {userName(e.requested_by)}
-                    </td>
-                    <td data-label="Until">
-                      {e.expires_at ? (
-                        <>
-                          {formatDate(e.expires_at)} <span className="muted">({daysUntil(e.expires_at)} days)</span>
-                        </>
-                      ) : (
-                        <span className="muted">–</span>
-                      )}
-                    </td>
-                    <td data-label={tab === "pending" ? "Waiting" : "Decided"} className="nowrap">
-                      {tab === "pending" ? age(e.created_at) : relativeTime(e.decided_at)}
-                    </td>
-                  </tr>
-                ))}
-              </Table>
+                    </li>
+                  );
+                })}
+              </ul>
               {list.hasNextPage && (
                 <LoadMore hasNext loading={list.isFetchingNextPage} onLoad={() => void list.fetchNextPage()} shown={items.length} noun="requests" />
               )}
             </>
           )}
-        </Card>
-        {selected && <ReviewPanel key={selected.id} exc={selected} onDecided={() => go({ id: null })} />}
+        </section>
+        <div className="review-pane">
+          {selected ? (
+            <ReviewPanel key={selected.id} exc={selected} onDecided={() => go({ id: null })} />
+          ) : (
+            items.length > 0 && <p className="muted review-empty">Pick a request to review it.</p>
+          )}
+        </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -230,7 +215,7 @@ function ReviewPanel({ exc, onDecided }: { exc: ExceptionRequest; onDecided: () 
           void submit("approve", e.currentTarget);
         }}
       >
-        <p className="muted" style={{ fontSize: 13 }}>
+        <p className="muted">
           {EXCEPTION_TYPE_LABELS[exc.type]} · requested by {userName(exc.requested_by)}, {relativeTime(exc.created_at)} ·{" "}
           <Link to={`/orgs/${orgId}/issues/${exc.issue.id}`}>Open issue</Link>
         </p>
@@ -302,7 +287,7 @@ function ReviewPanel({ exc, onDecided }: { exc: ExceptionRequest; onDecided: () 
             )}
           </dl>
         )}
-        <p className="muted" style={{ fontSize: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+        <p className="faint small" style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
           You can't decide on a request you made yourself. Every decision is written to the audit log.
         </p>
       </form>
