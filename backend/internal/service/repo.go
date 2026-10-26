@@ -24,6 +24,9 @@ var (
 // as empty), which is what user-level lookups use.
 type DB interface {
 	InOrg(ctx context.Context, orgID uuid.UUID, fn func(Repo) error) error
+	// InUser runs fn with app.user_id set and app.org_id unset: only the
+	// caller's own rows of user-scoped tables (notifications) are visible.
+	InUser(ctx context.Context, userID uuid.UUID, fn func(Repo) error) error
 }
 
 // Visibility says which projects a caller can see: all of the org's projects
@@ -204,10 +207,12 @@ type Repo interface {
 	// DeleteOrgMember also removes the user's project memberships in the org.
 	DeleteOrgMember(ctx context.Context, orgID, userID uuid.UUID) error
 
-	Projects(ctx context.Context, v Visibility, now time.Time) ([]Project, error)
+	// Projects lists visible projects, archived ones only if includeArchived.
+	Projects(ctx context.Context, v Visibility, now time.Time, includeArchived bool) ([]Project, error)
+	// Project returns a visible project, archived or not.
 	Project(ctx context.Context, v Visibility, projectID uuid.UUID, now time.Time) (Project, error)
 	// ProjectRole returns the user's role in the project, "" if not a member, and
-	// ErrNotFound if the project doesn't exist (or is archived).
+	// ErrNotFound if the project doesn't exist. Archived projects stay readable.
 	ProjectRole(ctx context.Context, projectID, userID uuid.UUID) (rbac.Role, error)
 	InsertProject(ctx context.Context, p NewProject) error
 	ProjectMembers(ctx context.Context, projectID uuid.UUID) ([]ProjectMember, error)
@@ -249,6 +254,9 @@ type Repo interface {
 
 	AppendAudit(ctx context.Context, r AuditRecord) error
 	AuditEntries(ctx context.Context, q AuditQuery) ([]AuditEntry, error)
+
+	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
+	v02Repo
 }
 
 // ObjectStore is the slice of object storage the API needs: a presigned PUT for

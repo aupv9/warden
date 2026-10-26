@@ -13,6 +13,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/domain/issuestate"
 	"github.com/aupv9/warden/backend/internal/domain/rbac"
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/notify"
 )
 
 const (
@@ -94,6 +95,9 @@ func (s *Service) CreateException(ctx context.Context, a *Actor, issueID uuid.UU
 			return err
 		}
 		out = ex.ExceptionRequest
+		if err := outbox(ctx, r, a, notify.ExceptionRequested, notify.Payload{IssueID: notify.ID(iss.ID), ExceptionID: notify.ID(id)}); err != nil {
+			return err
+		}
 		return s.audit(ctx, r, a, "exception.requested", "exception", id.String(),
 			map[string]any{"issue_id": iss.ID.String(), "type": in.Type})
 	})
@@ -246,6 +250,10 @@ func (s *Service) Decide(ctx context.Context, a *Actor, id uuid.UUID, in Decisio
 			return err
 		}
 		out = res.ExceptionRequest
+		if err := outbox(ctx, r, a, notify.ExceptionDecided, notify.Payload{IssueID: notify.ID(ex.IssueID), ExceptionID: notify.ID(id),
+			UserID: notify.ID(ex.RequestedByID), Decision: in.Decision}); err != nil {
+			return err
+		}
 		data := map[string]any{"decision": in.Decision, "issue_id": ex.IssueID.String(), "type": ex.Type}
 		if d.ExpiresAt != nil {
 			data["expires_at"] = d.ExpiresAt.UTC().Format(time.RFC3339)

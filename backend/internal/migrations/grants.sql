@@ -9,5 +9,8 @@ DO $$ BEGIN
     REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM warden_app;
     REVOKE ALL ON goose_db_version FROM warden_app;
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON river_migration FROM warden_app;
+    -- The outbox and notifications are only ever appended and marked
+    -- (dispatched, read, emailed); the app never deletes them.
+    REVOKE DELETE, TRUNCATE ON outbox_event, notification FROM warden_app;
   END IF;
 END $$;

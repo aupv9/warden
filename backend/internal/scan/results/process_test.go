@@ -46,6 +46,7 @@ func newWorld() world {
 				{uuid.New(), fpOf(b), "opengrep", "fixed", "high", false, prev},
 				{uuid.New(), fpOf(c), "opengrep", "in_progress", "high", false, prev},
 			}},
+			{Prefix: "SELECT assign_rules FROM project", Rows: row([]byte(`[]`))},
 			{Prefix: "UPDATE project SET issue_seq = issue_seq + $2", Rows: row(8), Args: func(args []any) error {
 				if args[1] != 1 {
 					return fmt.Errorf("allocated %v numbers", args[1])
@@ -75,6 +76,7 @@ func newWorld() world {
 			{Prefix: "UPDATE issue SET last_seen_scan_id", Affected: 1},
 			{Prefix: "UPDATE issue SET status = $3, version = version + 1, updated_at = $4, due_at = $5", Affected: 1},
 			{Prefix: "INSERT INTO issue_event", Affected: 1, Args: eventType(EventStatusChanged)},
+			{Prefix: "INSERT INTO outbox_event", Affected: 1, Args: outboxType("issue.reopened")},
 			{Prefix: "INSERT INTO occurrence", Affected: 1},
 			// C
 			{Prefix: "UPDATE issue SET status = $3, version = version + 1, updated_at = $4 WHERE", Affected: 1},
@@ -86,7 +88,21 @@ func newWorld() world {
 				}
 				return nil
 			}},
+			{Prefix: "INSERT INTO outbox_event", Affected: 1, Args: outboxType("scan.finished")},
 		},
+	}
+}
+
+// outboxType checks an outbox event's type and that its payload holds ids only.
+func outboxType(want string) func([]any) error {
+	return func(args []any) error {
+		if args[1] != want {
+			return fmt.Errorf("outbox %v, want %s", args[1], want)
+		}
+		if p := string(args[2].([]byte)); strings.Contains(p, "AKIA") || strings.Contains(p, "title") {
+			return fmt.Errorf("payload %s", p)
+		}
+		return nil
 	}
 }
 
@@ -164,12 +180,12 @@ func TestProcessRejectsBadIssueRows(t *testing.T) {
 func TestTransitionLosesToConcurrentChange(t *testing.T) {
 	db := dbtest.New(t, dbtest.Step{Prefix: "UPDATE issue SET status", Affected: 0})
 	a := applier{db: db, in: Input{Now: time.Now()}}
-	if err := a.transition(context.Background(), ExistingIssue{ID: uuid.New(), Status: issuestate.Open}, issuestate.Fixed, nil, ""); err != nil {
-		t.Fatal(err)
+	if changed, err := a.transition(context.Background(), ExistingIssue{ID: uuid.New(), Status: issuestate.Open}, issuestate.Fixed, nil, ""); err != nil || changed {
+		t.Fatal(changed, err)
 	}
 	db.Done()
 	// The state machine is enforced before touching the database.
-	if err := a.transition(context.Background(), ExistingIssue{Status: issuestate.FalsePositive}, issuestate.Fixed, nil, ""); !errors.Is(err, issuestate.ErrInvalidTransition) {
+	if _, err := a.transition(context.Background(), ExistingIssue{Status: issuestate.FalsePositive}, issuestate.Fixed, nil, ""); !errors.Is(err, issuestate.ErrInvalidTransition) {
 		t.Fatal(err)
 	}
 }

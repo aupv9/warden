@@ -20,10 +20,16 @@ const (
 	maxDescriptionLen = 2000
 )
 
-func (s *Service) Projects(ctx context.Context, a *Actor) (Items[Project], error) {
+// Projects lists the projects the caller can see; archived ones only with
+// include_archived=true.
+func (s *Service) Projects(ctx context.Context, a *Actor, includeArchived string) (Items[Project], error) {
+	withArchived, err := parseBool("include_archived", includeArchived)
+	if err != nil {
+		return Items[Project]{}, err
+	}
 	out := Items[Project]{Items: []Project{}}
-	err := s.inOrg(ctx, a, func(r Repo) error {
-		p, err := r.Projects(ctx, a.vis(), s.now())
+	err = s.inOrg(ctx, a, func(r Repo) error {
+		p, err := r.Projects(ctx, a.vis(), s.now(), withArchived)
 		if err != nil {
 			return err
 		}
