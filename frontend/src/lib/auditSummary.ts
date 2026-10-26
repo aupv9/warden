@@ -29,7 +29,7 @@ export function shortId(id: string): string {
 
 export function auditTargetSummary(e: Pick<AuditEntry, "action" | "target_type" | "target_id" | "data">): string {
   const d: Data = e.data && typeof e.data === "object" && !Array.isArray(e.data) ? (e.data as Data) : {};
-  const fallback = `${e.target_type} ${shortId(e.target_id)}`;
+  const fallback = [e.target_type, e.target_id ? shortId(e.target_id) : null].filter(Boolean).join(" ") || "—";
   const issueKey = str(d, "issue_key", "key");
   const projectKey = str(d, "project_key");
   const who = str(d, "member_name", "user_name", "display_name", "email", "member_email", "user_email");
