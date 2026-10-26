@@ -107,8 +107,9 @@ jobs:
           test "$(docker image inspect -f '{{.Config.User}}' warden/api:ci)" = "65532:65532"
           docker run --rm --entrypoint /usr/local/bin/warden-migrate warden/api:ci && exit 1 || test $? -eq 2
 
-  # Warden scans itself with the production sandbox (gVisor). Critical findings
-  # block every run; on tags (via release.yml) any un-baselined High blocks the release.
+  # Warden scans itself with the production sandbox (gVisor). Any Critical or
+  # un-baselined High blocks every run, so a finding surfaces on its pull request
+  # instead of at release time (v0.1.0-alpha.1 was stopped at the tag by one).
   selfscan:
     runs-on: ubuntu-24.04
     needs: [lint, test]
@@ -135,8 +136,7 @@ jobs:
         run: ./scripts/sync-mirror.sh
       - name: Self-scan
         run: |
-          FAIL_ON=$([ "${GITHUB_REF_TYPE}" = tag ] && echo high || echo critical)
-          go -C backend run ./cmd/selfscan -root "$GITHUB_WORKSPACE" -runtime runsc -fail-on "$FAIL_ON"
+          go -C backend run ./cmd/selfscan -root "$GITHUB_WORKSPACE" -runtime runsc -fail-on high
       - name: Kernel OOM log (on failure)
         if: failure()
         run: sudo dmesg -T | grep -iE 'out of memory|oom|killed process' | tail -20 || echo "no OOM entries"

@@ -11,13 +11,14 @@ go under `[Unreleased]` in `CHANGELOG.md`.
   build tag `integration`; on Colima the Makefile sets DOCKER_HOST from the docker context
   and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock`)
 - `make lint` (gofmt, go vet incl. integration tag, staticcheck, tsc), `make vulncheck` (govulncheck)
-- `make selfscan` / `make selfscan-release` (needs `make mirror` once; needs `jq`)
+- `make selfscan` / `make selfscan-release` (needs `make mirror` once; needs `jq`). CI runs the
+  release gate (`-fail-on high`) on every PR and push: fix or baseline a High before merging.
 - Backend is a Go module in `backend/` (module `github.com/aupv9/warden/backend`, Go 1.27.3 set by the
   `go` line: setup-go in CI reads that line, not `toolchain`). staticcheck/govulncheck are pinned as `tool` deps: `go -C backend tool ...`.
 - Built on github.com/aupv9/common-go (config, logger, observability, health, httpserver, response,
   errors). Don't use its `auth` JWKS verifier, `database.Module` or `foundation.Core`: Warden's
   own replacements are stricter (see comments in `internal/auth`, `internal/db`, `internal/app`).
-- Release: push a tag `vX.Y.Z[-pre]` on main; `.github/workflows/release.yml` reruns ci.yml (High gate),
+- Release: push a tag `vX.Y.Z[-pre]` on main; `.github/workflows/release.yml` reruns ci.yml,
   then publishes binaries, SBOMs, checksums and `ghcr.io/aupv9/warden`, all with provenance attestations.
   Version is stamped via `-X github.com/aupv9/common-go/health.Version` (Makefile, Dockerfile, release.yml).
 - Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`).
