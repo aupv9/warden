@@ -1,4 +1,5 @@
 import { accessToken, refreshAccessToken } from "../auth/oidc";
+import { reportMfaRequired } from "../lib/mfa";
 
 // Every API response is common-go's envelope: { data, error, meta }.
 export interface ApiErrorBody {
@@ -127,6 +128,8 @@ export async function api<T>(path: string, opts: ApiOptions = {}, deps: ApiDeps 
     // Not JSON (e.g. a proxy error page). Never surface its body: treat it as a bare HTTP error.
   }
   if (!res.ok || !env || env.error) {
+    // The org's MFA rule: the org layout swaps in its full-page explanation (lib/mfa.ts).
+    if (env?.error?.code === "MFA_REQUIRED") reportMfaRequired(path);
     throw new ApiError(
       res.status,
       env?.error ?? { code: HTTP_ERROR, message: res.statusText || `HTTP ${res.status}` },

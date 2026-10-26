@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { fieldErrors, leftoverFieldErrors } from "../api/errors";
 import { useOrgSummary } from "../api/hooks/orgs";
 import { useCreateProject, useProjects } from "../api/hooks/projects";
@@ -24,7 +24,10 @@ import { usePageTitle } from "../lib/usePageTitle";
 export function ProjectsPage() {
   usePageTitle("Projects");
   const { orgId, org } = useOrgCtx();
-  const projects = useProjects(orgId);
+  const [params, setParams] = useSearchParams();
+  // v0.2: archived projects are left out unless asked for (?archived=1).
+  const showArchived = params.get("archived") === "1";
+  const projects = useProjects(orgId, showArchived);
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const canCreate = can("create_archive_project", org.role);
@@ -44,6 +47,15 @@ export function ProjectsPage() {
               <SearchIcon />
               <span className="visually-hidden">Search projects</span>
               <input type="search" placeholder="Search projects" value={search} onChange={(e) => setSearch(e.target.value)} />
+            </label>
+            <label className="check-inline">
+              <input
+                type="checkbox"
+                className="check"
+                checked={showArchived}
+                onChange={(e) => setParams(e.target.checked ? { archived: "1" } : {}, { replace: true })}
+              />
+              Show archived
             </label>
             {canCreate && (
               <Button variant="primary" onClick={() => setCreating(true)}>
@@ -139,12 +151,12 @@ function ProjectCard({ project: p }: { project: Project }) {
         </Link>
       </h2>
       <span className="mono faint pc-key">{p.key}</span>
-      {p.my_role && <Pill>{PROJECT_ROLE_LABELS[p.my_role]}</Pill>}
+      {p.archived_at ? <Pill>Archived</Pill> : p.my_role && <Pill>{PROJECT_ROLE_LABELS[p.my_role]}</Pill>}
     </div>
   );
 
   if (!p.last_scan) {
-    const canScan = can("run_scan", org.role, p.my_role);
+    const canScan = can("run_scan", org.role, p.my_role) && !p.archived_at;
     return (
       <article className="project-card dashed">
         {head}

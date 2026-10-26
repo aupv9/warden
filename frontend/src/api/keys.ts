@@ -23,4 +23,17 @@ export const qk = {
   exceptionLists: (orgId: string) => ["org", orgId, "exceptions"] as const,
   exceptions: (orgId: string, tab: string) => ["org", orgId, "exceptions", tab] as const,
   auditLog: (orgId: string, query: QueryParams) => ["org", orgId, "audit", query] as const,
+  // v0.2
+  projectList: (orgId: string, includeArchived: boolean) => ["org", orgId, "projects", { include_archived: includeArchived }] as const,
+  tokens: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId, "tokens"] as const,
+  assignRules: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId, "assign-rules"] as const,
+  metricsAll: (orgId: string) => ["org", orgId, "metrics"] as const,
+  metrics: (orgId: string, query: QueryParams) => ["org", orgId, "metrics", query] as const,
+  // Under the issue-list prefix, so every issue change refreshes the saved-view counts too.
+  issueCounts: (orgId: string, projectId: string | undefined) => ["org", orgId, "issues", "counts", projectId ?? null] as const,
+  // Notifications belong to the user, not to an org.
+  notificationsAll: ["notifications"] as const,
+  unreadCount: ["notifications", "unread-count"] as const,
+  notifications: (unreadOnly: boolean) => ["notifications", "list", { unread: unreadOnly }] as const,
+  notificationPrefs: ["notification-prefs"] as const,
 };
