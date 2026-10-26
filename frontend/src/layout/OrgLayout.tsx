@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { createContext, Suspense, useContext, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useParams } from "react-router";
 import { isMockMode } from "../api/client";
@@ -10,16 +10,20 @@ import { signOut } from "../auth/oidc";
 import { Avatar, ProjectDot } from "../components/Avatar";
 import { Count } from "../components/Badges";
 import { CommandPalette } from "../components/CommandPalette";
+import { NotificationsBell } from "../components/NotificationsBell";
 import {
   AuditIcon,
+  BellIcon,
   CheckIcon,
   CloseIcon,
   ExceptionsIcon,
   IssuesIcon,
   MembersIcon,
   MenuIcon,
+  OverviewIcon,
   ProjectsIcon,
   SearchIcon,
+  SettingsIcon,
   ShieldIcon,
   SignOutIcon,
   UpDownIcon,
@@ -27,7 +31,9 @@ import {
 import { Kbd } from "../components/PageHeader";
 import { Popover } from "../components/Popover";
 import { ThemeSwitch } from "../components/ThemeSwitch";
-import { NotFoundState } from "../components/States";
+import { NotFoundState, RouteFallback } from "../components/States";
+import { useMfaBlocked } from "../lib/mfa";
+import { MfaRequired } from "./MfaRequired";
 import { can, ORG_ROLE_LABELS } from "../lib/permissions";
 import { useShortcuts } from "../lib/shortcuts";
 import { SPLIT_QUERY } from "../lib/useMediaQuery";
@@ -54,16 +60,27 @@ export function OrgLayout() {
   const { orgId = "" } = useParams();
   const me = useCurrentUser();
   const org = me.orgs.find((o) => o.id === orgId);
+  const mfaBlocked = useMfaBlocked(me, orgId);
 
   useEffect(() => {
     if (org) rememberOrg(org.id);
   }, [org]);
 
   if (!org) return <NotFoundPage />;
+  if (mfaBlocked) {
+    // No org data at all behind this state: the nav, the palette and the page stay unmounted.
+    return (
+      <Shell me={me} org={org} blocked>
+        <MfaRequired me={me} org={org} />
+      </Shell>
+    );
+  }
   return (
     <OrgContext value={{ orgId, org, me }}>
       <Shell me={me} org={org}>
-        <Outlet />
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
       </Shell>
     </OrgContext>
   );
@@ -99,7 +116,20 @@ function isSplitMove(from: string, to: string): boolean {
   return ISSUES_PATH.test(from) && ISSUES_PATH.test(to) && window.matchMedia(SPLIT_QUERY).matches;
 }
 
-export function Shell({ me, org, minimal, children }: { me: Me; org?: MeOrg; minimal?: boolean; children: ReactNode }) {
+export function Shell({
+  me,
+  org,
+  minimal,
+  blocked,
+  children,
+}: {
+  me: Me;
+  org?: MeOrg;
+  minimal?: boolean;
+  /** The org's MFA rule blocks this session: no org navigation or search. */
+  blocked?: boolean;
+  children: ReactNode;
+}) {
   const mainRef = useRef<HTMLElement>(null);
   const { pathname } = useLocation();
   const prevPath = useRef(pathname);
@@ -121,7 +151,7 @@ export function Shell({ me, org, minimal, children }: { me: Me; org?: MeOrg; min
 
   useShortcuts({
     palette: () => {
-      if (!org) return false;
+      if (!org || blocked) return false;
       setPaletteOpen(true);
     },
   });
@@ -154,20 +184,21 @@ export function Shell({ me, org, minimal, children }: { me: Me; org?: MeOrg; min
           Warden
         </NavLink>
         <span className="org">{org ? `· ${org.name}` : ""}</span>
+        {!minimal && <NotificationsBell me={me} orgId={org?.id} />}
         <span className="topbar-avatar" title={displayName}>
           <Avatar name={displayName} size={28} />
         </span>
       </header>
-      <Sidebar me={me} org={org} minimal={minimal} onOpenPalette={openPalette} />
+      <Sidebar me={me} org={org} minimal={minimal} blocked={blocked} onOpenPalette={openPalette} />
       {!minimal && (
         <Drawer id={drawerId} open={menuOpen} onClose={() => setMenuOpen(false)}>
-          <Sidebar me={me} org={org} onClose={() => setMenuOpen(false)} onOpenPalette={openPalette} />
+          <Sidebar me={me} org={org} blocked={blocked} onClose={() => setMenuOpen(false)} onOpenPalette={openPalette} />
         </Drawer>
       )}
       <main id="main" className="main" ref={mainRef} tabIndex={-1}>
         {children}
       </main>
-      {org && <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />}
+      {org && !blocked && <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />}
     </div>
   );
 }
@@ -205,56 +236,101 @@ function Sidebar({
   me,
   org,
   minimal,
+  blocked,
   onClose,
   onOpenPalette,
 }: {
   me: Me;
   org?: MeOrg;
   minimal?: boolean;
+  blocked?: boolean;
   onClose?: () => void;
   onOpenPalette: () => void;
 }) {
-  const displayName = me.name?.trim() || me.email;
+  const showOrg = org && !blocked;
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
         <OrgSwitcher me={me} org={org} minimal={minimal} />
+        {!minimal && !onClose && <NotificationsBell me={me} orgId={org?.id} />}
         {onClose && (
           <button type="button" className="icon-btn" aria-label="Close menu" onClick={onClose}>
             <CloseIcon size={18} />
           </button>
         )}
       </div>
-      {org && (
+      {showOrg && (
         <button type="button" className="jump-btn" onClick={onOpenPalette}>
           <SearchIcon />
           <span>Search or jump to…</span>
           <Kbd>⌘K</Kbd>
         </button>
       )}
-      {org && <OrgNav org={org} />}
+      {showOrg && <OrgNav org={org} />}
       <div className="theme-row">
         <span>Theme</span>
         <ThemeSwitch />
       </div>
-      {!minimal && (
-        <div className="user-box">
-          <Avatar name={displayName} size={24} />
-          <div className="who">
-            <strong title={displayName}>{displayName}</strong>
-            <span>
-              {org ? ORG_ROLE_LABELS[org.role] : "No organization"}
-              {me.mfa ? " · MFA" : ""}
-            </span>
-          </div>
-          {!isMockMode && (
-            <button type="button" className="icon-btn" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}>
-              <SignOutIcon />
-            </button>
-          )}
-        </div>
-      )}
+      {!minimal && <UserMenu me={me} org={org} blocked={blocked} onNavigate={onClose} />}
     </aside>
+  );
+}
+
+/** The user at the bottom of the sidebar; opens a menu with the preferences and sign-out. */
+function UserMenu({ me, org, blocked, onNavigate }: { me: Me; org?: MeOrg; blocked?: boolean; onNavigate?: () => void }) {
+  const displayName = me.name?.trim() || me.email;
+  const roleText = org ? ORG_ROLE_LABELS[org.role] : "No organization";
+  return (
+    <div className="user-box">
+      <Popover
+        up
+        buttonClassName="user-btn"
+        buttonLabel={`${displayName}, ${roleText}. Account menu`}
+        panelLabel="Account"
+        button={
+          <>
+            <Avatar name={displayName} size={24} />
+            <span className="who">
+              <strong>{displayName}</strong>
+              <span>
+                {roleText}
+                {me.mfa ? " · MFA" : ""}
+              </span>
+            </span>
+            <UpDownIcon />
+          </>
+        }
+      >
+        {(close) => (
+          <ul className="menu-list" aria-label="Account">
+            <li className="menu-title">{me.email}</li>
+            {org && !blocked && (
+              <li>
+                <NavLink
+                  to={`/orgs/${org.id}/preferences`}
+                  className="menu-item"
+                  onClick={() => {
+                    close(false);
+                    onNavigate?.();
+                  }}
+                >
+                  <BellIcon size={14} />
+                  <span className="grow">Notification preferences</span>
+                </NavLink>
+              </li>
+            )}
+            {!isMockMode && (
+              <li>
+                <button type="button" className="menu-item" onClick={() => void signOut()}>
+                  <SignOutIcon size={14} />
+                  <span className="grow">Sign out</span>
+                </button>
+              </li>
+            )}
+          </ul>
+        )}
+      </Popover>
+    </div>
   );
 }
 
@@ -309,6 +385,11 @@ function OrgNav({ org }: { org: MeOrg }) {
   const list = projects.data ?? [];
   return (
     <nav className="nav" aria-label="Main">
+      {/* view_dashboard is granted to every role; the metrics cover the projects the caller can see. */}
+      <NavLink to={`${base}/overview`}>
+        <OverviewIcon />
+        <span className="grow">Overview</span>
+      </NavLink>
       <NavLink to={`${base}/projects`} end>
         <ProjectsIcon />
         <span className="grow">All projects</span>
@@ -353,6 +434,10 @@ function OrgNav({ org }: { org: MeOrg }) {
           <span className="grow">Audit log</span>
         </NavLink>
       )}
+      <NavLink to={`${base}/settings`}>
+        <SettingsIcon />
+        <span className="grow">Settings</span>
+      </NavLink>
     </nav>
   );
 }

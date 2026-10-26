@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
@@ -170,9 +171,16 @@ func skipUnfinishedTools(ctx context.Context, db DB, org, scanID uuid.UUID, tool
 func (e *Env) finishFailed(ctx context.Context, org, scanID uuid.UUID, tools []string, code string) error {
 	return e.Tx(ctx, org, func(db DB) error {
 		// A scan cancelled meanwhile stays cancelled.
-		if _, err := db.Exec(ctx, `UPDATE scan SET status = 'failed', error_code = $2, finished_at = now()
-			WHERE id = $1 AND status IN ('queued', 'running')`, scanID, code); err != nil {
+		tag, err := db.Exec(ctx, `UPDATE scan SET status = 'failed', error_code = $2, finished_at = now()
+			WHERE id = $1 AND status IN ('queued', 'running')`, scanID, code)
+		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() > 0 {
+			if err := notify.Insert(ctx, db, notify.Event{OrgID: org, Type: notify.ScanFinished,
+				Payload: notify.Payload{ScanID: notify.ID(scanID)}}); err != nil {
+				return err
+			}
 		}
 		return skipUnfinishedTools(ctx, db, org, scanID, tools, e.Images)
 	})

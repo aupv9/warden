@@ -54,6 +54,9 @@ type Me struct {
 	MFA    bool      `json:"mfa"`
 	Orgs   []OrgRef  `json:"orgs"`
 	Limits Limits    `json:"limits"`
+	// MFARequiredOrgs are the orgs this sign-in can't use because the caller's
+	// role there requires a second factor and the token has none.
+	MFARequiredOrgs []uuid.UUID `json:"mfa_required_orgs"`
 }
 
 // Limits are server settings the UI shows (and checks before uploading).
@@ -151,6 +154,7 @@ type Project struct {
 	OpenBySeverity SeverityCounts `json:"open_by_severity"`
 	PastSLA        int            `json:"past_sla"`
 	LastScan       *LastScan      `json:"last_scan"`
+	ArchivedAt     *Time          `json:"archived_at"`
 	CreatedAt      Time           `json:"created_at"`
 }
 
@@ -189,6 +193,7 @@ type Scan struct {
 	QueuedAt   *Time      `json:"queued_at"`
 	StartedAt  *Time      `json:"started_at"`
 	FinishedAt *Time      `json:"finished_at"`
+	ViaToken   *TokenRef  `json:"via_token"`
 	ToolRuns   *[]ToolRun `json:"tool_runs,omitempty"`
 
 	OrgID     uuid.UUID `json:"-"`

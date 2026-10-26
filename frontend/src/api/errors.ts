@@ -19,6 +19,10 @@ export const MESSAGES: Record<string, string> = {
   USER_NOT_FOUND: "No one with this email has signed in to Warden yet. Ask them to sign in once, then add them here.",
   UPLOAD_MISMATCH: "The upload didn't arrive complete. Upload the file again.",
   RATE_LIMITED: "Too many requests in a short time. Wait a minute, then try again.",
+  // v0.2
+  MFA_REQUIRED: "Your role requires two-factor sign-in. Sign out, then sign in again with your second factor.",
+  TOKEN_SCOPE: "This API token isn't allowed to do that.",
+  PROJECT_ARCHIVED: "This project is archived, so it doesn't take new scans. Unarchive it first.",
   [NETWORK_ERROR]: "Warden didn't answer. Check your connection and try again.",
   // Client-side codes from the upload (lib/upload.ts).
   UPLOAD_FAILED: "The connection dropped. Your file is fine; try again.",
@@ -81,8 +85,14 @@ export function isNotFound(err: unknown): boolean {
   return err instanceof ApiError && (err.status === 404 || err.code === "NOT_FOUND") && err.code !== "USER_NOT_FOUND";
 }
 
+/** v0.2: the org's MFA rule blocks this session. The org layout shows a full-page state for it
+ *  (lib/mfa.ts), so it is neither a 403 page nor a toast. */
+export function isMfaRequired(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "MFA_REQUIRED";
+}
+
 export function isForbidden(err: unknown): boolean {
-  return err instanceof ApiError && (err.status === 403 || err.code === "FORBIDDEN");
+  return err instanceof ApiError && (err.status === 403 || err.code === "FORBIDDEN") && !isMfaRequired(err);
 }
 
 export function isUnauthorized(err: unknown): boolean {
@@ -93,5 +103,6 @@ export function isUnauthorized(err: unknown): boolean {
  *  where the problem is (field, dialog banner, issue banner, upload card). */
 export function isToastedActionError(err: unknown): boolean {
   if (!(err instanceof ApiError)) return true;
+  if (isMfaRequired(err)) return false;
   return isForbidden(err) || isNotFound(err) || err.code === "RATE_LIMITED" || isServerError(err);
 }

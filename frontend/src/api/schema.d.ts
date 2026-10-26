@@ -21,6 +21,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Your notifications, newest first
+         * @description Across every org you are still a member of.
+         */
+        get: operations["listNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications/unread-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Unread notifications */
+        get: operations["countUnreadNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark notifications read */
+        post: operations["markNotificationsRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notification-prefs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Email preferences (every type, defaults filled)
+         * @description Email defaults to on for every type except scan.finished.
+         */
+        get: operations["getNotificationPrefs"];
+        /** Change email preferences */
+        put: operations["setNotificationPrefs"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orgs/{org_id}": {
         parameters: {
             query?: never;
@@ -38,7 +113,11 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Change SLA policy (configure_policy)
+         * @description Applies to issues created afterwards; recompute_open also re-dates active issues. Audited as org.policy_changed.
+         */
+        patch: operations["setOrgPolicy"];
         trace?: never;
     };
     "/orgs/{org_id}/summary": {
@@ -56,6 +135,29 @@ export interface paths {
          * @description exceptions_pending is 0 unless the caller can decide exceptions (security_lead).
          */
         get: operations["getOrgSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Dashboard metrics (view_dashboard)
+         * @description Over projects the caller can see (non-archived, unless project_id names one). Cached for 5 minutes.
+         */
+        get: operations["getMetrics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -148,6 +250,79 @@ export interface paths {
         /** Project */
         get: operations["getProject"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive (create_archive_project): no new scans, hidden from the list
+         * @description Idempotent. Audited as project.archived.
+         */
+        post: operations["archiveProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unarchive (create_archive_project)
+         * @description Idempotent. Audited as project.unarchived.
+         */
+        post: operations["unarchiveProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/assign-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        /** Auto-assign rules */
+        get: operations["getAssignRules"];
+        /**
+         * Replace auto-assign rules (manage_project_members)
+         * @description Ordered; the first matching rule assigns each NEW issue. Assignees must be project members (422).
+         */
+        put: operations["setAssignRules"];
         post?: never;
         delete?: never;
         options?: never;
@@ -308,6 +483,26 @@ export interface paths {
          * @description counts_by_severity counts the result set ignoring the severity filter.
          */
         get: operations["listIssues"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/issues/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /** Counts for saved views */
+        get: operations["countIssues"];
         put?: never;
         post?: never;
         delete?: never;
@@ -515,6 +710,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/projects/{project_id}/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * API tokens of a project (manage_project_members)
+         * @description Newest first; revoked and expired tokens included. Secrets are never returned.
+         */
+        get: operations["listTokens"];
+        put?: never;
+        /**
+         * Create an API token (manage_project_members and run_scan)
+         * @description The response carries the full token in secret: the only time it is returned. Audited as token.created (name, prefix, scopes; never the secret).
+         */
+        post: operations["createToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/tokens/{token_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an API token (manage_project_members)
+         * @description Sets revoked_at; idempotent. Audited as token.revoked.
+         */
+        delete: operations["revokeToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/scans/{scan_id}/gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        /** CI gate verdict for a scan (view_results; API tokens: scan:write) */
+        get: operations["getScanGate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -567,6 +836,8 @@ export interface components {
                 role: components["schemas"]["OrgRole"];
             }[];
             limits: components["schemas"]["Limits"];
+            /** @description Orgs this sign-in can't use: the caller's role there requires a second factor (oidc.require_mfa_roles) and the access token has none. Calls under those orgs return 403 MFA_REQUIRED. */
+            mfa_required_orgs: string[];
         };
         Org: {
             /** Format: uuid */
@@ -623,6 +894,8 @@ export interface components {
                 finished_at: string | null;
             } | null;
             /** Format: date-time */
+            archived_at: string | null;
+            /** Format: date-time */
             created_at: string;
         };
         ProjectMember: {
@@ -663,6 +936,8 @@ export interface components {
             /** Format: date-time */
             finished_at: string | null;
             tool_runs?: components["schemas"]["ToolRun"][];
+            /** @description The API token that created the scan, if any (created_by is the token's creator). */
+            via_token: components["schemas"]["TokenRef"] | null;
         };
         Upload: {
             /** @enum {string} */
@@ -810,9 +1085,84 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        Notification: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            org_id: string;
+            /** @enum {string} */
+            type: "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "scan.finished" | "sla.due_soon" | "sla.overdue";
+            /** @description Server-built text, e.g. "WEB-41 assigned to you". */
+            title: string;
+            /** @description App path, e.g. /orgs/{org_id}/issues/{issue_id}. */
+            link: string;
+            actor: components["schemas"]["UserRef"] | null;
+            /** Format: date-time */
+            read_at: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        NotificationPref: {
+            /** @enum {string} */
+            type: "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "scan.finished" | "sla.due_soon" | "sla.overdue";
+            email: boolean;
+        };
+        AssignRule: {
+            /** @description At least one matcher. All given matchers must match. */
+            match: {
+                /** @description Doublestar glob: * and ? within a segment, ** across segments. */
+                path_glob?: string;
+                tool?: components["schemas"]["Tool"];
+                severity_at_least?: components["schemas"]["Severity"];
+            };
+            /** Format: uuid */
+            assignee_id: string;
+        };
+        Metrics: {
+            /** @enum {integer} */
+            days: 30 | 90 | 180;
+            /** @description End-of-day active issues (UTC days). */
+            open_by_day: {
+                /** Format: date */
+                date: string;
+                critical: number;
+                high: number;
+                medium: number;
+                low: number;
+            }[];
+            /** @description Mean hours from creation to first fixed/verified, for issues first fixed in the window. */
+            mttr_hours: {
+                critical: number | null;
+                high: number | null;
+                medium: number | null;
+                low: number | null;
+            };
+            sla: {
+                fixed_in_time: number;
+                fixed_late: number;
+                open_overdue: number;
+            };
+            new_by_day: {
+                /** Format: date */
+                date: string;
+                count: number;
+            }[];
+            fixed_by_day: {
+                /** Format: date */
+                date: string;
+                count: number;
+            }[];
+        };
+        IssueCounts: {
+            active: number;
+            mine: number;
+            past_sla: number;
+            /** @description Active Gitleaks issues. */
+            secrets: number;
+        };
         Error: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL";
             message: string;
             /** @description VALIDATION_FAILED: {fields: {field: message}}. RATE_LIMITED: {retry_after: seconds}. */
             metadata?: {
@@ -895,6 +1245,82 @@ export interface components {
              */
             expires_at?: string;
         };
+        /** @description Either ids or all. */
+        MarkReadRequest: {
+            ids?: string[];
+            /** @constant */
+            all?: true;
+        } & (unknown | unknown);
+        NotificationPrefsRequest: {
+            items: components["schemas"]["NotificationPref"][];
+        };
+        OrgPolicyRequest: {
+            sla_days: {
+                critical: number;
+                high: number;
+                medium: number;
+                low: number;
+            };
+            /** @description Reset due_at of active issues from their created_at. */
+            recompute_open?: boolean;
+        };
+        AssignRulesRequest: {
+            items: components["schemas"]["AssignRule"][];
+        };
+        /**
+         * @description scan:write: create, start, cancel and read scans and read the gate in the token's project. issues:read: list and read issues in the token's project.
+         * @enum {string}
+         */
+        TokenScope: "scan:write" | "issues:read";
+        ApiToken: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @description Shown in lists; not secret. */
+            prefix: string;
+            scopes: components["schemas"]["TokenScope"][];
+            created_by: components["schemas"]["UserRef"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /**
+             * Format: date-time
+             * @description Updated at most once a minute.
+             */
+            last_used_at: string | null;
+            /** Format: date-time */
+            revoked_at: string | null;
+        };
+        CreatedToken: {
+            token: components["schemas"]["ApiToken"];
+            /** @description The full token. Returned only here, once; Warden stores only a hash of it. */
+            secret: string;
+        };
+        CreateTokenRequest: {
+            name: string;
+            scopes: components["schemas"]["TokenScope"][];
+            expires_in_days: number;
+        };
+        TokenRef: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            prefix: string;
+        };
+        /** @description counts: active issues (open, assigned, in_progress, reopened) seen in this scan. false_positive and risk_accepted issues never block. */
+        Gate: {
+            /** Format: uuid */
+            scan_id: string;
+            status: components["schemas"]["ScanStatus"];
+            finished: boolean;
+            fail_on: components["schemas"]["Severity"];
+            /** @description False until the scan has finished, and always for failed or cancelled scans. */
+            pass: boolean;
+            counts: components["schemas"]["SeverityCounts"];
+            /** @description Active issues seen in this scan at or above fail_on, most severe first (at most 100). */
+            blocking: components["schemas"]["IssueSummary"][];
+        };
     };
     responses: never;
     parameters: never;
@@ -937,6 +1363,305 @@ export interface operations {
             };
             /** @description Forbidden (inactive account, or missing permission). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listNotifications: {
+        parameters: {
+            query?: {
+                /** @description Only unread ones. */
+                unread?: boolean;
+                limit?: number;
+                /** @description Opaque, from next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["Notification"][];
+                            next_cursor: string | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    countUnreadNotifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            count: number;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    markNotificationsRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getNotificationPrefs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["NotificationPref"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setNotificationPrefs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationPrefsRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["NotificationPref"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1018,6 +1743,82 @@ export interface operations {
             };
         };
     };
+    setOrgPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Org"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     getOrgSummary: {
         parameters: {
             query?: never;
@@ -1063,6 +1864,81 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getMetrics: {
+        parameters: {
+            query?: {
+                days?: 30 | 90 | 180;
+                project_id?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Metrics"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1386,7 +2262,9 @@ export interface operations {
     };
     listProjects: {
         parameters: {
-            query?: never;
+            query?: {
+                include_archived?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Non-members get 404. */
@@ -1431,6 +2309,15 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1580,6 +2467,279 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    archiveProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Project"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    unarchiveProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Project"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getAssignRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["AssignRule"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setAssignRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignRulesRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["AssignRule"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1938,6 +3098,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            /** @description Conflict (PROJECT_ARCHIVED: the project is archived). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             /** @description Validation failed or invalid transition. */
             422: {
                 headers: {
@@ -2086,7 +3255,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Conflict. */
+            /** @description Conflict. PROJECT_ARCHIVED: the project is archived. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2228,6 +3397,80 @@ export interface operations {
                             next_cursor: string | null;
                             counts_by_severity: components["schemas"]["SeverityCounts"];
                         };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    countIssues: {
+        parameters: {
+            query?: {
+                project_id?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["IssueCounts"];
                         error: null;
                         meta?: components["schemas"]["Meta"];
                     };
@@ -3004,6 +4247,283 @@ export interface operations {
                             items: components["schemas"]["AuditEntry"][];
                             next_cursor: string | null;
                         };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ApiToken"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_project_members (or, to create, run_scan: a token acts as its creator). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CreatedToken"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_project_members (or, to create, run_scan: a token acts as its creator). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    revokeToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_project_members (or, to create, run_scan: a token acts as its creator). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getScanGate: {
+        parameters: {
+            query?: {
+                fail_on?: "critical" | "high" | "medium" | "low";
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Gate"];
                         error: null;
                         meta?: components["schemas"]["Meta"];
                     };

@@ -1,4 +1,4 @@
-// API types, mirroring the v0.1 API contract field for field (snake_case, as on the wire).
+// API types, mirroring the v0.1 and v0.2 API contracts field for field (snake_case, as on the wire).
 // Every screen imports from this one module so it can later be replaced by types generated
 // from the backend's openapi.json (`npm run gen:api` writes src/api/schema.d.ts).
 
@@ -70,6 +70,8 @@ export interface Me {
   mfa: boolean;
   orgs: MeOrg[];
   limits: Limits;
+  /** v0.2: orgs where the caller's role requires two-factor sign-in and this session has none. */
+  mfa_required_orgs: UUID[];
 }
 
 // ---- Orgs ----
@@ -77,7 +79,7 @@ export interface Me {
 export interface Org {
   id: UUID;
   name: string;
-  sla_days: { critical: number; high: number; medium: number; low: number };
+  sla_days: SlaDays;
   my_role: OrgRole;
 }
 
@@ -113,6 +115,8 @@ export interface Project {
   past_sla: number;
   last_scan: { id: UUID; status: ScanStatus; created_at: Timestamp; finished_at: Timestamp | null } | null;
   created_at: Timestamp;
+  /** v0.2: archived projects take no new scans; their issues stay readable. */
+  archived_at: Timestamp | null;
 }
 
 export interface CreateProjectBody {
@@ -153,6 +157,8 @@ export interface Scan {
   started_at: Timestamp | null;
   finished_at: Timestamp | null;
   tool_runs?: ToolRun[];
+  /** v0.2: the API token that created the scan (CI), or null for a scan from the UI. */
+  via_token: TokenRef | null;
 }
 
 export interface CreateScanBody {
@@ -308,6 +314,11 @@ export interface AuditEntry {
 }
 
 export const AUDIT_ACTIONS = [
+  "token.created",
+  "token.revoked",
+  "org.policy_changed",
+  "project.archived",
+  "project.unarchived",
   "member.added",
   "member.role_changed",
   "member.removed",
@@ -322,6 +333,152 @@ export const AUDIT_ACTIONS = [
   "exception.requested",
   "exception.decided",
 ] as const;
+
+// ---- v0.2: API tokens and the scan gate ----
+
+export type TokenScope = "scan:write" | "issues:read";
+
+/** A token named on a scan (`Scan.via_token`); openapi schema TokenRef. */
+export interface TokenRef {
+  id: UUID;
+  name: string;
+  prefix: string;
+}
+export const TOKEN_SCOPES: TokenScope[] = ["scan:write", "issues:read"];
+
+export interface ApiToken {
+  id: UUID;
+  name: string;
+  /** 8 lowercase base32 characters; the token reads `wdn_<prefix>_<secret>`. */
+  prefix: string;
+  scopes: string[];
+  created_by: UserRef;
+  created_at: Timestamp;
+  expires_at: Timestamp;
+  last_used_at: Timestamp | null;
+  revoked_at: Timestamp | null;
+}
+
+/** openapi schema CreateTokenRequest. */
+export interface CreateTokenBody {
+  name: string;
+  scopes: TokenScope[];
+  expires_in_days: number;
+}
+
+/** The only response that carries `secret`. The UI keeps it in the dialog's state only. */
+export interface CreatedToken {
+  token: ApiToken;
+  secret: string;
+}
+
+export interface Gate {
+  scan_id: UUID;
+  status: ScanStatus;
+  finished: boolean;
+  fail_on: Severity;
+  pass: boolean;
+  counts: SeverityCounts;
+  blocking: IssueSummary[];
+}
+
+// ---- v0.2: notifications ----
+
+export type NotificationType =
+  | "issue.assigned"
+  | "issue.reopened"
+  | "exception.requested"
+  | "exception.decided"
+  | "scan.finished"
+  | "sla.due_soon"
+  | "sla.overdue";
+
+export const NOTIFICATION_TYPES: NotificationType[] = [
+  "issue.assigned",
+  "issue.reopened",
+  "exception.requested",
+  "exception.decided",
+  "scan.finished",
+  "sla.due_soon",
+  "sla.overdue",
+];
+
+export interface Notification {
+  id: UUID;
+  org_id: UUID;
+  type: NotificationType;
+  /** Server-built text such as "WEB-41 assigned to you". Rendered as text. */
+  title: string;
+  /** An app path, e.g. /orgs/…/issues/…. */
+  link: string;
+  actor: UserRef | null;
+  read_at: Timestamp | null;
+  created_at: Timestamp;
+}
+
+export interface UnreadCount {
+  count: number;
+}
+
+export type MarkReadBody = { ids: UUID[] } | { all: true };
+
+export interface NotificationPref {
+  type: NotificationType;
+  email: boolean;
+}
+
+// ---- v0.2: policy and automation ----
+
+export interface SlaDays {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface UpdatePolicyBody {
+  sla_days: SlaDays;
+  recompute_open?: boolean;
+}
+
+export interface AssignRule {
+  match: { path_glob?: string; tool?: Tool; severity_at_least?: Severity };
+  assignee_id: UUID;
+}
+
+// ---- v0.2: metrics ----
+
+export type MetricsDays = 30 | 90 | 180;
+export const METRICS_DAYS: MetricsDays[] = [30, 90, 180];
+
+export interface OpenByDay {
+  date: string;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface DayCount {
+  date: string;
+  count: number;
+}
+
+export interface Metrics {
+  days: number;
+  open_by_day: OpenByDay[];
+  mttr_hours: { critical: number | null; high: number | null; medium: number | null; low: number | null };
+  sla: { fixed_in_time: number; fixed_late: number; open_overdue: number };
+  new_by_day: DayCount[];
+  fixed_by_day: DayCount[];
+}
+
+export interface IssueCounts {
+  active: number;
+  mine: number;
+  past_sla: number;
+  secrets: number;
+}
 
 // ---- Enumerations used by the UI ----
 

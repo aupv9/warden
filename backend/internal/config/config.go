@@ -16,6 +16,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	cgconfig "github.com/aupv9/common-go/config"
@@ -58,6 +59,24 @@ type OIDCSection struct {
 	Issuer    string        `koanf:"issuer" validate:"required,url"`
 	Audience  string        `koanf:"audience" validate:"required"`
 	JWKSCache time.Duration `koanf:"jwks_cache"`
+	// RequireMFARoles: org roles that must sign in with a second factor to use
+	// an org (403 MFA_REQUIRED otherwise). Empty disables the rule.
+	RequireMFARoles List `koanf:"require_mfa_roles"`
+}
+
+// List is a list setting given as a YAML list or, in the environment, as a
+// comma-separated string (an empty string is an empty list).
+type List []string
+
+func (l *List) UnmarshalText(b []byte) error {
+	out := List{}
+	for _, s := range strings.Split(string(b), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	*l = out
+	return nil
 }
 
 // MigrateSection: only warden-migrate connects as the schema owner.
@@ -72,11 +91,19 @@ type StorageSection struct {
 	SecretKey Secret `koanf:"secret_key"`
 }
 
+// SMTPSection configures notification email. STARTTLS is required unless the
+// host is a loopback name (see notify.SMTPSender).
 type SMTPSection struct {
 	Host          string `koanf:"host"`
-	Port          int    `koanf:"port"`
+	Port          int    `koanf:"port" validate:"min=1,max=65535"`
 	From          string `koanf:"from"`
 	PublicBaseURL string `koanf:"public_base_url"`
+	Username      string `koanf:"username"`
+	Password      Secret `koanf:"password"`
+	// ImplicitTLS: TLS from the first byte (port 465) instead of STARTTLS.
+	ImplicitTLS bool `koanf:"implicit_tls"`
+	// DigestHour is the UTC hour of the daily SLA digest.
+	DigestHour int `koanf:"digest_hour" validate:"min=0,max=23"`
 }
 
 type ScanSection struct {
@@ -121,9 +148,12 @@ func settingsDefaults() *Settings {
 			Issuer:    "http://localhost:8180/realms/warden",
 			Audience:  "warden-api",
 			JWKSCache: 10 * time.Minute,
+			// Admins and security leads change who can do what and decide
+			// exceptions: a stolen password alone must not be enough.
+			RequireMFARoles: List{"org_admin", "security_lead"},
 		},
 		Storage: StorageSection{Endpoint: "http://localhost:8333", Bucket: "warden-uploads"},
-		SMTP:    SMTPSection{Host: "localhost", Port: 1025, From: "warden@localhost", PublicBaseURL: "http://localhost:5173"},
+		SMTP:    SMTPSection{Host: "localhost", Port: 1025, From: "warden@localhost", PublicBaseURL: "http://localhost:5173", DigestHour: 8},
 		Scan: ScanSection{
 			UploadMaxMB:         200,
 			UnzipMaxMB:          1024,
@@ -172,12 +202,19 @@ func Load() (*Config, error) {
 	if err := validateImages(c.Scan.Images); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	for _, r := range c.OIDC.RequireMFARoles {
+		if !slices.Contains(orgRoles, r) {
+			return nil, fmt.Errorf("config: oidc.require_mfa_roles: unknown org role %q", r)
+		}
+	}
 	return c, nil
 }
 
+var orgRoles = []string{"org_admin", "security_lead", "member"}
+
 // resolveSecrets expands "file:/path" references.
 func (c *Config) resolveSecrets() error {
-	for _, s := range []*Secret{&c.Migrate.DSN, &c.Storage.AccessKey, &c.Storage.SecretKey, &c.Scan.HMACKey} {
+	for _, s := range []*Secret{&c.Migrate.DSN, &c.Storage.AccessKey, &c.Storage.SecretKey, &c.Scan.HMACKey, &c.SMTP.Password} {
 		v, err := cgconfig.ResolveSecret(string(*s))
 		if err != nil {
 			return err

@@ -34,6 +34,7 @@ type projectRow struct {
 	Description  *string
 	DefaultTools []string
 	Archived     bool
+	ArchivedAt   *time.Time
 	CreatedAt    time.Time
 }
 
@@ -45,6 +46,7 @@ type pmRow struct {
 type scanRow struct {
 	service.Scan
 	CreatedByID uuid.UUID
+	ViaToken    *uuid.UUID
 }
 
 type IssueRow struct {
@@ -98,7 +100,10 @@ type state struct {
 	Exceptions map[uuid.UUID]excRow
 	Audit      []service.AuditRecord
 	Jobs       []worker.ScanArgs
+	Tokens     map[uuid.UUID]tokenRow
+	Seen       map[[2]uuid.UUID]bool // issue, scan: occurrences
 	nextID     int64
+	ext        extState // v0.2 tables (v02.go)
 }
 
 func (s *state) clone() *state {
@@ -116,6 +121,9 @@ func (s *state) clone() *state {
 	c.Exceptions = maps.Clone(s.Exceptions)
 	c.Audit = slices.Clone(s.Audit)
 	c.Jobs = slices.Clone(s.Jobs)
+	c.Tokens = maps.Clone(s.Tokens)
+	c.Seen = maps.Clone(s.Seen)
+	c.ext = s.ext.clone()
 	return &c
 }
 
@@ -135,6 +143,7 @@ func New() *Fake {
 		Users: map[uuid.UUID]service.User{}, Orgs: map[uuid.UUID]orgRow{}, Members: map[[2]uuid.UUID]rbac.Role{},
 		Projects: map[uuid.UUID]projectRow{}, PMembers: map[[2]uuid.UUID]pmRow{}, Scans: map[uuid.UUID]scanRow{},
 		ToolRuns: map[uuid.UUID][]service.ToolRun{}, Issues: map[uuid.UUID]IssueRow{}, Exceptions: map[uuid.UUID]excRow{},
+		Tokens: map[uuid.UUID]tokenRow{}, Seen: map[[2]uuid.UUID]bool{},
 	}, Fail: map[string]error{}, Now: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)}
 }
 
@@ -194,7 +203,8 @@ func (f *Fake) AddProject(org uuid.UUID, key string) uuid.UUID {
 
 func (f *Fake) ArchiveProject(id uuid.UUID) {
 	p := f.st.Projects[id]
-	p.Archived = true
+	now := f.tick()
+	p.Archived, p.ArchivedAt = true, &now
 	f.st.Projects[id] = p
 }
 
@@ -381,10 +391,14 @@ func (f *Fake) Org(_ context.Context, orgID uuid.UUID) (service.Org, error) {
 	return service.Org{ID: orgID, Name: o.Name, SLADays: o.SLA}, nil
 }
 
-// visible emulates RLS plus the visibility predicate.
+// visible emulates RLS plus the visibility predicate (archived projects excluded).
 func (f *Fake) visible(v service.Visibility, projectID uuid.UUID) bool {
+	return f.visibleArchived(v, projectID, false)
+}
+
+func (f *Fake) visibleArchived(v service.Visibility, projectID uuid.UUID, archived bool) bool {
 	p, ok := f.st.Projects[projectID]
-	if !ok || p.OrgID != f.org || p.OrgID != v.OrgID || p.Archived {
+	if !ok || p.OrgID != f.org || p.OrgID != v.OrgID || (p.Archived && !archived) {
 		return false
 	}
 	if v.All {
@@ -519,6 +533,10 @@ func (f *Fake) project(v service.Visibility, id uuid.UUID, now time.Time) servic
 	p := f.st.Projects[id]
 	out := service.Project{ID: id, Key: p.Key, Name: p.Name, Description: p.Description, DefaultTools: p.DefaultTools,
 		CreatedAt: service.Time(p.CreatedAt)}
+	if p.ArchivedAt != nil {
+		t := service.Time(*p.ArchivedAt)
+		out.ArchivedAt = &t
+	}
 	if pm, ok := f.st.PMembers[[2]uuid.UUID{id, v.UserID}]; ok {
 		r := pm.Role
 		out.MyRole = &r
@@ -539,13 +557,13 @@ func (f *Fake) project(v service.Visibility, id uuid.UUID, now time.Time) servic
 	return out
 }
 
-func (f *Fake) Projects(_ context.Context, v service.Visibility, now time.Time) ([]service.Project, error) {
+func (f *Fake) Projects(_ context.Context, v service.Visibility, now time.Time, includeArchived bool) ([]service.Project, error) {
 	if err := f.fail("Projects"); err != nil {
 		return nil, err
 	}
 	var out []service.Project
 	for id := range f.st.Projects {
-		if f.visible(v, id) {
+		if f.visibleArchived(v, id, includeArchived) {
 			out = append(out, f.project(v, id, now))
 		}
 	}
@@ -557,7 +575,7 @@ func (f *Fake) Project(_ context.Context, v service.Visibility, id uuid.UUID, no
 	if err := f.fail("Project"); err != nil {
 		return service.Project{}, err
 	}
-	if !f.visible(v, id) {
+	if !f.visibleArchived(v, id, true) {
 		return service.Project{}, service.ErrNotFound
 	}
 	return f.project(v, id, now), nil
@@ -568,7 +586,7 @@ func (f *Fake) ProjectRole(_ context.Context, projectID, userID uuid.UUID) (rbac
 		return "", err
 	}
 	p, ok := f.st.Projects[projectID]
-	if !ok || p.OrgID != f.org || p.Archived {
+	if !ok || p.OrgID != f.org {
 		return "", service.ErrNotFound
 	}
 	return f.st.PMembers[[2]uuid.UUID{projectID, userID}].Role, nil
@@ -657,7 +675,7 @@ func (f *Fake) InsertScan(_ context.Context, s service.NewScan) error {
 	}
 	f.st.Scans[s.ID] = scanRow{CreatedByID: s.CreatedBy, Scan: service.Scan{ID: s.ID, OrgID: s.OrgID, ProjectID: s.ProjectID,
 		Status: "pending_upload", FileName: s.FileName, FileSize: s.FileSize, Tools: s.Tools, CreatedAt: service.Time(f.Now),
-		ObjectKey: s.ObjectKey, SHA256: s.SHA256}}
+		ObjectKey: s.ObjectKey, SHA256: s.SHA256}, ViaToken: s.ViaToken}
 	return nil
 }
 
@@ -668,6 +686,10 @@ func (f *Fake) scan(id uuid.UUID) (service.Scan, bool) {
 	}
 	out := s.Scan
 	out.CreatedBy = f.ref(s.CreatedByID)
+	if s.ViaToken != nil {
+		t := f.st.Tokens[*s.ViaToken]
+		out.ViaToken = &service.TokenRef{ID: t.ID, Name: t.Name, Prefix: t.Prefix}
+	}
 	return out, true
 }
 
@@ -769,7 +791,7 @@ var sevRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "i
 
 func (f *Fake) match(q service.IssueQuery, id uuid.UUID, i IssueRow) bool {
 	switch {
-	case !f.visible(q.Vis, i.ProjectID),
+	case !f.visibleArchived(q.Vis, i.ProjectID, q.ProjectID != nil),
 		q.ProjectID != nil && *q.ProjectID != i.ProjectID,
 		len(q.Statuses) > 0 && !slices.Contains(q.Statuses, i.Status),
 		len(q.Severities) > 0 && !slices.Contains(q.Severities, i.Severity),

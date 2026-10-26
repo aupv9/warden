@@ -75,6 +75,9 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		if err != nil {
 			return notFound(err)
 		}
+		if project.ArchivedAt != nil {
+			return errProjectArchived()
+		}
 		tools := project.DefaultTools
 		if in.Tools != nil {
 			tools = *in.Tools
@@ -95,10 +98,14 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		id := ids.New()
 		key := ObjectKey(a.OrgID, id)
 		sum := strings.ToLower(in.SHA256)
-		if err := r.InsertScan(ctx, NewScan{
+		ns := NewScan{
 			ID: id, OrgID: a.OrgID, ProjectID: projectID, CreatedBy: a.UserID,
 			FileName: in.FileName, FileSize: in.FileSize, SHA256: sum, ObjectKey: key, Tools: tools,
-		}); err != nil {
+		}
+		if a.Token != nil {
+			ns.ViaToken = &a.Token.ID
+		}
+		if err := r.InsertScan(ctx, ns); err != nil {
 			return err
 		}
 		scan, err := r.Scan(ctx, id, false)
@@ -154,6 +161,9 @@ func (s *Service) StartScan(ctx context.Context, a *Actor, scanID uuid.UUID) (Sc
 		if !rbac.Can(rbac.RunScan, a.OrgRole, role, false) {
 			return errForbidden()
 		}
+		if err := requireNotArchived(ctx, r, sc.ProjectID); err != nil {
+			return err
+		}
 		pre = sc
 		return nil
 	})
@@ -195,6 +205,9 @@ func (s *Service) StartScan(ctx context.Context, a *Actor, scanID uuid.UUID) (Sc
 		case "pending_upload":
 		default:
 			return errConflict("the scan has already finished")
+		}
+		if err := requireNotArchived(ctx, r, sc.ProjectID); err != nil {
+			return err // archived meanwhile
 		}
 		if err := r.MarkScanQueued(ctx, scanID); err != nil {
 			return err

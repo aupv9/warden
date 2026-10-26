@@ -7,11 +7,8 @@
 package main
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/aupv9/warden/backend/internal/domain/severity"
+	"github.com/aupv9/warden/backend/internal/pack"
 	"github.com/aupv9/warden/backend/internal/scan/gate"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
@@ -127,7 +125,7 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 	if o.zipPath != "" {
 		err = copyFile(o.zipPath, zipPath)
 	} else {
-		err = packageRepo(o.root, zipPath)
+		_, err = pack.Repo(o.root, zipPath, "warden/")
 	}
 	if err != nil {
 		return 2, err
@@ -244,59 +242,6 @@ func buildImages(root string, tools []string) (map[string]string, error) {
 		}
 	}
 	return images, nil
-}
-
-// packageRepo zips tracked and untracked-but-not-ignored files under "warden/",
-// skipping symlinks, like a developer's upload.
-func packageRepo(root, dest string) error {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-co", "--exclude-standard", "-z")
-	list, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("git ls-files: %w", err)
-	}
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	zw := zip.NewWriter(f)
-	for _, rel := range bytes.Split(list, []byte{0}) {
-		if len(rel) == 0 {
-			continue
-		}
-		p := filepath.Join(root, string(rel))
-		st, err := os.Lstat(p)
-		if errors.Is(err, os.ErrNotExist) {
-			continue // deleted but still in the index
-		}
-		if err != nil {
-			return err
-		}
-		if !st.Mode().IsRegular() {
-			continue
-		}
-		if err := addFile(zw, p, "warden/"+string(rel)); err != nil {
-			return err
-		}
-	}
-	if err := zw.Close(); err != nil {
-		return err
-	}
-	return f.Close()
-}
-
-func addFile(zw *zip.Writer, path, name string) error {
-	src, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate})
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(w, src)
-	return err
 }
 
 func copyFile(src, dst string) error {
