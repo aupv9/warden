@@ -1,7 +1,7 @@
-// Package dbtest is a scripted stand-in for a pgx transaction in unit tests:
-// each statement must match the next expected step (by SQL prefix), which
-// returns rows, a row count or an error. Real SQL is covered by the
-// integration tests; this covers the Go around it.
+// Package dbtest is a stand-in for a pgx transaction in unit tests. In strict
+// mode (New) each statement must match the next expected step by SQL prefix; in
+// loose mode (Loose) the longest matching prefix answers, any number of times.
+// Real SQL is covered by the integration tests; this covers the Go around it.
 package dbtest
 
 import (
@@ -24,6 +24,13 @@ type Step struct {
 	Affected int64   // rows affected for Exec
 	Err      error
 	Args     func(args []any) error // optional argument check
+	Do       func(args []any) Step  // optional: compute the result from the arguments
+}
+
+// Call is one executed statement.
+type Call struct {
+	SQL  string
+	Args []any
 }
 
 type DB struct {
@@ -31,18 +38,41 @@ type DB struct {
 	mu    sync.Mutex
 	steps []Step
 	next  int
+	loose bool
+	calls []Call
 }
 
+// New expects exactly steps, in order.
 func New(t testing.TB, steps ...Step) *DB {
 	return &DB{t: t, steps: steps}
 }
 
-// Done fails the test if expected statements were not executed.
+// Loose answers any statement with the step of the longest matching prefix, as
+// often as it comes and in any order (concurrent callers). On equal prefixes
+// the later step wins, so a test can override a default.
+func Loose(t testing.TB, steps ...Step) *DB {
+	return &DB{t: t, steps: steps, loose: true}
+}
+
+// Calls returns the executed statements whose SQL starts with prefix.
+func (d *DB) Calls(prefix string) []Call {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []Call
+	for _, c := range d.calls {
+		if strings.HasPrefix(c.SQL, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Done fails the test if expected statements were not executed (strict mode).
 func (d *DB) Done() {
 	d.t.Helper()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.next != len(d.steps) {
+	if !d.loose && d.next != len(d.steps) {
 		d.t.Errorf("dbtest: %d of %d statements executed; next expected %q", d.next, len(d.steps), d.steps[d.next].Prefix)
 	}
 }
@@ -51,24 +81,48 @@ func norm(sql string) string { return strings.Join(strings.Fields(sql), " ") }
 
 var ErrUnexpected = errors.New("dbtest: unexpected statement")
 
-func (d *DB) take(sql string, args []any) (Step, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	s := norm(sql)
+func (d *DB) match(s string) (Step, bool) {
+	if d.loose {
+		best, found := Step{}, false
+		for _, st := range d.steps {
+			if strings.HasPrefix(s, st.Prefix) && (!found || len(st.Prefix) >= len(best.Prefix)) {
+				best, found = st, true
+			}
+		}
+		if !found {
+			d.t.Errorf("dbtest: unexpected statement %q", s)
+		}
+		return best, found
+	}
 	if d.next >= len(d.steps) {
 		d.t.Errorf("dbtest: unexpected statement %q", s)
-		return Step{}, ErrUnexpected
+		return Step{}, false
 	}
 	st := d.steps[d.next]
 	if !strings.HasPrefix(s, st.Prefix) {
 		d.t.Errorf("dbtest: statement %d: got %q, want prefix %q", d.next, s, st.Prefix)
-		return Step{}, ErrUnexpected
+		return Step{}, false
 	}
 	d.next++
+	return st, true
+}
+
+func (d *DB) take(sql string, args []any) (Step, error) {
+	d.mu.Lock()
+	s := norm(sql)
+	d.calls = append(d.calls, Call{SQL: s, Args: args})
+	st, ok := d.match(s)
+	d.mu.Unlock()
+	if !ok {
+		return Step{}, ErrUnexpected
+	}
 	if st.Args != nil {
 		if err := st.Args(args); err != nil {
 			d.t.Errorf("dbtest: %q: %v", st.Prefix, err)
 		}
+	}
+	if st.Do != nil {
+		st = st.Do(args)
 	}
 	return st, nil
 }
@@ -155,21 +209,18 @@ func (r *rows) Scan(dest ...any) error {
 			continue
 		}
 		val := reflect.ValueOf(v)
-		if target.Kind() == reflect.Pointer && val.Type().AssignableTo(target.Type().Elem()) {
+		switch {
+		case target.Kind() == reflect.Pointer && val.Type().AssignableTo(target.Type().Elem()):
 			p := reflect.New(target.Type().Elem())
 			p.Elem().Set(val)
 			target.Set(p)
-			continue
-		}
-		if val.Type().AssignableTo(target.Type()) {
+		case val.Type().AssignableTo(target.Type()):
 			target.Set(val)
-			continue
-		}
-		if val.Type().ConvertibleTo(target.Type()) {
+		case val.Kind() == target.Kind() && val.Type().ConvertibleTo(target.Type()):
 			target.Set(val.Convert(target.Type()))
-			continue
+		default:
+			return fmt.Errorf("dbtest: can't scan %T into %s", v, target.Type())
 		}
-		return fmt.Errorf("dbtest: can't scan %T into %s", v, target.Type())
 	}
 	return nil
 }
