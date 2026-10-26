@@ -13,6 +13,7 @@ let db: Fixtures;
 let appRoutes: typeof import("../App").appRoutes;
 let AuthGate: typeof import("../auth/AuthGate").AuthGate;
 let qk: typeof import("../api/keys").qk;
+let preloadRoutes: typeof import("../lib/lazyRoute").preloadRoutes;
 
 beforeAll(async () => {
   vi.stubEnv("VITE_MOCK", "1");
@@ -21,6 +22,7 @@ beforeAll(async () => {
   ({ appRoutes } = await import("../App"));
   ({ AuthGate } = await import("../auth/AuthGate"));
   ({ qk } = await import("../api/keys"));
+  ({ preloadRoutes } = await import("../lib/lazyRoute"));
   const { isMockMode } = await import("../api/client");
   expect(isMockMode).toBe(true);
 });
@@ -45,8 +47,15 @@ async function render(path: string, seed?: (qc: QueryClient) => void): Promise<s
         .getQueryCache()
         .getAll()
         .filter((q) => q.state.status === "pending" && q.state.fetchStatus === "idle" && q.options.queryFn && (q.options as { enabled?: unknown }).enabled !== false);
-      if (pending.length === 0) break;
+      // A lazy route chunk that isn't loaded yet renders the Suspense fallback; React.lazy
+      // settles a tick after its import resolves, then the next pass renders the page.
+      const routeLoading = html.includes("data-route-loading");
+      if (pending.length === 0 && !routeLoading) break;
       await Promise.all(pending.map((q) => q.fetch().catch(() => undefined)));
+      if (routeLoading) {
+        await preloadRoutes();
+        await new Promise((r) => setTimeout(r, 0));
+      }
     }
   } finally {
     spy.mockRestore();
@@ -166,6 +175,112 @@ describe("every screen renders with mock data", () => {
   it("an org the user isn't in looks like any missing page", async () => {
     const t = text(await render(`/orgs/00000000-0000-4000-8000-0000000000aa/projects`));
     expect(t).toContain("Not found");
+  });
+
+  // ---- v0.2 ----
+
+  it("code-split routes render: overview with charts and table alternatives", async () => {
+    const html = await render(`${org()}/overview?days=90`);
+    const t = text(html);
+    expect(html).not.toContain("data-route-loading");
+    expect(t).toContain("Open issues by severity");
+    expect(t).toContain("New vs fixed");
+    expect(t).toContain("Time to fix");
+    expect(t).toContain("SLA compliance");
+    expect(t).toContain("Per week");
+    expect(t.match(/Show the data as a table/g)).toHaveLength(4);
+    expect(html).toMatch(/role="img" aria-label="New vs fixed, all projects: \d+ new and \d+ fixed in the last 90 days\."/);
+    expect(html).toContain('aria-pressed="true"');
+    // Overview is the first item in the navigation.
+    expect(html.indexOf("Overview</span>")).toBeLessThan(html.indexOf("All projects</span>"));
+  });
+
+  it("org settings: editable for a security lead, read-only for a member", async () => {
+    const lead = text(await render(`${org()}/settings`));
+    expect(lead).toContain("SLA policy");
+    expect(lead).toContain("Save policy");
+    expect(lead).toContain("Also recalculate the due dates of open issues");
+    const member = text(await render(`/orgs/${db.ORG2_ID}/settings`));
+    expect(member).toContain("Only security leads can change the SLA policy");
+    expect(member).not.toContain("Save policy");
+  });
+
+  it("notification preferences and the bell", async () => {
+    const html = await render(`${org()}/preferences`);
+    const t = text(html);
+    expect(t).toContain("Issue assigned to you");
+    expect(t).toContain("Scan finished");
+    expect(t).toContain("Save preferences");
+    expect(html).toContain('aria-label="Notifications, 3 unread"');
+    expect(html).toContain('role="switch"');
+  });
+
+  it("project settings: tokens (prefix only), CI snippets without a token, rules, archive", async () => {
+    const web = db.projects[0]!;
+    const html = await render(`${org()}/projects/${web.id}/settings`);
+    const t = text(html);
+    expect(t).toContain("API tokens");
+    expect(t).toContain("wdn_k7m2q4xa_…");
+    expect(t).toContain("Revoked");
+    expect(t).toContain("Expired");
+    expect(t).toContain("CI setup");
+    expect(t).toContain(`--org ${db.ORG_ID}`);
+    expect(t).toContain(`--project ${web.id}`);
+    expect(t).toContain("secrets.WARDEN_TOKEN");
+    expect(html).not.toMatch(/wdn_[a-z2-7]{8}_[a-z2-7]{20,}/);
+    expect(t).toContain("Auto-assign rules");
+    expect(html).toContain('value="internal/payments/**"');
+    expect(t).toContain("Archive project");
+  });
+
+  it("creating a token needs run_scan too: an org admin can list and revoke but not create", async () => {
+    const web = db.projects[0]!;
+    const asAdmin = { ...db.me, orgs: db.me.orgs.map((o) => (o.id === db.ORG_ID ? { ...o, role: "org_admin" as const } : o)) };
+    const projectAsNonMember = { ...web, my_role: null };
+    const html = await render(`${org()}/projects/${web.id}/settings`, (qc) => {
+      qc.setQueryData(qk.me, asAdmin);
+      qc.setQueryData(qk.project(db.ORG_ID, web.id), projectAsNonMember);
+    });
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*aria-describedby="tokens-blocked"/);
+    expect(text(html)).toContain("creating one needs a role that can run scans here");
+    expect(text(html)).toContain("Revoke");
+  });
+
+  it("archived project: banner, no upload, hidden from the list unless asked", async () => {
+    const leg = db.projects[4]!;
+    const scans = text(await render(`${org()}/projects/${leg.id}/scans`));
+    expect(scans).toContain("This project takes no new scans");
+    expect(scans).toContain("Uploads are turned off");
+    expect(scans).not.toContain("Upload .zip");
+    expect(text(await render(`${org()}/projects`))).not.toContain("Legacy portal");
+    expect(text(await render(`${org()}/projects?archived=1`))).toContain("Legacy portal");
+  });
+
+  it("saved views show counts from /issues/counts", async () => {
+    const t = text(await render(`${org()}/issues`));
+    const secrets = db.issues.filter((i) => i.tool === "gitleaks" && ["open", "assigned", "in_progress", "reopened"].includes(i.status)).length;
+    expect(t).toMatch(new RegExp(`Secrets , ${secrets} issues`));
+    expect(t).toMatch(/Past SLA , \d+ issues/);
+  });
+
+  it("MFA_REQUIRED from me.mfa_required_orgs: full page, no org data loaded", async () => {
+    const { resetMfaBlocked } = await import("../lib/mfa");
+    resetMfaBlocked();
+    const html = await render(`/orgs/${db.ORG3_ID}/projects`);
+    const t = text(html);
+    expect(t).toContain("Two-factor sign-in required");
+    expect(t).toContain("Sign out and sign in again");
+    expect(t).toContain("Acme Security");
+    expect(t).not.toContain("Search or jump to");
+    expect(t).not.toContain("All projects");
+  });
+
+  it("MFA_REQUIRED from an error code shows the same page", async () => {
+    const { resetMfaBlocked } = await import("../lib/mfa");
+    resetMfaBlocked();
+    const t = text(await render(`/orgs/${db.ORG3_ID}/projects`, (qc) => qc.setQueryData(qk.me, { ...db.me, mfa_required_orgs: [] })));
+    expect(t).toContain("Two-factor sign-in required");
+    resetMfaBlocked();
   });
 
   it("a user with no org gets the operator instructions", async () => {

@@ -33,7 +33,9 @@ import {
   SAVED_VIEWS,
   toggleSeverity,
 } from "../lib/issueFilters";
-import type { IssueFilters, StatusFilter } from "../lib/issueFilters";
+import type { IssueFilters, SavedView, StatusFilter } from "../lib/issueFilters";
+import { useIssueCounts } from "../api/hooks/metrics";
+import type { IssueCounts } from "../api/types";
 import { can } from "../lib/permissions";
 import { useShortcuts } from "../lib/shortcuts";
 import { useIsPhone, useIsWide, useMediaQuery } from "../lib/useMediaQuery";
@@ -99,6 +101,8 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
   const filters = useMemo(() => parseIssueFilters(params), [params]);
   const apiQuery = useMemo(() => issueFiltersToApiQuery(filters, fixedProject?.id), [filters, fixedProject?.id]);
   const issues = useIssues(orgId, apiQuery);
+  // v0.2: a count on every saved view, for the project in scope.
+  const viewCounts = useIssueCounts(orgId, fixedProject?.id ?? (filters.project || undefined));
   const projects = useProjects(orgId);
   const members = useOrgMembers(orgId);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -244,7 +248,7 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
     const s = issueFiltersToSearch(f).toString();
     return s ? `${pathname}?${s}` : pathname;
   };
-  const views = <SavedViews filters={filters} count={matchCount} hrefFor={viewHref} />;
+  const views = <SavedViews filters={filters} counts={viewCounts.data} count={matchCount} hrefFor={viewHref} />;
   const otherFilterCount =
     (filters.project && !fixedProject ? 1 : 0) + (filters.status !== "active" ? 1 : 0) + (filters.assignee ? 1 : 0) + (filters.tool ? 1 : 0);
 
@@ -580,20 +584,43 @@ function countMatches(counts: SeverityCounts, selected: Severity[]): number {
   return keys.reduce((n, s) => n + counts[s], 0);
 }
 
-/** Saved views: presets of the URL filters. Links, so they can open in a new tab. */
-function SavedViews({ filters, count, hrefFor }: { filters: IssueFilters; count?: number; hrefFor: (f: IssueFilters) => string }) {
+/** Saved views: presets of the URL filters. Links, so they can open in a new tab. Each shows its
+ *  count from /issues/counts (v0.2); the current view shows the live match count instead when
+ *  a search narrows it. */
+function SavedViews({
+  filters,
+  counts,
+  count,
+  hrefFor,
+}: {
+  filters: IssueFilters;
+  counts?: IssueCounts;
+  count?: number;
+  hrefFor: (f: IssueFilters) => string;
+}) {
   const current = currentView(filters);
   return (
     <Segmented label="Saved views">
-      {SAVED_VIEWS.map((v) => (
-        <Link key={v.id} to={hrefFor(applyView(filters, v.id))} className={current === v.id ? "active" : undefined} aria-current={current === v.id ? "true" : undefined}>
-          {v.label}
-          {current === v.id && count !== undefined && <span className="seg-count num">{count}</span>}
-        </Link>
-      ))}
+      {SAVED_VIEWS.map((v) => {
+        const n = current === v.id && (filters.q || !counts) ? count : counts?.[VIEW_COUNT_KEY[v.id]];
+        return (
+          <Link key={v.id} to={hrefFor(applyView(filters, v.id))} className={current === v.id ? "active" : undefined} aria-current={current === v.id ? "true" : undefined}>
+            {v.label}
+            {n !== undefined && (
+              <span className="seg-count num">
+                <span className="visually-hidden">, </span>
+                {n}
+                <span className="visually-hidden"> issues</span>
+              </span>
+            )}
+          </Link>
+        );
+      })}
     </Segmented>
   );
 }
+
+const VIEW_COUNT_KEY: Record<SavedView, keyof IssueCounts> = { active: "active", mine: "mine", past_sla: "past_sla", secrets: "secrets" };
 
 function SearchBox({ value, onChange, inputRef }: { value: string; onChange: (q: string) => void; inputRef: RefObject<HTMLInputElement | null> }) {
   const [text, setText] = useState(value);
