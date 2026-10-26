@@ -198,6 +198,19 @@ export function dueText(dueAt: string | null, now: Date = new Date()): { text: s
   return { text: `Due in ${days} days`, overdue: false };
 }
 
+/** Compact SLA text for list rows: "2d overdue", "Today", "Tomorrow", "in 4d", "–". The full
+ *  sentence (dueText) goes in the row's accessible text via `long`. */
+export function dueShort(dueAt: string | null, now: Date = new Date()): { text: string; long: string; overdue: boolean } {
+  const full = dueText(dueAt, now);
+  if (!dueAt) return { text: "–", long: full.text, overdue: false };
+  const m = /^(\d+) days? overdue$/.exec(full.text);
+  if (m) return { text: `${m[1]}d overdue`, long: full.text, overdue: true };
+  if (full.text === "Due today") return { text: "Today", long: full.text, overdue: full.overdue };
+  if (full.text === "Due tomorrow") return { text: "Tomorrow", long: full.text, overdue: false };
+  const n = /^Due in (\d+) days$/.exec(full.text);
+  return { text: n ? `in ${n[1]}d` : full.text, long: full.text, overdue: false };
+}
+
 /** Days from now until ts, rounded up (for "accepted until … (97 days)"). */
 export function daysUntil(ts: string, now: Date = new Date()): number {
   return Math.ceil((toDate(ts).getTime() - now.getTime()) / DAY);

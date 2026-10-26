@@ -6,12 +6,14 @@ import { useOrgSummary } from "../api/hooks/orgs";
 import { useCreateProject, useProjects } from "../api/hooks/projects";
 import { SEVERITIES, TOOLS } from "../api/types";
 import type { Project, Tool } from "../api/types";
-import { Pill, SeverityBadge } from "../components/Badges";
+import { ProjectDot } from "../components/Avatar";
+import { Pill, SeverityMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
 import { focusFirstInvalid, TextArea, TextField } from "../components/Field";
-import { SearchIcon } from "../components/Icons";
+import { PlusIcon, SearchIcon } from "../components/Icons";
+import { PageHeader } from "../components/PageHeader";
 import { ActionError, EmptyState, ErrorState, Skeleton, SkeletonCards } from "../components/States";
 import { showToast } from "../lib/toast";
 import { useOrgCtx } from "../layout/OrgLayout";
@@ -33,67 +35,67 @@ export function ProjectsPage() {
   );
 
   return (
-    <>
-      <header className="page-head">
-        <div className="titles">
-          <h1>Projects</h1>
-          <p className="muted">Each project holds its scans, issues and members. Upload a .zip to scan it.</p>
-        </div>
-        <div className="actions">
-          <label className="search">
-            <SearchIcon />
-            <span className="visually-hidden">Search projects</span>
-            <input type="search" placeholder="Search projects" value={search} onChange={(e) => setSearch(e.target.value)} />
-          </label>
-          {canCreate && (
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              New project
-            </Button>
-          )}
-        </div>
-      </header>
-
-      <Summary />
-
-      {projects.isPending ? (
-        <SkeletonCards label="projects" />
-      ) : projects.isError ? (
-        <ErrorState error={projects.error} onRetry={() => void projects.refetch()} what="the projects" />
-      ) : projects.data.length === 0 ? (
-        <Card>
-          <EmptyState title="No projects yet">
-            {canCreate
-              ? "Create a project, then upload a .zip of its code to scan it."
-              : "You aren't a member of any project. Ask a project owner or a security lead to add you."}
-          </EmptyState>
-          {canCreate && (
-            <div style={{ padding: "0 24px 24px" }}>
+    <div className="page">
+      <PageHeader
+        title="Projects"
+        actions={
+          <>
+            <label className="search">
+              <SearchIcon />
+              <span className="visually-hidden">Search projects</span>
+              <input type="search" placeholder="Search projects" value={search} onChange={(e) => setSearch(e.target.value)} />
+            </label>
+            {canCreate && (
               <Button variant="primary" onClick={() => setCreating(true)}>
-                New project
+                <PlusIcon /> New project
               </Button>
-            </div>
-          )}
-        </Card>
-      ) : shown.length === 0 ? (
-        <Card>
-          <EmptyState title="No matching projects">Nothing matches "{search}".</EmptyState>
-        </Card>
-      ) : (
-        <div className="grid grid-cards">
-          {shown.map((p) => (
-            <ProjectCard key={p.id} project={p} />
-          ))}
-        </div>
-      )}
+            )}
+          </>
+        }
+      />
+      <div className="page-body">
+        <Summary />
 
-      <p className="muted" style={{ fontSize: 13 }}>
-        Only projects you are a member of are listed. Org admins and security leads see every project.
-      </p>
+        {projects.isPending ? (
+          <SkeletonCards label="projects" />
+        ) : projects.isError ? (
+          <ErrorState error={projects.error} onRetry={() => void projects.refetch()} what="the projects" />
+        ) : projects.data.length === 0 ? (
+          <Card>
+            <EmptyState
+              title="No projects yet"
+              action={
+                canCreate ? (
+                  <Button variant="primary" onClick={() => setCreating(true)}>
+                    New project
+                  </Button>
+                ) : undefined
+              }
+            >
+              {canCreate
+                ? "Create a project, then upload a .zip of its code to scan it."
+                : "You aren't a member of any project. Ask a project owner or a security lead to add you."}
+            </EmptyState>
+          </Card>
+        ) : shown.length === 0 ? (
+          <Card>
+            <EmptyState title="No matching projects">Nothing matches "{search}".</EmptyState>
+          </Card>
+        ) : (
+          <div className="grid grid-cards">
+            {shown.map((p) => (
+              <ProjectCard key={p.id} project={p} />
+            ))}
+          </div>
+        )}
+
+        <p className="faint small">Only projects you are a member of are listed. Org admins and security leads see every project.</p>
+      </div>
 
       <Dialog open={creating} onClose={() => setCreating(false)} title="New project">
         <NewProjectForm onDone={() => setCreating(false)} />
       </Dialog>
-    </>
+    </div>
   );
 }
 
@@ -102,27 +104,21 @@ function Summary() {
   const summary = useOrgSummary(orgId);
   if (summary.isError) return <ActionError always error={summary.error} />;
   const s = summary.data;
-  const stats: { label: string; value?: number; tone?: string; to?: string }[] = [
+  const stats: { label: string; value?: number; danger?: boolean; to: string }[] = [
     { label: "Open issues", value: s?.open_issues, to: `/orgs/${orgId}/issues` },
-    { label: "Critical + High open", value: s?.critical_high_open, tone: "high", to: `/orgs/${orgId}/issues?severity=critical&severity=high` },
-    { label: "Past SLA", value: s?.past_sla, tone: "critical", to: `/orgs/${orgId}/issues?past_sla=true` },
+    { label: "Critical + High open", value: s?.critical_high_open, to: `/orgs/${orgId}/issues?severity=critical&severity=high` },
+    { label: "Past SLA", value: s?.past_sla, danger: true, to: `/orgs/${orgId}/issues?past_sla=true` },
     { label: "Exceptions to review", value: s?.exceptions_pending, to: `/orgs/${orgId}/exceptions` },
   ];
   return (
-    <section aria-label="Organization summary" className="grid grid-stats">
+    <section aria-label="Organization summary" className="stat-strip">
       {stats.map((st) => (
-        <div key={st.label} className="card">
-          <div className="stat-label">
-            {st.to ? (
-              <Link to={st.to} className="row-link">
-                {st.label}
-              </Link>
-            ) : (
-              st.label
-            )}
-          </div>
-          <div className={`stat-value ${st.tone ?? ""}`}>
-            {st.value === undefined ? <Skeleton width={48} height={32} /> : st.value}
+        <div key={st.label} className="stat">
+          <Link to={st.to} className="stat-label">
+            {st.label}
+          </Link>
+          <div className={st.danger && (st.value ?? 0) > 0 ? "stat-value danger-text" : "stat-value"}>
+            {st.value === undefined ? <Skeleton width={40} height={22} /> : st.value}
           </div>
         </div>
       ))}
@@ -134,20 +130,30 @@ function ProjectCard({ project: p }: { project: Project }) {
   const { orgId, org } = useOrgCtx();
   const base = `/orgs/${orgId}/projects/${p.id}`;
   const counts = SEVERITIES.filter((s) => p.open_by_severity[s] > 0);
+  const head = (
+    <div className="pc-head">
+      <ProjectDot projectKey={p.key} />
+      <h2>
+        <Link to={base} className="stretched">
+          {p.name}
+        </Link>
+      </h2>
+      <span className="mono faint pc-key">{p.key}</span>
+      {p.my_role && <Pill>{PROJECT_ROLE_LABELS[p.my_role]}</Pill>}
+    </div>
+  );
 
   if (!p.last_scan) {
     const canScan = can("run_scan", org.role, p.my_role);
     return (
-      <article className="card card-dashed project-card">
-        <h2>
-          <Link to={base}>No scan yet</Link>
-        </h2>
-        <p className="muted">
-          <span className="key">{p.key}</span> · {p.name}. Upload the first .zip to see issues here.
-        </p>
+      <article className="project-card dashed">
+        {head}
+        <p className="muted">No scan yet. Upload the first .zip to see issues here.</p>
         {canScan && (
-          <div>
-            <ButtonLink to={`${base}/scans`}>Upload code</ButtonLink>
+          <div className="pc-action">
+            <ButtonLink to={`${base}/scans`} size="sm">
+              Upload code
+            </ButtonLink>
           </div>
         )}
       </article>
@@ -155,24 +161,16 @@ function ProjectCard({ project: p }: { project: Project }) {
   }
 
   return (
-    <article className="card project-card">
-      <div className="row-between" style={{ alignItems: "flex-start" }}>
-        <div className="stack" style={{ gap: 2 }}>
-          <span className="key">{p.key}</span>
-          <h2>
-            <Link to={base}>{p.name}</Link>
-          </h2>
-        </div>
-        {p.my_role && <Pill>{PROJECT_ROLE_LABELS[p.my_role]}</Pill>}
-      </div>
-      <div className="row" aria-label="Open issues by severity">
+    <article className="project-card">
+      {head}
+      <div className="pc-sev" aria-label="Open issues by severity">
         {counts.length === 0 ? (
           <span className="muted">No open issues</span>
         ) : (
-          counts.map((s) => <SeverityBadge key={s} severity={s} count={p.open_by_severity[s]} />)
+          counts.map((s) => <SeverityMark key={s} severity={s} count={p.open_by_severity[s]} />)
         )}
       </div>
-      <div className="foot">
+      <div className="pc-foot">
         <span>
           Last scan {relativeTime(p.last_scan.created_at)} · {SCAN_STATUS_LABELS[p.last_scan.status].toLowerCase()}
         </span>

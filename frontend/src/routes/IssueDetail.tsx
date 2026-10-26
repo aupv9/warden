@@ -1,18 +1,20 @@
-import { useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { fieldErrors, isNotFound } from "../api/errors";
 import { useRequestException } from "../api/hooks/exceptions";
 import { useAddComment, useIssue, useIssueComments, useIssueEvents, useTransitionIssue } from "../api/hooks/issues";
 import { useOrg } from "../api/hooks/orgs";
 import { useProject } from "../api/hooks/projects";
 import type { ExceptionType, Issue, IssueEvent, IssueStatus, ProjectRole } from "../api/types";
-import { SeverityBadge, StatusPill } from "../components/Badges";
+import { Avatar } from "../components/Avatar";
+import { SeverityMark, StatusMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
 import { focusFirstInvalid, TextArea, TextField } from "../components/Field";
-import { BackIcon, RefreshIcon } from "../components/Icons";
+import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, LockIcon, RefreshIcon } from "../components/Icons";
+import { PageHeader } from "../components/PageHeader";
 import { ActionError, ErrorState, Loading, NotFoundState, Skeleton, SkeletonBlock } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import {
@@ -22,7 +24,6 @@ import {
   formatDate,
   formatDateTime,
   fromDateInput,
-  initials,
   relativeTime,
   SEVERITY_LABELS,
   STATUS_LABELS,
@@ -32,67 +33,147 @@ import {
 } from "../lib/format";
 import { issueActions, workflowSteps } from "../lib/issueActions";
 import type { IssueAction } from "../lib/issueActions";
+import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
 import { showToast } from "../lib/toast";
 import { usePageTitle } from "../lib/usePageTitle";
 import { AssignForm, isConflict } from "./AssignForm";
 
-export function IssueDetailPage() {
+/** Below 1200 px: the issue as its own page, with a back link to the list it came from (the
+ *  list's filters travel in the query string). */
+export function IssueDetailPage({ issueId }: { issueId: string }) {
   const { orgId } = useOrgCtx();
-  const { issueId = "" } = useParams();
+  const [params] = useSearchParams();
+  const back = issueListHref(orgId, parseIssueFilters(params));
+  const issue = useIssue(orgId, issueId);
+  return (
+    <div className="page">
+      <PageHeader
+        titleAs="div"
+        title={
+          <nav aria-label="Breadcrumb" className="crumbs">
+            <Link to={back} className="back-link">
+              <BackIcon /> Issues
+            </Link>
+            <span className="crumb-sep" aria-hidden="true">
+              /
+            </span>
+            <span className="mono">{issue.data?.key ?? "…"}</span>
+          </nav>
+        }
+      />
+      <div className="page-body">
+        <IssueDetail issueId={issueId} mode="page" backHref={back} />
+      </div>
+    </div>
+  );
+}
+
+export interface PaneNav {
+  onClose: () => void;
+  onPrev?: () => void;
+  onNext?: () => void;
+  position?: string;
+}
+
+/** The issue itself: as a page (narrow screens) or in the split view's right-hand pane. */
+export function IssueDetail({
+  issueId,
+  mode,
+  backHref,
+  pane,
+  assignSignal = 0,
+  autoFocus,
+}: {
+  issueId: string;
+  mode: "page" | "pane";
+  backHref: string;
+  pane?: PaneNav;
+  /** Bumped by the list's "A" shortcut: open the assign dialog if this issue offers it. */
+  assignSignal?: number;
+  autoFocus?: boolean;
+}) {
+  const { orgId } = useOrgCtx();
   const issue = useIssue(orgId, issueId);
   usePageTitle(issue.data ? `${issue.data.key} ${issue.data.title}` : "Issue");
-  const issuesUrl = `/orgs/${orgId}/issues`;
 
+  let body;
   if (issue.isError && isNotFound(issue.error)) {
-    return <NotFoundState backTo={issuesUrl} backLabel="Back to issues" />;
+    body = <NotFoundState backTo={backHref} backLabel="Back to issues" />;
+  } else if (issue.isPending) {
+    body = (
+      <Loading label="issue">
+        <div className="stack" style={{ gap: 14 }}>
+          <Skeleton width="40%" height={12} />
+          <Skeleton width="70%" height={22} />
+          <div className="row">
+            <Skeleton width={64} height={16} />
+            <Skeleton width={76} height={16} />
+            <Skeleton width={140} height={16} />
+          </div>
+          <Skeleton height={56} />
+          <div className="card stack" style={{ gap: 10 }}>
+            <Skeleton width="30%" />
+            <Skeleton height={88} style={{ background: "#2a2d35" }} />
+          </div>
+        </div>
+      </Loading>
+    );
+  } else if (issue.isError) {
+    body = <ErrorState error={issue.error} onRetry={() => void issue.refetch()} what="this issue" />;
+  } else {
+    body = (
+      <IssueView key={issue.data.id} issue={issue.data} mode={mode} reload={() => issue.refetch()} assignSignal={assignSignal} autoFocus={autoFocus} />
+    );
   }
+
+  if (mode === "page") return body;
   return (
     <>
-      <nav className="breadcrumb desktop-only" aria-label="Breadcrumb">
-        <Link to={issuesUrl}>Issues</Link> / <span className="mono">{issue.data?.key ?? "…"}</span>
-      </nav>
-      <Link to={issuesUrl} className="mobile-only back-link">
-        <BackIcon /> Issues
-      </Link>
-      {issue.isPending ? (
-        <Loading label="issue">
-          <div className="stack">
-            <Skeleton width="50%" height={30} />
-            <div className="row">
-              <Skeleton width={64} height={22} />
-              <Skeleton width={76} height={22} />
-              <Skeleton width={140} height={22} />
-            </div>
-            <div className="layout-side">
-              <div className="card stack">
-                <Skeleton width="30%" />
-                <Skeleton height={96} style={{ background: "#1e293b" }} />
-              </div>
-              <div className="card stack">
-                {Array.from({ length: 6 }, (_, i) => (
-                  <Skeleton key={i} width={`${50 + i * 7}%`} />
-                ))}
-              </div>
-            </div>
-          </div>
-        </Loading>
-      ) : issue.isError ? (
-        <ErrorState error={issue.error} onRetry={() => void issue.refetch()} what="this issue" />
-      ) : (
-        <IssueView issue={issue.data} reload={() => issue.refetch()} />
-      )}
+      <div className="pane-bar">
+        <div className="row" style={{ gap: 2 }}>
+          <button type="button" className="icon-btn sm" aria-label="Previous issue (K)" onClick={pane?.onPrev} disabled={!pane?.onPrev}>
+            <ChevronIcon up />
+          </button>
+          <button type="button" className="icon-btn sm" aria-label="Next issue (J)" onClick={pane?.onNext} disabled={!pane?.onNext}>
+            <ChevronIcon />
+          </button>
+          {pane?.position && <span className="faint num">{pane.position}</span>}
+        </div>
+        <button type="button" className="icon-btn sm" aria-label="Close issue (Esc)" onClick={pane?.onClose}>
+          <CloseIcon />
+        </button>
+      </div>
+      <div className="pane-body">{body}</div>
     </>
   );
 }
 
-function IssueView({ issue, reload }: { issue: Issue; reload: () => Promise<unknown> }) {
+function IssueView({
+  issue,
+  mode,
+  reload,
+  assignSignal,
+  autoFocus,
+}: {
+  issue: Issue;
+  mode: "page" | "pane";
+  reload: () => Promise<unknown>;
+  assignSignal: number;
+  autoFocus?: boolean;
+}) {
   const { orgId } = useOrgCtx();
   const project = useProject(orgId, issue.project_id);
   const due = dueText(issue.due_at);
+  const titleId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
   // A stale-version or no-longer-valid change: actions stay disabled until "Reload issue".
   const [conflict, setConflict] = useState<{ code: string; to?: IssueStatus } | null>(null);
   const [reloading, setReloading] = useState(false);
+
+  useEffect(() => {
+    if (autoFocus) headingRef.current?.focus({ preventScroll: true });
+  }, [autoFocus]);
 
   async function doReload() {
     setReloading(true);
@@ -106,8 +187,9 @@ function IssueView({ issue, reload }: { issue: Issue; reload: () => Promise<unkn
     setConflict({ code, to });
   };
 
+  const Heading = mode === "page" ? "h1" : "h2";
   return (
-    <>
+    <article className="issue-detail" aria-labelledby={titleId}>
       {conflict && (
         <div className="banner banner-warning" role="alert">
           <RefreshIcon />
@@ -131,42 +213,46 @@ function IssueView({ issue, reload }: { issue: Issue; reload: () => Promise<unkn
           </div>
         </div>
       )}
-      <header className="page-head" style={{ alignItems: "flex-start" }}>
-        <div className="titles" style={{ gap: 10 }}>
-          <h1>
-            <span className="mono muted" style={{ fontWeight: 500 }}>
-              {issue.key}
-            </span>{" "}
-            {issue.title}
-          </h1>
-          <div className="row" style={{ fontSize: 13 }}>
-            <SeverityBadge severity={issue.severity} />
-            <StatusPill status={issue.status} />
-            {issue.due_at && (
-              <span className={due.overdue || issue.past_sla ? "danger-text" : undefined}>SLA: {due.text}</span>
+
+      <header className="detail-head">
+        <div className="detail-titles">
+          <p className="detail-meta">
+            <span className="mono">{issue.key}</span>
+            {project.data && (
+              <>
+                {" · "}
+                <Link to={`/orgs/${orgId}/projects/${project.data.id}/issues`}>{project.data.name}</Link>
+              </>
             )}
-            <span className="muted">
-              {project.data && (
-                <>
-                  · <Link to={`/orgs/${orgId}/projects/${project.data.id}/issues`}>{project.data.name}</Link>{" "}
-                </>
-              )}
-              · first seen {formatDate(issue.first_seen_scan.created_at)}
-            </span>
+            {" · "}first seen {formatDate(issue.first_seen_scan.created_at)}
+          </p>
+          <Heading id={titleId} className="detail-title" ref={headingRef} tabIndex={-1}>
+            {issue.title}
+          </Heading>
+          <div className="detail-sub">
+            <SeverityMark severity={issue.severity} />
+            <StatusMark status={issue.status} />
+            {issue.due_at && (
+              <span className={due.overdue || issue.past_sla ? "danger-text" : "muted"}>
+                SLA: {due.text} <span className="faint-in">(due {formatDate(issue.due_at)})</span>
+              </span>
+            )}
           </div>
         </div>
-        <IssueActions issue={issue} disabled={!!conflict} onConflict={onConflict} />
+        <IssueActions issue={issue} disabled={!!conflict} onConflict={onConflict} assignSignal={assignSignal} />
       </header>
 
-      <div className="layout-side">
-        <div className="stack">
-          <LocationCard issue={issue} />
+      <Stepper issue={issue} />
+
+      <div className="detail-grid">
+        <div className="stack detail-main">
+          <WhereCard issue={issue} />
           {issue.description && (
-            <Card title="What was found" titleId="desc-h">
+            <Card title="What was found" titleId={`${titleId}-desc`}>
               <p className="prose">{issue.description}</p>
             </Card>
           )}
-          <Card title="How to fix" titleId="fix-h">
+          <Card title="How to fix" titleId={`${titleId}-fix`}>
             {issue.remediation ? (
               <p className="prose">{issue.remediation}</p>
             ) : (
@@ -175,74 +261,112 @@ function IssueView({ issue, reload }: { issue: Issue; reload: () => Promise<unkn
           </Card>
           <Comments issue={issue} projectRole={project.data?.my_role} />
         </div>
-        <div className="stack">
+        <div className="stack detail-side">
           <DetailsCard issue={issue} />
-          <WorkflowCard status={issue.status} />
-          <HistoryCard issue={issue} />
+          <ActivityCard issue={issue} />
         </div>
       </div>
-    </>
+    </article>
   );
 }
 
-function LocationCard({ issue }: { issue: Issue }) {
+/** The main workflow path as a horizontal stepper (vertical on phones). */
+function Stepper({ issue }: { issue: Issue }) {
+  const steps = workflowSteps(issue.status);
+  const offPath = issue.status === "false_positive" || issue.status === "risk_accepted";
+  const who = issue.assignee ? userName(issue.assignee) : undefined;
+  return (
+    <section className="stepper-card" aria-label="Workflow">
+      <ol className="stepper">
+        {steps.map((s, i) => {
+          const hint = (s.status === "assigned" || s.status === "in_progress") && who && s.state !== "todo" ? who : s.hint;
+          return (
+            <li key={s.status} className={`step ${s.state}`} aria-current={s.state === "current" ? "step" : undefined}>
+              <span className="step-dot" aria-hidden="true">
+                {s.state === "done" ? <CheckIcon size={12} /> : i + 1}
+              </span>
+              <span className="step-text">
+                <span className="step-label">{s.label}</span>
+                {hint && <span className="step-hint">{hint}</span>}
+                {s.state === "done" && <span className="visually-hidden"> (done)</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      {offPath && (
+        <p className="stepper-note">
+          Closed as <strong>{STATUS_LABELS[issue.status]}</strong> through an approved exception.
+          {issue.status === "risk_accepted" && " It reopens by itself when the acceptance ends."}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function WhereCard({ issue }: { issue: Issue }) {
   const lines = issue.snippet ? issue.snippet.replace(/\n$/, "").split("\n") : [];
   const first = issue.start_line ?? 1;
   const last = issue.end_line ?? issue.start_line ?? 0;
   const where = issue.file_path ?? issue.package_name ?? "";
   return (
     <Card
-      title="Location"
-      titleId="loc-h"
+      title="Where"
+      titleId={`where-${issue.id}`}
       actions={
         where ? (
-          <span className="mono muted" style={{ fontSize: 13, wordBreak: "break-all" }}>
+          <span className="mono faint where-path">
             {where}
-            {issue.start_line ? ` · line ${issue.start_line}` : ""}
+            {issue.start_line ? `:${issue.start_line}` : ""}
           </span>
         ) : undefined
       }
     >
-      {lines.length > 0 ? (
-        // The snippet arrives already masked (AKIA****) and is rendered as text, never as HTML.
-        // tabIndex lets keyboard users scroll it sideways.
-        <pre className="code" aria-label="Code snippet" tabIndex={0}>
-          {lines.map((text, i) => {
-            const n = first + i;
-            const hl = issue.start_line !== null && n >= first && n <= last;
-            return (
-              <span key={i} className={hl ? "line hl" : "line"}>
-                <span className="ln">{n}</span>
-                <span className="txt">{text}</span>
-                {hl && <span className="visually-hidden"> (finding)</span>}
-              </span>
-            );
-          })}
-        </pre>
-      ) : (
-        <p className="muted">No code snippet for this finding.</p>
-      )}
-      {issue.package_name && (
-        <p style={{ marginTop: 12 }}>
-          <span className="mono">
-            {issue.package_name} {issue.package_version}
-          </span>
-          {issue.fixed_version ? (
-            <>
-              {" "}
-              → upgrade to <span className="mono">{issue.fixed_version}</span>
-            </>
-          ) : (
-            <span className="muted"> · no fixed version yet</span>
-          )}
-        </p>
-      )}
-      {issue.tool === "gitleaks" && (
-        <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>
-          The secret was masked inside the scanner sandbox. Warden stores only its first 4 characters and a keyed
-          fingerprint, so this issue is tracked without keeping the secret.
-        </p>
-      )}
+      <div className="stack" style={{ gap: 12 }}>
+        {lines.length > 0 ? (
+          // The snippet arrives already masked (AKIA****) and is rendered as text, never as HTML.
+          // tabIndex lets keyboard users scroll it sideways.
+          <pre className="code" aria-label="Code snippet" tabIndex={0}>
+            {lines.map((text, i) => {
+              const n = first + i;
+              const hl = issue.start_line !== null && n >= first && n <= last;
+              return (
+                <span key={i} className={hl ? "line hl" : "line"}>
+                  <span className="ln">{n}</span>
+                  <span className="txt">{text}</span>
+                  {hl && <span className="visually-hidden"> (finding)</span>}
+                </span>
+              );
+            })}
+          </pre>
+        ) : (
+          <p className="muted">No code snippet for this finding.</p>
+        )}
+        {issue.package_name && (
+          <p>
+            <span className="mono">
+              {issue.package_name} {issue.package_version}
+            </span>
+            {issue.fixed_version ? (
+              <>
+                {" "}
+                → upgrade to <span className="mono">{issue.fixed_version}</span>
+              </>
+            ) : (
+              <span className="muted"> · no fixed version yet</span>
+            )}
+          </p>
+        )}
+        {issue.tool === "gitleaks" && (
+          <p className="note">
+            <LockIcon size={14} />
+            <span>
+              The secret was masked inside the scanner sandbox. Warden stores only its first 4 characters and a keyed
+              fingerprint, so this issue is tracked without keeping the secret.
+            </span>
+          </p>
+        )}
+      </div>
     </Card>
   );
 }
@@ -257,10 +381,19 @@ function DetailsCard({ issue }: { issue: Issue }) {
     </Link>
   );
   return (
-    <Card title="Details" titleId="details-h">
+    <Card title="Details" titleId={`details-${issue.id}`}>
       <dl className="kv">
         <dt>Assignee</dt>
-        <dd>{issue.assignee ? userName(issue.assignee) : <span className="muted">Unassigned</span>}</dd>
+        <dd>
+          {issue.assignee ? (
+            <span className="person">
+              <Avatar name={userName(issue.assignee)} />
+              {userName(issue.assignee)}
+            </span>
+          ) : (
+            <span className="muted">Unassigned</span>
+          )}
+        </dd>
         <dt>Due</dt>
         <dd>
           {issue.due_at ? (
@@ -280,9 +413,7 @@ function DetailsCard({ issue }: { issue: Issue }) {
         <dt>Scanner</dt>
         <dd>{TOOL_LABELS[issue.tool]}</dd>
         <dt>Rule</dt>
-        <dd className="mono" style={{ fontSize: 13 }}>
-          {issue.rule_id}
-        </dd>
+        <dd className="mono">{issue.rule_id}</dd>
         {issue.cwe.length > 0 && (
           <>
             <dt>CWE</dt>
@@ -292,15 +423,13 @@ function DetailsCard({ issue }: { issue: Issue }) {
         {issue.cve.length > 0 && (
           <>
             <dt>CVE</dt>
-            <dd className="mono" style={{ fontSize: 13 }}>
-              {issue.cve.join(", ")}
-            </dd>
+            <dd className="mono">{issue.cve.join(", ")}</dd>
           </>
         )}
         {issue.package_name && (
           <>
             <dt>Package</dt>
-            <dd className="mono" style={{ fontSize: 13 }}>
+            <dd className="mono">
               {issue.package_name} {issue.package_version}
               {issue.fixed_version && ` → ${issue.fixed_version}`}
             </dd>
@@ -311,37 +440,10 @@ function DetailsCard({ issue }: { issue: Issue }) {
         <dt>Last seen</dt>
         <dd>{scanLink(issue.last_seen_scan)}</dd>
         <dt>Occurrences</dt>
-        <dd>
+        <dd className="num">
           {issue.occurrences} scan{issue.occurrences === 1 ? "" : "s"}
         </dd>
       </dl>
-    </Card>
-  );
-}
-
-function WorkflowCard({ status }: { status: IssueStatus }) {
-  const steps = workflowSteps(status);
-  const offPath = status === "false_positive" || status === "risk_accepted";
-  return (
-    <Card title="Workflow" titleId="wf-h">
-      <ol className="steps">
-        {steps.map((s) => (
-          <li key={s.status} className={`step ${s.state}`} aria-current={s.state === "current" ? "step" : undefined}>
-            <span className="dot" aria-hidden="true" />
-            <span>
-              {s.label}
-              {s.hint && <span className="muted" style={{ fontWeight: 400 }}> · {s.hint}</span>}
-              {s.state === "done" && <span className="visually-hidden"> (done)</span>}
-            </span>
-          </li>
-        ))}
-      </ol>
-      {offPath && (
-        <p style={{ marginTop: 12, fontSize: 13 }}>
-          Closed as <strong>{STATUS_LABELS[status]}</strong> through an approved exception.
-          {status === "risk_accepted" && " It reopens by itself when the acceptance ends."}
-        </p>
-      )}
     </Card>
   );
 }
@@ -376,30 +478,29 @@ export function describeEvent(e: IssueEvent): { who: string; what: string } {
   }
 }
 
-function HistoryCard({ issue }: { issue: Issue }) {
+function ActivityCard({ issue }: { issue: Issue }) {
   const { orgId } = useOrgCtx();
   const events = useIssueEvents(orgId, issue.id);
   return (
-    <Card title="History" titleId="hist-h">
+    <Card title="Activity" titleId={`activity-${issue.id}`}>
       {events.isPending ? (
-        <SkeletonBlock label="history" lines={3} />
+        <SkeletonBlock label="activity" lines={3} />
       ) : events.isError ? (
         <ActionError always error={events.error} />
       ) : events.data.length === 0 ? (
-        <p className="muted">No history yet.</p>
+        <p className="muted">No activity yet.</p>
       ) : (
         <ol className="timeline">
           {events.data.map((e) => {
             const d = describeEvent(e);
             return (
               <li key={e.id}>
-                <span className="bar" aria-hidden="true" />
+                <span className="tl-dot" aria-hidden="true" />
                 <span>
                   <strong>{d.who}</strong> {d.what}
                   {e.note && <span className="prose"> “{e.note}”</span>}
-                  <span className="muted">
-                    {" "}
-                    · {relativeTime(e.created_at)}
+                  <span className="tl-time">
+                    {relativeTime(e.created_at)}
                     {!e.actor && " · system"}
                   </span>
                 </span>
@@ -433,8 +534,8 @@ function Comments({ issue, projectRole }: { issue: Issue; projectRole: ProjectRo
   }
 
   return (
-    <Card title="Comments" titleId="comments-h">
-      <div className="stack" style={{ gap: 16 }}>
+    <Card title="Comments" titleId={`comments-${issue.id}`}>
+      <div className="stack" style={{ gap: 14 }}>
         {comments.isPending ? (
           <SkeletonBlock label="comments" lines={2} />
         ) : comments.isError ? (
@@ -442,16 +543,14 @@ function Comments({ issue, projectRole }: { issue: Issue; projectRole: ProjectRo
         ) : comments.data.length === 0 ? (
           <p className="muted">No comments yet.</p>
         ) : (
-          <ul className="stack" style={{ listStyle: "none", margin: 0, padding: 0, gap: 14 }}>
+          <ul className="comments">
             {comments.data.map((c) => (
               <li key={c.id} className="comment">
-                <span className="avatar light" aria-hidden="true">
-                  {initials(userName(c.author))}
-                </span>
+                <Avatar name={userName(c.author)} size={24} />
                 <div style={{ minWidth: 0 }}>
                   <div>
                     <strong>{userName(c.author)}</strong>{" "}
-                    <span className="muted" style={{ fontSize: 12 }}>
+                    <span className="faint">
                       {relativeTime(c.created_at)}
                       {c.edited_at && " · edited"}
                     </span>
@@ -470,6 +569,7 @@ function Comments({ issue, projectRole }: { issue: Issue; projectRole: ProjectRo
               placeholder="Write a comment. Never paste secrets here."
               hint="Everyone on the project can read comments, and they are kept in the history. Never paste a secret, token or password."
               value={body}
+              rows={3}
               maxLength={10000}
               onChange={(e) => setBody(e.target.value)}
               error={fieldErrors(add.error).body}
@@ -495,15 +595,27 @@ function IssueActions({
   issue,
   disabled,
   onConflict,
+  assignSignal,
 }: {
   issue: Issue;
   disabled: boolean;
   onConflict: (err: unknown, to?: IssueStatus) => void;
+  assignSignal: number;
 }) {
   const { orgId } = useOrgCtx();
   const transition = useTransitionIssue(orgId, issue.id);
   const [dialog, setDialog] = useState<OpenDialog>(null);
-  const actions = issueActions(issue);
+  const actions = useMemo(() => issueActions(issue), [issue]);
+  const assignAction = actions.find((a): a is Extract<IssueAction, { kind: "assign" }> => a.kind === "assign");
+
+  // The list's "A" shortcut. Only opens the dialog when the payload grants assigning.
+  const seen = useRef(assignSignal);
+  useEffect(() => {
+    if (assignSignal === seen.current) return;
+    seen.current = assignSignal;
+    if (assignAction && !disabled) setDialog({ kind: "assign", via: assignAction.via });
+  }, [assignSignal, assignAction, disabled]);
+
   if (actions.length === 0) return null;
 
   function run(a: IssueAction) {
@@ -534,8 +646,8 @@ function IssueActions({
 
   const close = () => setDialog(null);
   return (
-    <div className="stack" style={{ gap: 8, alignItems: "flex-end" }}>
-      <div className="actions row issue-actions" style={{ gap: 12, justifyContent: "flex-end" }}>
+    <div className="detail-actions">
+      <div className="issue-actions">
         {actions.map((a) =>
           a.kind === "exception_pending" ? (
             <ButtonLink key="pending" to={`/orgs/${orgId}/exceptions?tab=pending&id=${encodeURIComponent(a.exceptionId)}`}>
@@ -548,6 +660,7 @@ function IssueActions({
               onClick={() => run(a)}
               disabled={disabled}
               busy={a.kind === "transition" && transition.isPending && transition.variables?.to === a.to}
+              aria-keyshortcuts={a.kind === "assign" ? "A" : undefined}
             >
               {a.kind === "transition" ? a.label : a.kind === "assign" ? a.label : "Request exception"}
             </Button>
@@ -691,10 +804,10 @@ function ExceptionForm({ issue, onDone }: { issue: Issue; onDone: () => void }) 
 
   return (
     <form className="form-grid" onSubmit={submit} noValidate>
-      <p className="row" style={{ gap: 8 }}>
-        <span className="mono muted">{issue.key}</span>
+      <p className="dialog-issue">
+        <span className="mono faint">{issue.key}</span>
         <strong>{issue.title}</strong>
-        <SeverityBadge severity={issue.severity} />
+        <SeverityMark severity={issue.severity} />
       </p>
       <ActionError
         error={request.error && Object.keys(server).length === 0 ? request.error : null}
@@ -726,7 +839,7 @@ function ExceptionForm({ issue, onDone }: { issue: Issue; onDone: () => void }) 
         hint={
           <span className="row-between" style={{ display: "flex" }}>
             <span>At least {MIN_REASON} characters. The security lead sees this. Never paste a secret here.</span>
-            <span aria-live="polite">
+            <span aria-live="polite" className="num">
               {count} character{count === 1 ? "" : "s"}
             </span>
           </span>
@@ -750,9 +863,7 @@ function ExceptionForm({ issue, onDone }: { issue: Issue; onDone: () => void }) 
           required
         />
       )}
-      <p className="muted" style={{ fontSize: 13 }}>
-        A security lead decides; you can't decide your own request. The issue keeps its status until then.
-      </p>
+      <p className="muted small">A security lead decides; you can't decide your own request. The issue keeps its status until then.</p>
       <div className="dialog-actions">
         <Button onClick={onDone}>Cancel</Button>
         <Button type="submit" variant="primary" busy={request.isPending}>
@@ -762,3 +873,4 @@ function ExceptionForm({ issue, onDone }: { issue: Issue; onDone: () => void }) 
     </form>
   );
 }
+

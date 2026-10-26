@@ -11,6 +11,7 @@ import { Card } from "../components/Card";
 import { Select, TextField } from "../components/Field";
 import { ChevronIcon, LockIcon } from "../components/Icons";
 import { LoadMore, Table } from "../components/Table";
+import { PageHeader } from "../components/PageHeader";
 import { EmptyState, ErrorState, ForbiddenState, SkeletonRows } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { auditDataText, auditTargetSummary } from "../lib/auditSummary";
@@ -66,7 +67,15 @@ export function AuditLogPage() {
   const items = flattenPages(log.data?.pages);
   const [open, setOpen] = useState<string | null>(null);
 
-  if (!allowed) return <ForbiddenState orgName={org.name} backTo={`/orgs/${orgId}/projects`} />;
+  if (!allowed)
+    return (
+      <div className="page">
+        <PageHeader title="Audit log" />
+        <div className="page-body">
+          <ForbiddenState orgName={org.name} backTo={`/orgs/${orgId}/projects`} />
+        </div>
+      </div>
+    );
 
   const set = (key: string, value: string) =>
     setParams((prev) => {
@@ -82,13 +91,10 @@ export function AuditLogPage() {
       : "All entries";
 
   return (
-    <>
-      <header className="page-head">
-        <div className="titles">
-          <h1>Audit log</h1>
-          <p className="muted">Every change made in {org.name}: who did it, to what, from where. Visible to org admins and security leads.</p>
-        </div>
-      </header>
+    <div className="page">
+      <PageHeader title="Audit log" />
+      <div className="page-body">
+      <p className="faint small">Every change made in {org.name}: who did it, to what, from where. Visible to org admins and security leads.</p>
       <div className="banner banner-info">
         <LockIcon />
         <span>
@@ -99,7 +105,7 @@ export function AuditLogPage() {
       </div>
 
       <section className="card" aria-label="Filters">
-        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", alignItems: "end", gap: 12 }}>
+        <div className="grid filters-grid">
           <Select
             label="Action"
             value={p.action}
@@ -130,7 +136,7 @@ export function AuditLogPage() {
       <Card flush aria-label="Entries">
         <div className="card-head">
           <p>
-            <strong>{range}</strong> <span className="muted">· newest first · times in your time zone ({timeZoneLabel()})</span>
+            <strong>{range}</strong> <span className="faint">· newest first · times in your time zone ({timeZoneLabel()})</span>
           </p>
         </div>
         {log.isPending ? (
@@ -170,7 +176,8 @@ export function AuditLogPage() {
           </>
         )}
       </Card>
-    </>
+      </div>
+    </div>
   );
 }
 
@@ -183,20 +190,19 @@ function AuditRow({ entry: e, open, onToggle }: { entry: AuditEntry; open: boole
         <td data-label="Actor" className="nowrap">
           {e.actor ? userName(e.actor) : <span className="muted">System</span>}
         </td>
-        <td data-label="Action" className="mono" style={{ fontSize: 13 }}>
+        <td data-label="Action" className="mono small">
           {e.action}
         </td>
         <td data-label="Target" style={{ overflowWrap: "anywhere" }}>
           {auditTargetSummary(e)}
         </td>
-        <td data-label="IP" className="mono muted" style={{ fontSize: 13 }}>
+        <td data-label="IP" className="mono faint small">
           {e.ip ?? "–"}
         </td>
         <td className="no-label" style={{ textAlign: "right" }}>
           <button
             type="button"
-            className="icon-btn"
-            style={{ border: "1px solid var(--control-line)" }}
+            className="icon-btn bordered"
             aria-expanded={open}
             aria-controls={detailsId}
             aria-label={open ? "Hide details" : "Show details"}
@@ -210,7 +216,7 @@ function AuditRow({ entry: e, open, onToggle }: { entry: AuditEntry; open: boole
         <tr id={detailsId} className="expand-row">
           <td colSpan={6} className="no-label">
             <div className="grid grid-2" style={{ gap: 16 }}>
-              <dl className="kv" style={{ fontSize: 13 }}>
+              <dl className="kv">
                 <dt>Entry</dt>
                 <dd className="mono">{e.id}</dd>
                 <dt>Actor</dt>
