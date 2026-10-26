@@ -180,6 +180,14 @@ func (s *Service) Issues(ctx context.Context, a *Actor, f IssueFilter) (IssuePag
 		if err != nil {
 			return err
 		}
+		if a.Token != nil { // an API token lists its own project only
+			if q.ProjectID == nil {
+				q.ProjectID = &a.Token.ProjectID
+			}
+			if _, err := projectAccess(ctx, r, a, *q.ProjectID); err != nil {
+				return err
+			}
+		}
 		rq := q
 		rq.Limit = q.Limit + 1 // one extra row tells whether there is a next page
 		rows, err := r.Issues(ctx, rq)

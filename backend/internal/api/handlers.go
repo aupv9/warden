@@ -47,6 +47,8 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	o.POST("/exceptions/:exception_id/decision", h.decide)
 
 	o.GET("/audit-log", h.auditLog)
+
+	registerTokenRoutes(o, h.svc)
 }
 
 // reply renders a service result: data with status (200/201), or the error.

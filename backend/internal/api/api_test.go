@@ -66,14 +66,18 @@ const (
 	stranger = "stranger@other.test"
 )
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, opts ...func(*service.Config)) *env {
 	t.Helper()
 	f := servicetest.New()
 	objects := &fakeObjects{sizes: map[string]int64{}}
-	svc := service.New(f, objects, service.Config{
+	cfg := service.Config{
 		UploadMaxBytes: 10 << 20, RateLimitPerHour: 3,
 		Limits: service.Limits{UploadMaxMB: 10, UnzipMaxMB: 100, UnzipMaxFiles: 1000, ScanTimeoutMinutes: 30, ScansPerHour: 3},
-	}, nil)
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	svc := service.New(f, objects, cfg, nil)
 	svc.SetClock(func() time.Time { return f.Now })
 	e := &env{t: t, f: f, objects: objects, h: serverWith(t, nil, svc), u: map[string]uuid.UUID{}}
 	e.org = f.AddOrg("Acme")

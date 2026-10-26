@@ -9,5 +9,11 @@ DO $$ BEGIN
     REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM warden_app;
     REVOKE ALL ON goose_db_version FROM warden_app;
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON river_migration FROM warden_app;
+    -- API tokens are never deleted (scans reference them), and the app may only
+    -- revoke them or record their use, not change their hash, scopes or expiry.
+    REVOKE UPDATE, DELETE, TRUNCATE ON api_token FROM warden_app;
+    GRANT UPDATE (last_used_at, revoked_at) ON api_token TO warden_app;
+    -- Token lookup before the org is known (see 00003_api_tokens.sql).
+    GRANT EXECUTE ON FUNCTION warden_lookup_token(text) TO warden_app;
   END IF;
 END $$;

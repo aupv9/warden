@@ -135,7 +135,7 @@ func validEmail(s string) bool {
 
 // Me returns the caller's profile and org memberships.
 func (s *Service) Me(ctx context.Context, u User, id Identity) (Me, error) {
-	out := Me{ID: u.ID, Sub: u.Sub, Email: u.Email, MFA: id.MFA, Orgs: []OrgRef{}, Limits: s.cfg.Limits}
+	out := Me{ID: u.ID, Sub: u.Sub, Email: u.Email, MFA: id.MFA, Orgs: []OrgRef{}, Limits: s.cfg.Limits, MFARequiredOrgs: []uuid.UUID{}}
 	if n := cleanName(id.Name); n != "" {
 		out.Name = &n
 	}
@@ -146,6 +146,11 @@ func (s *Service) Me(ctx context.Context, u User, id Identity) (Me, error) {
 		}
 		if orgs != nil {
 			out.Orgs = orgs
+		}
+		for _, o := range out.Orgs {
+			if !id.MFA && s.MFARequired(o.Role) {
+				out.MFARequiredOrgs = append(out.MFARequiredOrgs, o.ID)
+			}
 		}
 		return nil
 	})

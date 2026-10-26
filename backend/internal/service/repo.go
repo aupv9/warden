@@ -53,6 +53,8 @@ type NewScan struct {
 	SHA256    string
 	ObjectKey string
 	Tools     []string
+	// ViaToken is the API token that created the scan, if any.
+	ViaToken *uuid.UUID
 }
 
 // ScanCursor positions a newest-first scan list.
@@ -249,6 +251,9 @@ type Repo interface {
 
 	AppendAudit(ctx context.Context, r AuditRecord) error
 	AuditEntries(ctx context.Context, q AuditQuery) ([]AuditEntry, error)
+
+	TokenRepo
+	GateRepo
 }
 
 // ObjectStore is the slice of object storage the API needs: a presigned PUT for

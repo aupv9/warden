@@ -1,7 +1,12 @@
 // warden-admin is the operator CLI.
 //
 //	warden-admin org create --name "Acme" --admin you@example.com
+//	warden-admin org set-role --org <org id> --email them@example.com --role org_admin
 //	warden-admin audit verify --org <org id>
+//
+// org set-role is the break-glass path when nobody who can manage members can
+// sign in (for example, an admin lost their second factor). It is audited as
+// member.role_changed with no actor and data.via = "warden-admin".
 //
 // It connects with the runtime DSN (WARDEN_DATABASE__DSN, role warden_app), not
 // the schema owner's: organization, org_member and app_user have no RLS and the
@@ -23,11 +28,13 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
+	"github.com/aupv9/warden/backend/internal/domain/rbac"
 	"github.com/aupv9/warden/backend/internal/store"
 )
 
 const usage = `usage:
   warden-admin org create --name NAME --admin EMAIL
+  warden-admin org set-role --org ORG_ID --email EMAIL --role org_admin|security_lead|member
   warden-admin audit verify --org ORG_ID`
 
 func main() {
@@ -68,6 +75,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "created organization %q: %s\n", *name, id)
 		return 0
+	case "org set-role":
+		fs := flag.NewFlagSet("org set-role", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		org := fs.String("org", "", "organization id")
+		email := fs.String("email", "", "member's email")
+		role := fs.String("role", "", "org_admin, security_lead or member")
+		if err := fs.Parse(args[2:]); err != nil || *email == "" || !validRole(*role) {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		id, err := uuid.Parse(*org)
+		if err != nil {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		d, closeDB, err := open(ctx)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer closeDB()
+		from, err := store.SetOrgRole(ctx, d, id, *email, rbac.Role(*role))
+		if err != nil {
+			fmt.Fprintf(stderr, "set role of %s in %s: %v\n", *email, id, err)
+			return 1
+		}
+		if from == rbac.Role(*role) {
+			fmt.Fprintf(stdout, "%s is already %s in %s; nothing changed\n", *email, *role, id)
+			return 0
+		}
+		fmt.Fprintf(stdout, "%s: %s -> %s in %s (audited)\n", *email, from, *role, id)
+		return 0
 	case "audit verify":
 		fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -96,6 +135,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, usage)
 	return 2
+}
+
+func validRole(r string) bool {
+	switch rbac.Role(r) {
+	case rbac.OrgAdmin, rbac.SecurityLead, rbac.Member:
+		return true
+	}
+	return false
 }
 
 func open(ctx context.Context) (*store.DB, func(), error) {

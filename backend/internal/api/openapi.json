@@ -20,7 +20,8 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "bearerFormat": "JWT"
+        "bearerFormat": "JWT",
+        "description": "An OIDC access token (JWT), or an API token wdn_<prefix>_<secret>. API tokens act as their creator, are bound to one project, and may only call: POST /orgs/{org_id}/projects/{project_id}/scans, POST /orgs/{org_id}/scans/{scan_id}/start and /cancel, GET /orgs/{org_id}/scans/{scan_id} and /gate (scope scan:write); GET /orgs/{org_id}/issues and /issues/{issue_id} (scope issues:read). Any other route is 403 TOKEN_SCOPE; another org or project is 404. Each token is limited to 60 requests per minute (429 with Retry-After). Roles listed in oidc.require_mfa_roles get 403 MFA_REQUIRED under /orgs/{org_id} unless the access token shows a second factor; API tokens are exempt."
       }
     },
     "schemas": {
@@ -220,6 +221,14 @@
           },
           "limits": {
             "$ref": "#/components/schemas/Limits"
+          },
+          "mfa_required_orgs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Orgs this sign-in can't use: the caller's role there requires a second factor (oidc.require_mfa_roles) and the access token has none. Calls under those orgs return 403 MFA_REQUIRED."
           }
         },
         "required": [
@@ -229,7 +238,8 @@
           "name",
           "mfa",
           "orgs",
-          "limits"
+          "limits",
+          "mfa_required_orgs"
         ],
         "additionalProperties": false
       },
@@ -612,6 +622,17 @@
             "items": {
               "$ref": "#/components/schemas/ToolRun"
             }
+          },
+          "via_token": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TokenRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The API token that created the scan, if any (created_by is the token's creator)."
           }
         },
         "required": [
@@ -627,7 +648,8 @@
           "created_at",
           "queued_at",
           "started_at",
-          "finished_at"
+          "finished_at",
+          "via_token"
         ],
         "additionalProperties": false
       },
@@ -1563,6 +1585,187 @@
           "decision"
         ],
         "additionalProperties": false
+      },
+      "TokenScope": {
+        "type": "string",
+        "enum": [
+          "scan:write",
+          "issues:read"
+        ],
+        "description": "scan:write: create, start, cancel and read scans and read the gate in the token's project. issues:read: list and read issues in the token's project."
+      },
+      "ApiToken": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "pattern": "^[a-z2-7]{8}$",
+            "description": "Shown in lists; not secret."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenScope"
+            }
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/UserRef"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Updated at most once a minute."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "scopes",
+          "created_by",
+          "created_at",
+          "expires_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "additionalProperties": false
+      },
+      "CreatedToken": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/ApiToken"
+          },
+          "secret": {
+            "type": "string",
+            "pattern": "^wdn_[a-z2-7]{8}_[a-z2-7]{52}$",
+            "description": "The full token. Returned only here, once; Warden stores only a hash of it."
+          }
+        },
+        "required": [
+          "token",
+          "secret"
+        ],
+        "additionalProperties": false
+      },
+      "CreateTokenRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenScope"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "expires_in_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365
+          }
+        },
+        "required": [
+          "name",
+          "scopes",
+          "expires_in_days"
+        ],
+        "additionalProperties": false
+      },
+      "TokenRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix"
+        ],
+        "additionalProperties": false
+      },
+      "Gate": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ScanStatus"
+          },
+          "finished": {
+            "type": "boolean"
+          },
+          "fail_on": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "pass": {
+            "type": "boolean",
+            "description": "False until the scan has finished, and always for failed or cancelled scans."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/SeverityCounts"
+          },
+          "blocking": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/IssueSummary"
+            },
+            "description": "Active issues seen in this scan at or above fail_on, most severe first (at most 100)."
+          }
+        },
+        "required": [
+          "scan_id",
+          "status",
+          "finished",
+          "fail_on",
+          "pass",
+          "counts",
+          "blocking"
+        ],
+        "additionalProperties": false,
+        "description": "counts: active issues (open, assigned, in_progress, reopened) seen in this scan. false_positive and risk_accepted issues never block."
       }
     }
   },
@@ -4814,6 +5017,423 @@
                         "next_cursor"
                       ],
                       "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/tokens": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "operationId": "listTokens",
+        "summary": "API tokens of a project (manage_project_members)",
+        "description": "Newest first; revoked and expired tokens included. Secrets are never returned.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ApiToken"
+                          }
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_project_members (or, to create, run_scan: a token acts as its creator).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "operationId": "createToken",
+        "summary": "Create an API token (manage_project_members and run_scan)",
+        "description": "The response carries the full token in secret: the only time it is returned. Audited as token.created (name, prefix, scopes; never the secret).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CreatedToken"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_project_members (or, to create, run_scan: a token acts as its creator).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/tokens/{token_id}": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "token_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "tokens"
+        ],
+        "operationId": "revokeToken",
+        "summary": "Revoke an API token (manage_project_members)",
+        "description": "Sets revoked_at; idempotent. Audited as token.revoked.",
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_project_members (or, to create, run_scan: a token acts as its creator).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/scans/{scan_id}/gate": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "scan_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "scans"
+        ],
+        "operationId": "getScanGate",
+        "summary": "CI gate verdict for a scan (view_results; API tokens: scan:write)",
+        "parameters": [
+          {
+            "name": "fail_on",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low"
+              ],
+              "default": "high"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Gate"
                     },
                     "error": {
                       "type": "null"
