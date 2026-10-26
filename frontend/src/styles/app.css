@@ -267,8 +267,11 @@ code,
 }
 .page-head .actions {
   display: flex;
-  flex-wrap: wrap;
   gap: 12px;
+  /* Search and the primary action stay on one row; when there isn't room beside
+     the title the whole group wraps under it and the search box shrinks. */
+  flex: 0 1 520px;
+  max-width: 100%;
 }
 .breadcrumb {
   font-size: 13px;
