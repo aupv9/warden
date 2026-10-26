@@ -89,10 +89,26 @@ func TestYAMLFile(t *testing.T) {
 func TestScannerImagesMustBePinned(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	for _, img := range []string{"trivy: aquasec/trivy:latest", "evil: registry.internal/x@sha256:" + strings.Repeat("a", 64)} {
+	for _, img := range []string{
+		"trivy: aquasec/trivy:latest",
+		"trivy: sha256:" + strings.Repeat("a", 63),
+		"trivy: x sha256:" + strings.Repeat("a", 64),
+		"trivy: aquasec/trivy:0.75.0",
+		"evil: registry.internal/x@sha256:" + strings.Repeat("a", 64),
+	} {
 		_ = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("scan:\n  images:\n    "+img+"\n"), 0o600)
 		if _, err := Load(); err == nil {
 			t.Fatalf("%s accepted", img)
+		}
+	}
+	// Accepted: a local image ID (content-addressed) and tag + digest (the digest decides).
+	for _, img := range []string{
+		"gitleaks: sha256:" + strings.Repeat("b", 64),
+		"trivy: docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64),
+	} {
+		_ = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("scan:\n  images:\n    "+img+"\n"), 0o600)
+		if _, err := Load(); err != nil {
+			t.Fatalf("%s: %v", img, err)
 		}
 	}
 }

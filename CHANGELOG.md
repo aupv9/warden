@@ -8,6 +8,26 @@ All notable changes to Warden are listed here. The format follows
 
 ### Added
 
+- REST API for the first usable release (OpenAPI 3.1 at `/api/v1/openapi.json`):
+  - sign-in provisions the user; orgs are created by an operator with
+    `warden-admin org create`
+  - org and project members with role-based permissions; objects outside your reach
+    return 404
+  - scans uploaded straight to object storage through a presigned URL that pins the size
+    and SHA-256; per-user hourly limit
+  - issues: filters, the status workflow with optimistic locking, bulk assign, comments,
+    history
+  - exceptions (false positive, accepted risk up to 180 days) decided by a security lead,
+    never by the requester
+  - append-only audit log, hash-chained per org; `warden-admin audit verify` checks it
+- Scan worker runs the full pipeline: download, verify, extract, sandboxed scanners,
+  findings turned into issues (dedupe by fingerprint, automatic fixed and reopened, a guard
+  against mass auto-close), source deleted on every path. Periodic jobs purge old sources
+  and abandoned uploads, and reopen expired accepted risks.
+- Web UI for all core screens: projects, upload and scans (in-browser SHA-256 with
+  progress), issue list and detail, exceptions, members and roles, audit log; loading,
+  empty and error states; phone layout.
+- The frontend's API types are checked against the backend's OpenAPI document in CI.
 - UI/UX design for the first usable release ([`frontend/DESIGN.md`](frontend/DESIGN.md)):
   - core flows (scan, triage, fix, exception, access)
   - wireframes for six screens, with images in `frontend/design/`: projects, upload and
@@ -15,6 +35,4 @@ All notable changes to Warden are listed here. The format follows
   - security rules for the UI
   - a visual system of its own: dark sidebar, teal accent, severity colors that differ in
     lightness, IBM Plex type
-
-The web UI itself is still a skeleton (sign-in and `/api/v1/me`). The screens above are not
-implemented yet.
+  - audit log, states, upload flow, dialogs and phone layout (images 07–14)

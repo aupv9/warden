@@ -10,9 +10,9 @@ in throw-away sandboxes and turns every finding into a tracked issue with an own
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
 
 > [!WARNING]
-> Warden is in early development. The scan engine, sandboxing, authentication and data
-> model are implemented and tested; the upload API, issue workflow endpoints and web UI
-> are not finished yet. Don't run it in production.
+> Warden is alpha software. Uploads, scans, the issue workflow, exceptions, members and the
+> audit log are implemented, but the API and data model may still change between releases.
+> Don't run it in production yet.
 
 ## Why Warden
 
@@ -60,12 +60,25 @@ Requirements: Go 1.27, Docker (Colima works on macOS), Node.js 22, `jq`, `openss
 
 ```bash
 make setup      # Go modules + frontend deps (npm ci, scripts disabled)
-make up         # writes .env with random secrets; starts Postgres, Redis, S3 (SeaweedFS), Keycloak, Mailpit
+make up         # writes .env with random secrets; starts Postgres, Redis, S3 (SeaweedFS), Keycloak, Mailpit;
+                # creates the upload bucket (browser uploads allowed from http://localhost:5173 only)
 make migrate    # schema as the owner role; the app connects as warden_app (RLS enforced)
 make api        # http://127.0.0.1:8010   (Keycloak http://localhost:8180, Mailpit http://localhost:8025)
 make worker
 make web        # http://localhost:5173
 ```
+
+Sign in to the web UI once (that creates your Warden user), then create an organization
+with yourself as its first admin. Organizations are created by an operator; there is no
+API for it:
+
+```bash
+set -a; source .env; set +a
+go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@example.com
+```
+
+`warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API.
+`warden-admin audit verify --org <org id>` checks an organization's audit-log hash chain.
 
 On macOS there is no gVisor, so local scans fall back to `runc` with a warning.
 CI and production must use `runsc`.
@@ -84,9 +97,14 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_OIDC__ISSUER` / `WARDEN_OIDC__AUDIENCE` | Keycloak realm / `warden-api` | Access tokens: RS256 only, JWKS from the issuer |
 | `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
-| `WARDEN_SCAN__HMAC_KEY` | | Key for secret fingerprints |
+| `WARDEN_SCAN__HMAC_KEY` | | Master key for secret fingerprints, at least 32 bytes (`openssl rand -hex 32`). Each organization gets its own key derived from it, so changing it changes every secret's fingerprint |
 | `WARDEN_SCAN__TIMEOUT` / `WARDEN_SCAN__SLOTS_PER_NODE` | `30m` / `7` | Per-scan timeout, concurrent scans per worker |
-| `WARDEN_STORAGE__*` | | S3-compatible object storage |
+| `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest upload; the presigned URL pins the exact size and the worker refuses larger objects |
+| `WARDEN_SCAN__SCRATCH_DIR` / `WARDEN_SCAN__MIRROR_DIR` | `/scratch` / `/mirror` | Worker's per-scan working directory; offline scanner data (`make mirror`) |
+| `WARDEN_SCAN__SOURCE_RETENTION` | `1h` | Uploaded objects still present after this are deleted by a sweep (normally a scan deletes its own upload when it ends). Uploads never started within 1 hour are cancelled (`UPLOAD_ABANDONED`) |
+| `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan may auto-fix at most this fraction of a project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation` |
+| `WARDEN_STORAGE__ENDPOINT` / `WARDEN_STORAGE__BUCKET` | `http://localhost:8333` / `warden-uploads` | S3-compatible store. Any non-AWS endpoint uses path-style URLs; for AWS use `https://s3.<region>.amazonaws.com` (the region is read from it). The bucket must exist and allow CORS `PUT` from the web UI's origin |
+| `WARDEN_STORAGE__ACCESS_KEY` / `WARDEN_STORAGE__SECRET_KEY` | | Needs object read, write and delete on the bucket only |
 | `WARDEN_LOG__LEVEL` / `WARDEN_LOG__FORMAT` | `info` / `json` | |
 | `WARDEN_OTEL__ENABLED` | `false` | OpenTelemetry traces and metrics |
 
@@ -95,16 +113,51 @@ See [`.env.example`](.env.example) for a complete local setup and
 
 ## API
 
-REST under `/api/v1`, authenticated with OIDC bearer tokens. Every response is an envelope:
+REST under `/api/v1`, authenticated with OIDC bearer tokens (Keycloak access tokens, RS256).
+The OpenAPI 3.1 document is served unauthenticated at `/api/v1/openapi.json`; health
+endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 
 ```json
-{ "data": { "sub": "…", "email": "dev@example.com", "name": null, "mfa": true },
+{ "data": { "id": "…", "sub": "…", "email": "dev@example.com", "name": null, "mfa": true, "orgs": [], "limits": { … } },
   "error": null,
   "meta": { "request_id": "…" } }
 ```
 
-Errors carry a stable `error.code` (`UNAUTHORIZED`, `NOT_FOUND`, …). The OpenAPI document is
-served at `/api/v1/openapi.json`. Health endpoints: `/healthz`, `/readyz`, `/info`.
+| | |
+|---|---|
+| `GET /me` | Your profile, orgs and server limits. The first call creates your Warden user. |
+| `/orgs/{org_id}`, `/summary` | Organization, SLA days, dashboard counts |
+| `/orgs/{org_id}/members` | Org members and roles (`org_admin`, `security_lead`, `member`) |
+| `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`) and scans |
+| `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel` |
+| `/orgs/{org_id}/issues` | Issues: filters, transitions, bulk assignment, comments, history |
+| `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
+| `/orgs/{org_id}/audit-log` | Hash-chained audit log |
+
+How it behaves:
+
+- **Uploads bypass the API.** `POST …/projects/{id}/scans` returns a presigned `PUT` URL
+  (15 minutes, pinned size and SHA-256); the browser uploads the `.zip` to object storage and
+  then calls `POST …/scans/{id}/start`, which checks the object and queues the scan. Scan
+  creation is limited per user per hour (`WARDEN_SCAN__RATE_LIMIT_PER_HOUR`, default 10;
+  `429` with `Retry-After`).
+- **Tenancy.** Anything under `/orgs/{org_id}` requires membership; non-members get `404`, as
+  do projects, scans and issues the caller can't see. Each request's database work runs with
+  `app.org_id` set, so row-level security backs up the permission checks.
+- **Permissions** follow the matrix in [`internal/domain/rbac`](backend/internal/domain/rbac/rbac.go)
+  (`403 FORBIDDEN` when a member lacks one). Developers may change only issues assigned to them.
+- **Issue workflow.** Status changes follow [`internal/domain/issuestate`](backend/internal/domain/issuestate/issuestate.go)
+  and carry the issue's `version` (`409 VERSION_CONFLICT` if stale). `false_positive` and
+  `risk_accepted` are reached only through an approved exception; a requester can't decide
+  their own request, and risk acceptances expire within 180 days.
+- **Audit.** Every write appends an audit entry in the same transaction. Entries are
+  hash-chained per organization and the application role can't update or delete them.
+- **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
+  `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`, `VERSION_CONFLICT`,
+  `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`, `RATE_LIMITED`. Unknown JSON
+  fields are rejected; internal errors are logged and returned as a generic `500`.
+- Lists take `?limit=` (default 50, max 200) and an opaque `?cursor=`, and return
+  `{ "items": [...], "next_cursor": … }`.
 
 ## Development
 
@@ -138,15 +191,19 @@ the pipeline locally: `go -C backend run ./cmd/selfscan -root .. -zip some.zip`.
 
 ```
 backend/                 Go module
-  cmd/                   warden-api, warden-worker, warden-migrate, warden-redact,
-                         warden-sarif-gate, selfscan
-  internal/api/          REST API (gin)
+  cmd/                   warden-api, warden-worker, warden-migrate, warden-admin,
+                         warden-redact, warden-sarif-gate, selfscan
+  internal/api/          REST API (gin), OpenAPI document
+  internal/service/      business rules: permissions, issue workflow, exceptions, scans
+  internal/store/        Postgres repositories, hash-chained audit log
   internal/auth/         OIDC access-token and JWKS verification
   internal/domain/       fingerprints, severity mapping, issue state machine, permission matrix
-  internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, release gate
-  internal/worker/       background jobs (River)
+  internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, result
+                         processor (findings → issues), release gate
+  internal/storage/      S3-compatible client (presigned uploads, download, delete)
+  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry
   internal/migrations/   SQL migrations (goose), River tables, role grants
-frontend/                React + TypeScript + Vite, OIDC (PKCE)
+frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
 rules/opengrep/          Warden's own guardrail rules, run on every self-scan
 deploy/                  Keycloak realm, Postgres role bootstrap
