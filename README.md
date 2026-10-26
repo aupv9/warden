@@ -158,6 +158,27 @@ logging, OpenTelemetry, health checks, the HTTP server and the response envelope
 [pgx](https://github.com/jackc/pgx), [goose](https://github.com/pressly/goose) and
 [River](https://github.com/riverqueue/river) for Postgres, migrations and jobs.
 
+## Releases
+
+Tags `vMAJOR.MINOR.PATCH` on `main` publish a [GitHub release](https://github.com/aupv9/warden/releases)
+after the full CI suite and the release self-scan gate pass: static Linux binaries
+(`warden-api`, `warden-worker`, `warden-migrate`; amd64 and arm64) with SPDX SBOMs and
+checksums, and the image `ghcr.io/aupv9/warden` (amd64 and arm64). The version is stamped
+into the binaries and served at `/info`.
+
+### Verifying a release
+
+Every artifact and the image carry a Sigstore build-provenance attestation that ties them
+to this repository's release workflow. Verify before running:
+
+```bash
+sha256sum -c --ignore-missing warden_v0.1.0_checksums.txt
+gh attestation verify warden_v0.1.0_linux_amd64.tar.gz -R aupv9/warden
+gh attestation verify oci://ghcr.io/aupv9/warden@sha256:<digest> -R aupv9/warden
+```
+
+Pull the image by the digest from the release notes, not by tag.
+
 ## Security invariants
 
 Changes that weaken one of these need an explicit discussion in the pull request:
