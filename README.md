@@ -60,7 +60,8 @@ Requirements: Go 1.27, Docker (Colima works on macOS), Node.js 22, `jq`, `openss
 
 ```bash
 make setup      # Go modules + frontend deps (npm ci, scripts disabled)
-make up         # writes .env with random secrets; starts Postgres, Redis, S3 (SeaweedFS), Keycloak, Mailpit
+make up         # writes .env with random secrets; starts Postgres, Redis, S3 (SeaweedFS), Keycloak, Mailpit;
+                # creates the upload bucket (browser uploads allowed from http://localhost:5173 only)
 make migrate    # schema as the owner role; the app connects as warden_app (RLS enforced)
 make api        # http://127.0.0.1:8010   (Keycloak http://localhost:8180, Mailpit http://localhost:8025)
 make worker
@@ -96,9 +97,14 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_OIDC__ISSUER` / `WARDEN_OIDC__AUDIENCE` | Keycloak realm / `warden-api` | Access tokens: RS256 only, JWKS from the issuer |
 | `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
-| `WARDEN_SCAN__HMAC_KEY` | | Key for secret fingerprints |
+| `WARDEN_SCAN__HMAC_KEY` | | Master key for secret fingerprints, at least 32 bytes (`openssl rand -hex 32`). Each organization gets its own key derived from it, so changing it changes every secret's fingerprint |
 | `WARDEN_SCAN__TIMEOUT` / `WARDEN_SCAN__SLOTS_PER_NODE` | `30m` / `7` | Per-scan timeout, concurrent scans per worker |
-| `WARDEN_STORAGE__*` | | S3-compatible object storage |
+| `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest upload; the presigned URL pins the exact size and the worker refuses larger objects |
+| `WARDEN_SCAN__SCRATCH_DIR` / `WARDEN_SCAN__MIRROR_DIR` | `/scratch` / `/mirror` | Worker's per-scan working directory; offline scanner data (`make mirror`) |
+| `WARDEN_SCAN__SOURCE_RETENTION` | `1h` | Uploaded objects still present after this are deleted by a sweep (normally a scan deletes its own upload when it ends). Uploads never started within 1 hour are cancelled (`UPLOAD_ABANDONED`) |
+| `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan may auto-fix at most this fraction of a project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation` |
+| `WARDEN_STORAGE__ENDPOINT` / `WARDEN_STORAGE__BUCKET` | `http://localhost:8333` / `warden-uploads` | S3-compatible store. Any non-AWS endpoint uses path-style URLs; for AWS use `https://s3.<region>.amazonaws.com` (the region is read from it). The bucket must exist and allow CORS `PUT` from the web UI's origin |
+| `WARDEN_STORAGE__ACCESS_KEY` / `WARDEN_STORAGE__SECRET_KEY` | | Needs object read, write and delete on the bucket only |
 | `WARDEN_LOG__LEVEL` / `WARDEN_LOG__FORMAT` | `info` / `json` | |
 | `WARDEN_OTEL__ENABLED` | `false` | OpenTelemetry traces and metrics |
 
@@ -190,8 +196,10 @@ backend/                 Go module
   internal/api/          REST API (gin)
   internal/auth/         OIDC access-token and JWKS verification
   internal/domain/       fingerprints, severity mapping, issue state machine, permission matrix
-  internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, release gate
-  internal/worker/       background jobs (River)
+  internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, result
+                         processor (findings → issues), release gate
+  internal/storage/      S3-compatible client (presigned uploads, download, delete)
+  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry
   internal/migrations/   SQL migrations (goose), River tables, role grants
 frontend/                React + TypeScript + Vite, OIDC (PKCE)
 scanners/                sandbox images and pinned digests
