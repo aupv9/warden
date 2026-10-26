@@ -79,29 +79,33 @@ func Register(e *gin.Engine, v cgauth.Verifier, svc *service.Service) {
 		c.Data(http.StatusOK, "application/json", openAPI)
 	})
 
-	v1 := e.Group(Prefix, Authenticate(v), identify(svc))
+	v1 := e.Group(Prefix, authenticate(v, svc, newRateLimiter(tokenRequestsPerMinute, time.Minute)))
 	handlers{svc: svc}.routes(v1)
 }
 
-// Authenticate requires a valid bearer token. Failures are 401 with a generic
-// message; the reason is logged server-side only.
-func Authenticate(v cgauth.Verifier) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		scheme, token, _ := strings.Cut(c.GetHeader("Authorization"), " ")
-		if !strings.EqualFold(scheme, "bearer") {
-			token = ""
-		}
-		p, err := v.Verify(c.Request.Context(), strings.TrimSpace(token))
-		if err != nil {
-			if ae, ok := apperrors.As(err); ok && ae.Cause != nil {
-				logger.FromContext(c.Request.Context()).Info("token rejected", slog.Any("reason", ae.Cause))
-			}
-			c.Header("WWW-Authenticate", `Bearer realm="warden"`)
-			c.Abort()
-			response.Error(c.Writer, c.Request, err)
-			return
-		}
-		c.Request = c.Request.WithContext(cgauth.IntoContext(c.Request.Context(), p))
-		c.Next()
+// bearerToken returns the credential of an "Authorization: Bearer" header, or "".
+func bearerToken(c *gin.Context) string {
+	scheme, token, _ := strings.Cut(c.GetHeader("Authorization"), " ")
+	if !strings.EqualFold(scheme, "bearer") {
+		return ""
 	}
+	return strings.TrimSpace(token)
+}
+
+// verifyJWT verifies an OIDC access token and stores its principal in the
+// request context. Failures are 401 with a generic message; the reason is
+// logged server-side only.
+func verifyJWT(c *gin.Context, v cgauth.Verifier, token string) bool {
+	p, err := v.Verify(c.Request.Context(), token)
+	if err != nil {
+		if ae, ok := apperrors.As(err); ok && ae.Cause != nil {
+			logger.FromContext(c.Request.Context()).Info("token rejected", slog.Any("reason", ae.Cause))
+		}
+		c.Header("WWW-Authenticate", `Bearer realm="warden"`)
+		c.Abort()
+		response.Error(c.Writer, c.Request, err)
+		return false
+	}
+	c.Request = c.Request.WithContext(cgauth.IntoContext(c.Request.Context(), p))
+	return true
 }

@@ -54,25 +54,47 @@ func identityFrom(p *cgauth.Principal) service.Identity {
 	return id
 }
 
-// identify maps the verified token to an active app_user (provisioning it on
-// first sight). Inactive users get 403 on every endpoint.
-func identify(svc *service.Service) gin.HandlerFunc {
+// authenticate accepts an API token ("Bearer wdn_…", see tokenAuth) or an
+// OIDC access token. Either way the Authorization header is removed from the
+// request once read, so nothing later in the chain (a panic's request dump, a
+// log line) can echo the credential.
+func authenticate(v cgauth.Verifier, svc *service.Service, lim *rateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		p, ok := cgauth.FromContext(c.Request.Context())
-		if !ok {
-			fail(c, apperrors.Unauthorized("UNAUTHORIZED", "invalid or expired token"))
+		token := bearerToken(c)
+		c.Request.Header.Del("Authorization")
+		if service.IsAPIToken(token) {
+			if tokenAuth(c, svc, lim, token) {
+				c.Next()
+			}
 			return
 		}
-		id := identityFrom(p)
-		u, err := svc.Authenticate(c.Request.Context(), id)
-		if err != nil {
-			fail(c, err)
-			return
+		if verifyJWT(c, v, token) && identify(c, svc) {
+			c.Next()
 		}
-		c.Set(userKey, u)
-		c.Set(identityKey, id)
-		c.Next()
 	}
+}
+
+// identify maps the verified access token to an active app_user (provisioning
+// it on first sight). Inactive users get 403 on every endpoint.
+func identify(c *gin.Context, svc *service.Service) bool {
+	p, ok := cgauth.FromContext(c.Request.Context())
+	if !ok {
+		fail(c, apperrors.Unauthorized("UNAUTHORIZED", "invalid or expired token"))
+		return false
+	}
+	id := identityFrom(p)
+	u, err := svc.Authenticate(c.Request.Context(), id)
+	if err != nil {
+		fail(c, err)
+		return false
+	}
+	c.Set(userKey, u)
+	c.Set(identityKey, id)
+	return true
+}
+
+func errMFARequired() error {
+	return apperrors.Forbidden("MFA_REQUIRED", "Your role requires two-factor sign-in.")
 }
 
 func currentUser(c *gin.Context) service.User {
@@ -81,12 +103,22 @@ func currentUser(c *gin.Context) service.User {
 }
 
 // orgScope requires the caller to be a member of the path's org. Non-members
-// (and malformed ids) get 404, so org ids can't be probed. The service re-checks
-// membership inside each transaction and sets app.org_id for RLS.
+// (and malformed ids) get 404, so org ids can't be probed; so does an API token
+// used outside its own org. The service re-checks membership inside each
+// transaction and sets app.org_id for RLS.
+//
+// Roles listed in oidc.require_mfa_roles must have signed in with a second
+// factor (403 MFA_REQUIRED otherwise). API tokens are exempt: an admin or
+// security lead needed that second factor to create one.
 func orgScope(svc *service.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		orgID, err := uuid.Parse(c.Param("org_id"))
 		if err != nil {
+			fail(c, apperrors.NotFound("NOT_FOUND", "not found"))
+			return
+		}
+		tok := apiToken(c)
+		if tok != nil && tok.OrgID != orgID {
 			fail(c, apperrors.NotFound("NOT_FOUND", "not found"))
 			return
 		}
@@ -96,8 +128,14 @@ func orgScope(svc *service.Service) gin.HandlerFunc {
 			fail(c, err)
 			return
 		}
+		if tok == nil && svc.MFARequired(role) {
+			if id, _ := c.Get(identityKey); !id.(service.Identity).MFA {
+				fail(c, errMFARequired())
+				return
+			}
+		}
 		c.Set(actorKey, &service.Actor{
-			UserID: u.ID, OrgID: orgID, OrgRole: role,
+			UserID: u.ID, OrgID: orgID, OrgRole: role, Token: tok,
 			// RemoteIP, not ClientIP: X-Forwarded-For is client-controlled
 			// unless a trusted proxy is configured, and this goes in the audit log.
 			IP: c.RemoteIP(), UserAgent: c.Request.UserAgent(),

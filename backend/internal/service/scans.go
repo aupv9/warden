@@ -95,10 +95,14 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		id := ids.New()
 		key := ObjectKey(a.OrgID, id)
 		sum := strings.ToLower(in.SHA256)
-		if err := r.InsertScan(ctx, NewScan{
+		ns := NewScan{
 			ID: id, OrgID: a.OrgID, ProjectID: projectID, CreatedBy: a.UserID,
 			FileName: in.FileName, FileSize: in.FileSize, SHA256: sum, ObjectKey: key, Tools: tools,
-		}); err != nil {
+		}
+		if a.Token != nil {
+			ns.ViaToken = &a.Token.ID
+		}
+		if err := r.InsertScan(ctx, ns); err != nil {
 			return err
 		}
 		scan, err := r.Scan(ctx, id, false)

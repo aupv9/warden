@@ -29,6 +29,9 @@ type Config struct {
 	UploadURLTTL time.Duration
 	// Limits is reported by GET /me.
 	Limits Limits
+	// RequireMFARoles are the org roles that must sign in with a second factor
+	// to use an org (oidc.require_mfa_roles); API tokens are exempt.
+	RequireMFARoles []rbac.Role
 }
 
 type Service struct {
@@ -59,6 +62,15 @@ type Actor struct {
 	OrgRole   rbac.Role
 	IP        string
 	UserAgent string
+	// Token is set when the request authenticated with an API token: the actor
+	// is the token's creator, limited to the token's project.
+	Token *TokenAuth
+}
+
+// MFARequired reports whether members with this org role must have signed in
+// with a second factor.
+func (s *Service) MFARequired(role rbac.Role) bool {
+	return slices.Contains(s.cfg.RequireMFARoles, role)
 }
 
 func (a *Actor) seesAllProjects() bool {
@@ -151,8 +163,12 @@ func (s *Service) inOrg(ctx context.Context, a *Actor, fn func(Repo) error) erro
 }
 
 // projectAccess returns the caller's role in a project they can see; 404 when
-// the project doesn't exist or the caller can't see it.
+// the project doesn't exist or the caller can't see it. An API token reaches
+// only its own project, and only while its user may still run scans there.
 func projectAccess(ctx context.Context, r Repo, a *Actor, projectID uuid.UUID) (rbac.Role, error) {
+	if a.Token != nil && projectID != a.Token.ProjectID {
+		return "", errNotFound()
+	}
 	role, err := r.ProjectRole(ctx, projectID, a.UserID)
 	if errors.Is(err, ErrNotFound) {
 		return "", errNotFound()
@@ -162,6 +178,9 @@ func projectAccess(ctx context.Context, r Repo, a *Actor, projectID uuid.UUID) (
 	}
 	if role == "" && !a.seesAllProjects() {
 		return "", errNotFound()
+	}
+	if a.Token != nil && !rbac.Can(rbac.RunScan, a.OrgRole, role, false) {
+		return "", forbiddenMsg("the API token's user can no longer run scans in this project")
 	}
 	return role, nil
 }
@@ -177,6 +196,9 @@ func notFound(err error) error {
 func (s *Service) audit(ctx context.Context, r Repo, a *Actor, action, targetType, targetID string, data map[string]any) error {
 	if data == nil {
 		data = map[string]any{}
+	}
+	if a.Token != nil {
+		data["via_token"] = a.Token.ID.String()
 	}
 	uid := a.UserID
 	return r.AppendAudit(ctx, AuditRecord{

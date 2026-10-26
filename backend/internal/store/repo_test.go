@@ -260,7 +260,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	desc := "d"
 	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now}
 	scanRow := []any{scan, org, proj, "queued", "a.zip", int64(10), []string{"trivy"}, nil, service.ScanStats{Total: 2},
-		now, now, nil, nil, "key", "sum", user, "a@b.c", "A"}
+		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil}
 	r, _ := repoWith(on(map[string][][]any{
 		"LEFT JOIN LATERAL":                           {projRow},
 		"SELECT (SELECT pm.role":                      {{"developer"}},

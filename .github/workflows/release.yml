@@ -82,7 +82,7 @@ jobs:
             out="$PWD/build/$d"
             mkdir -p "$out"
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go -C backend build -trimpath -ldflags="$ld" -o "$out/" \
-              ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate
+              ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate ./cmd/warden
             # -trimpath keeps -ldflags out of the buildinfo, so look for the string itself.
             grep -qaF "$VERSION" "$out/warden-api" || { echo "version not stamped"; exit 1; }
             cp LICENSE README.md "$out/"

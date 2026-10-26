@@ -26,6 +26,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/auth"
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
+	"github.com/aupv9/warden/backend/internal/domain/rbac"
 	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/store"
@@ -79,11 +80,20 @@ func ServiceConfig(c *config.Config) service.Config {
 		UploadMaxBytes:   int64(c.Scan.UploadMaxMB) << 20,
 		RateLimitPerHour: c.Scan.RateLimitPerHour,
 		UploadURLTTL:     15 * time.Minute,
+		RequireMFARoles:  roles(c.OIDC.RequireMFARoles),
 		Limits: service.Limits{
 			UploadMaxMB: c.Scan.UploadMaxMB, UnzipMaxMB: c.Scan.UnzipMaxMB, UnzipMaxFiles: c.Scan.UnzipMaxFiles,
 			ScanTimeoutMinutes: int(c.Scan.Timeout / time.Minute), ScansPerHour: c.Scan.RateLimitPerHour,
 		},
 	}
+}
+
+func roles(names []string) []rbac.Role {
+	out := make([]rbac.Role, 0, len(names))
+	for _, n := range names {
+		out = append(out, rbac.Role(n))
+	}
+	return out
 }
 
 // objectStore adapts the S3 client to the service's ObjectStore, which has its

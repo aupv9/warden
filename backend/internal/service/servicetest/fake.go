@@ -45,6 +45,7 @@ type pmRow struct {
 type scanRow struct {
 	service.Scan
 	CreatedByID uuid.UUID
+	ViaToken    *uuid.UUID
 }
 
 type IssueRow struct {
@@ -98,6 +99,8 @@ type state struct {
 	Exceptions map[uuid.UUID]excRow
 	Audit      []service.AuditRecord
 	Jobs       []worker.ScanArgs
+	Tokens     map[uuid.UUID]tokenRow
+	Seen       map[[2]uuid.UUID]bool // issue, scan: occurrences
 	nextID     int64
 }
 
@@ -116,6 +119,8 @@ func (s *state) clone() *state {
 	c.Exceptions = maps.Clone(s.Exceptions)
 	c.Audit = slices.Clone(s.Audit)
 	c.Jobs = slices.Clone(s.Jobs)
+	c.Tokens = maps.Clone(s.Tokens)
+	c.Seen = maps.Clone(s.Seen)
 	return &c
 }
 
@@ -135,6 +140,7 @@ func New() *Fake {
 		Users: map[uuid.UUID]service.User{}, Orgs: map[uuid.UUID]orgRow{}, Members: map[[2]uuid.UUID]rbac.Role{},
 		Projects: map[uuid.UUID]projectRow{}, PMembers: map[[2]uuid.UUID]pmRow{}, Scans: map[uuid.UUID]scanRow{},
 		ToolRuns: map[uuid.UUID][]service.ToolRun{}, Issues: map[uuid.UUID]IssueRow{}, Exceptions: map[uuid.UUID]excRow{},
+		Tokens: map[uuid.UUID]tokenRow{}, Seen: map[[2]uuid.UUID]bool{},
 	}, Fail: map[string]error{}, Now: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)}
 }
 
@@ -657,7 +663,7 @@ func (f *Fake) InsertScan(_ context.Context, s service.NewScan) error {
 	}
 	f.st.Scans[s.ID] = scanRow{CreatedByID: s.CreatedBy, Scan: service.Scan{ID: s.ID, OrgID: s.OrgID, ProjectID: s.ProjectID,
 		Status: "pending_upload", FileName: s.FileName, FileSize: s.FileSize, Tools: s.Tools, CreatedAt: service.Time(f.Now),
-		ObjectKey: s.ObjectKey, SHA256: s.SHA256}}
+		ObjectKey: s.ObjectKey, SHA256: s.SHA256}, ViaToken: s.ViaToken}
 	return nil
 }
 
@@ -668,6 +674,10 @@ func (f *Fake) scan(id uuid.UUID) (service.Scan, bool) {
 	}
 	out := s.Scan
 	out.CreatedBy = f.ref(s.CreatedByID)
+	if s.ViaToken != nil {
+		t := f.st.Tokens[*s.ViaToken]
+		out.ViaToken = &service.TokenRef{ID: t.ID, Name: t.Name, Prefix: t.Prefix}
+	}
 	return out, true
 }
 
