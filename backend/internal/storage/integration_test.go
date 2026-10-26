@@ -5,6 +5,7 @@ package storage_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -30,12 +31,21 @@ const (
 	devOrigin    = "http://localhost:5173"
 )
 
-const (
-	accessKey = "itest-access-key"
-	secretKey = "itest-secret-key-0123456789"
+// The store's credentials are made at test time: no real-looking secret in the repo
+// (CLAUDE.md), and nothing for the release self-scan to flag.
+var (
+	accessKey = "itest-" + randomHex(8)
+	secretKey = randomHex(20)
+	endpoint  string
 )
 
-var endpoint string
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
+}
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
