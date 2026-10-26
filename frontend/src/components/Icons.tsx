@@ -258,3 +258,83 @@ export function MoonIcon({ size = 14 }: P) {
     </Svg>
   );
 }
+
+// ---- v0.2 ----
+
+export function OverviewIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M4 20V10M10 20V4M16 20v-7M21 20H3" />
+    </Svg>
+  );
+}
+
+export function SettingsIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="8" cy="17" r="2" />
+    </Svg>
+  );
+}
+
+export function BellIcon({ size = 16 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15L6 16z" />
+      <path d="M10 21h4" />
+    </Svg>
+  );
+}
+
+export function ArchiveIcon({ size = 16 }: P) {
+  return (
+    <Svg size={size}>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 001 1h12a1 1 0 001-1V8M10 12h4" />
+    </Svg>
+  );
+}
+
+export function KeyIcon({ size = 16 }: P) {
+  return (
+    <Svg size={size}>
+      <circle cx="8" cy="15" r="4" />
+      <path d="M11 12l9-9M17 6l3 3M15 8l2 2" />
+    </Svg>
+  );
+}
+
+export function CopyIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a1 1 0 011-1h10" />
+    </Svg>
+  );
+}
+
+export function ArrowUpIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M12 19V5M6 11l6-6 6 6" />
+    </Svg>
+  );
+}
+
+export function ArrowDownIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M12 5v14M6 13l6 6 6-6" />
+    </Svg>
+  );
+}
+
+export function TrashIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+    </Svg>
+  );
+}

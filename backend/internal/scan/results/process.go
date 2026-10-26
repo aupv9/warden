@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/aupv9/warden/backend/internal/domain/autoassign"
 	"github.com/aupv9/warden/backend/internal/domain/issuestate"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
 )
@@ -36,6 +39,7 @@ const (
 	EventStatusChanged   = "status_changed"
 	EventSeenAgain       = "seen_again"
 	EventSeverityChanged = "severity_changed"
+	EventAssigned        = "assigned"
 )
 
 type Input struct {
@@ -103,6 +107,11 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 		return Plan{}, err
 	}
 	a := applier{db: db, in: in, sla: sla}
+	if len(plan.New) > 0 {
+		if a.rules, a.eligible, err = loadAssignRules(ctx, db, in.ProjectID); err != nil {
+			return Plan{}, err
+		}
+	}
 	if err := a.apply(ctx, plan); err != nil {
 		return Plan{}, err
 	}
@@ -132,6 +141,47 @@ type applier struct {
 	db  DB
 	in  Input
 	sla SLA
+	// Auto-assign rules and the users they may assign to: current project
+	// members who are active users and still in the org.
+	rules    []autoassign.Rule
+	eligible map[uuid.UUID]bool
+}
+
+// loadAssignRules reads the project's rules (and, if there are any, who they
+// may still assign to). A rule whose assignee left the project is skipped.
+func loadAssignRules(ctx context.Context, db DB, projectID uuid.UUID) ([]autoassign.Rule, map[uuid.UUID]bool, error) {
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT assign_rules FROM project WHERE id = $1`, projectID).Scan(&raw); err != nil {
+		return nil, nil, fmt.Errorf("load assign rules: %w", err)
+	}
+	var rules []autoassign.Rule
+	if err := json.Unmarshal(raw, &rules); err != nil {
+		return nil, nil, fmt.Errorf("project.assign_rules: %w", err)
+	}
+	if len(rules) == 0 {
+		return nil, nil, nil
+	}
+	rows, err := db.Query(ctx, `SELECT pm.user_id FROM project_member pm
+		JOIN app_user u ON u.id = pm.user_id AND u.is_active
+		JOIN org_member m ON m.org_id = pm.org_id AND m.user_id = pm.user_id
+		WHERE pm.project_id = $1`, projectID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load project members: %w", err)
+	}
+	members, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, nil, fmt.Errorf("load project members: %w", err)
+	}
+	eligible := make(map[uuid.UUID]bool, len(members))
+	for _, m := range members {
+		eligible[m] = true
+	}
+	return rules, eligible, nil
+}
+
+// outbox writes a notification event in the processing transaction.
+func (a applier) outbox(ctx context.Context, typ string, p notify.Payload) error {
+	return notify.Insert(ctx, a.db, notify.Event{OrgID: a.in.OrgID, Type: typ, Payload: p})
 }
 
 func (a applier) event(ctx context.Context, issueID uuid.UUID, typ string, from, to *string, note string) error {
@@ -183,7 +233,7 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 		}
 	}
 	for _, e := range p.Fix {
-		if err := a.transition(ctx, e, issuestate.Fixed, nil, "not found by "+e.Tool+" in scan "+a.in.ScanID.String()); err != nil {
+		if _, err := a.transition(ctx, e, issuestate.Fixed, nil, "not found by "+e.Tool+" in scan "+a.in.ScanID.String()); err != nil {
 			return err
 		}
 	}
@@ -198,25 +248,56 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 		WHERE id = $1`, a.in.ScanID, a.in.Status, stats, p.NeedsConfirmation, now); err != nil {
 		return fmt.Errorf("finish scan: %w", err)
 	}
-	return nil
+	return a.outbox(ctx, notify.ScanFinished, notify.Payload{ScanID: notify.ID(a.in.ScanID)})
+}
+
+// autoAssign returns the first matching rule (1-based) whose assignee is
+// still eligible, or 0.
+func (a applier) autoAssign(f sarif.Finding) (int, uuid.UUID) {
+	n := autoassign.First(a.rules, autoassign.Issue{FilePath: f.FilePath, Tool: f.Tool, Severity: string(f.Severity)},
+		func(u uuid.UUID) bool { return a.eligible[u] })
+	if n < 0 {
+		return 0, uuid.Nil
+	}
+	return n + 1, a.rules[n].AssigneeID
 }
 
 func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Time) error {
 	f := n.Finding
 	id := ids.New()
+	status, assignee := issuestate.Open, (*uuid.UUID)(nil)
+	rule, user := a.autoAssign(f)
+	if rule > 0 {
+		if _, err := issuestate.Check(issuestate.Open, issuestate.Assigned, issuestate.System); err != nil {
+			return err
+		}
+		status, assignee = issuestate.Assigned, &user
+	}
 	_, err := a.db.Exec(ctx, `INSERT INTO issue (id, org_id, project_id, number, fingerprint, tool, rule_id, title,
 		description, remediation, severity, status, file_path, start_line, end_line, snippet, cwe, cve,
-		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open', $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23)`,
+		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25)`,
 		id, a.in.OrgID, a.in.ProjectID, number, n.Fingerprint, f.Tool, f.RuleID, f.Title,
 		nullable(f.Description), nullable(f.Remediation), string(f.Severity), nullable(f.FilePath), f.StartLine, f.EndLine,
 		nullable(f.Snippet), f.CWE, f.CVE, nullable(f.PackageName), nullable(f.PackageVersion), nullable(f.FixedVersion),
-		a.in.ScanID, a.sla.DueAt(f.Severity, now), now)
+		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee)
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}
 	if err := a.event(ctx, id, EventCreated, nil, ptr(string(issuestate.Open)), ""); err != nil {
 		return err
+	}
+	if rule > 0 {
+		note := "auto-assign rule " + strconv.Itoa(rule)
+		if err := a.event(ctx, id, EventStatusChanged, ptr(string(issuestate.Open)), ptr(string(issuestate.Assigned)), note); err != nil {
+			return err
+		}
+		if err := a.event(ctx, id, EventAssigned, nil, ptr(user.String()), note); err != nil {
+			return err
+		}
+		if err := a.outbox(ctx, notify.IssueAssigned, notify.Payload{IssueID: notify.ID(id), UserID: notify.ID(user)}); err != nil {
+			return err
+		}
 	}
 	return a.occurrence(ctx, id, f)
 }
@@ -242,8 +323,14 @@ func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error 
 	}
 	if s.Reopen {
 		due := a.sla.DueAt(sev, now)
-		if err := a.transition(ctx, s.Issue, issuestate.Reopened, due, "found again in scan "+a.in.ScanID.String()); err != nil {
+		changed, err := a.transition(ctx, s.Issue, issuestate.Reopened, due, "found again in scan "+a.in.ScanID.String())
+		if err != nil {
 			return err
+		}
+		if changed {
+			if err := a.outbox(ctx, notify.IssueReopened, notify.Payload{IssueID: notify.ID(id)}); err != nil {
+				return err
+			}
 		}
 	}
 	if s.SeenAgain {
@@ -255,10 +342,10 @@ func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error 
 }
 
 // transition moves an issue as the System actor. The status guard in WHERE
-// makes a concurrent user change win: then nothing is written.
-func (a applier) transition(ctx context.Context, e ExistingIssue, to issuestate.Status, due *time.Time, note string) error {
+// makes a concurrent user change win: then nothing is written (false).
+func (a applier) transition(ctx context.Context, e ExistingIssue, to issuestate.Status, due *time.Time, note string) (bool, error) {
 	if _, err := issuestate.Check(e.Status, to, issuestate.System); err != nil {
-		return err
+		return false, err
 	}
 	q := `UPDATE issue SET status = $3, version = version + 1, updated_at = $4 WHERE id = $1 AND status = $2`
 	args := []any{e.ID, string(e.Status), string(to), a.in.Now}
@@ -268,10 +355,10 @@ func (a applier) transition(ctx context.Context, e ExistingIssue, to issuestate.
 	}
 	tag, err := a.db.Exec(ctx, q, args...)
 	if err != nil {
-		return fmt.Errorf("transition issue: %w", err)
+		return false, fmt.Errorf("transition issue: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil
+		return false, nil
 	}
-	return a.event(ctx, e.ID, EventStatusChanged, ptr(string(e.Status)), ptr(string(to)), note)
+	return true, a.event(ctx, e.ID, EventStatusChanged, ptr(string(e.Status)), ptr(string(to)), note)
 }

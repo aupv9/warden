@@ -140,3 +140,34 @@ func TestBrokenYAMLIsAnError(t *testing.T) {
 		t.Fatal("broken config.yaml silently ignored")
 	}
 }
+
+func TestRequireMFARoles(t *testing.T) {
+	t.Chdir(t.TempDir())
+	c, err := Load()
+	if err != nil || strings.Join(c.OIDC.RequireMFARoles, ",") != "org_admin,security_lead" {
+		t.Fatal(c.OIDC.RequireMFARoles, err)
+	}
+	// Empty disables the rule (local development).
+	t.Setenv("WARDEN_OIDC__REQUIRE_MFA_ROLES", "")
+	if c, err = Load(); err != nil || len(c.OIDC.RequireMFARoles) != 0 {
+		t.Fatal(c.OIDC.RequireMFARoles, err)
+	}
+	t.Setenv("WARDEN_OIDC__REQUIRE_MFA_ROLES", " member , org_admin,")
+	if c, err = Load(); err != nil || strings.Join(c.OIDC.RequireMFARoles, ",") != "member,org_admin" {
+		t.Fatal(c.OIDC.RequireMFARoles, err)
+	}
+	t.Setenv("WARDEN_OIDC__REQUIRE_MFA_ROLES", "org_admin,root")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Fatal(err)
+	}
+}
+
+func TestRequireMFARolesFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	_ = os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("oidc:\n  require_mfa_roles: [security_lead]\n"), 0o600)
+	c, err := Load()
+	if err != nil || strings.Join(c.OIDC.RequireMFARoles, ",") != "security_lead" {
+		t.Fatal(c.OIDC.RequireMFARoles, err)
+	}
+}

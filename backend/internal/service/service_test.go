@@ -67,13 +67,24 @@ func newSetup(role rbac.Role) setup {
 
 func (x setup) actor() *service.Actor { return &service.Actor{UserID: x.u, OrgID: x.org} }
 
-func TestArchivedProjectsAreHidden(t *testing.T) {
+// Archived projects leave the project list (unless asked for) but stay
+// readable by id.
+func TestArchivedProjectsAreListedOnRequest(t *testing.T) {
 	x := newSetup(rbac.SecurityLead)
 	x.f.ArchiveProject(x.p)
-	if _, err := x.s.Project(context.Background(), x.actor(), x.p); status(err) != http.StatusNotFound {
+	if p, err := x.s.Project(context.Background(), x.actor(), x.p); err != nil || p.ArchivedAt == nil {
+		t.Fatal(p, err)
+	}
+	if _, err := x.s.ProjectMembers(context.Background(), x.actor(), x.p); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := x.s.ProjectMembers(context.Background(), x.actor(), x.p); status(err) != http.StatusNotFound {
+	if l, err := x.s.Projects(context.Background(), x.actor(), ""); err != nil || len(l.Items) != 0 {
+		t.Fatal(l, err)
+	}
+	if l, err := x.s.Projects(context.Background(), x.actor(), "true"); err != nil || len(l.Items) != 1 {
+		t.Fatal(l, err)
+	}
+	if _, err := x.s.Projects(context.Background(), x.actor(), "yes"); status(err) != http.StatusUnprocessableEntity {
 		t.Fatal(err)
 	}
 }

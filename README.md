@@ -79,6 +79,10 @@ go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@exampl
 
 `warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API.
 `warden-admin audit verify --org <org id>` checks an organization's audit-log hash chain.
+`warden-admin org set-role --org <org id> --email them@example.com --role org_admin` is the
+break-glass path when nobody who manages members can sign in (for example, an admin lost
+their second factor); it keeps at least one `org_admin` and is audited as `member.role_changed`
+with `via: warden-admin`.
 
 On macOS there is no gVisor, so local scans fall back to `runc` with a warning.
 CI and production must use `runsc`.
@@ -95,6 +99,7 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_DATABASE__DSN` | | Runtime connection, as `warden_app` |
 | `WARDEN_MIGRATE__DSN` | | Schema owner; used only by `warden-migrate` |
 | `WARDEN_OIDC__ISSUER` / `WARDEN_OIDC__AUDIENCE` | Keycloak realm / `warden-api` | Access tokens: RS256 only, JWKS from the issuer |
+| `WARDEN_OIDC__REQUIRE_MFA_ROLES` | `org_admin,security_lead` | Org roles that must sign in with a second factor (the token's `amr` claim: `otp`, `mfa`, `hwk` or `webauthn`); otherwise every request under the org is `403 MFA_REQUIRED`. Comma-separated (a YAML list in `config.yaml`); empty disables the rule, as `.env.example` does for the dev realm. API tokens are exempt |
 | `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
 | `WARDEN_SCAN__HMAC_KEY` | | Master key for secret fingerprints, at least 32 bytes (`openssl rand -hex 32`). Each organization gets its own key derived from it, so changing it changes every secret's fingerprint |
@@ -102,9 +107,15 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest upload; the presigned URL pins the exact size and the worker refuses larger objects |
 | `WARDEN_SCAN__SCRATCH_DIR` / `WARDEN_SCAN__MIRROR_DIR` | `/scratch` / `/mirror` | Worker's per-scan working directory; offline scanner data (`make mirror`) |
 | `WARDEN_SCAN__SOURCE_RETENTION` | `1h` | Uploaded objects still present after this are deleted by a sweep (normally a scan deletes its own upload when it ends). Uploads never started within 1 hour are cancelled (`UPLOAD_ABANDONED`) |
-| `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan may auto-fix at most this fraction of a project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation` |
+| `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan that would auto-fix 5 or more issues may fix at most this fraction of the project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation`. Fewer than 5 are always fixed |
 | `WARDEN_STORAGE__ENDPOINT` / `WARDEN_STORAGE__BUCKET` | `http://localhost:8333` / `warden-uploads` | S3-compatible store. Any non-AWS endpoint uses path-style URLs; for AWS use `https://s3.<region>.amazonaws.com` (the region is read from it). The bucket must exist and allow CORS `PUT` from the web UI's origin |
 | `WARDEN_STORAGE__ACCESS_KEY` / `WARDEN_STORAGE__SECRET_KEY` | | Needs object read, write and delete on the bucket only |
+| `WARDEN_SMTP__HOST` / `WARDEN_SMTP__PORT` | `localhost` / `1025` | Mail relay for notification email (Mailpit in development). STARTTLS is required unless the host is `localhost` or a loopback address |
+| `WARDEN_SMTP__FROM` | `warden@localhost` | Sender address |
+| `WARDEN_SMTP__USERNAME` / `WARDEN_SMTP__PASSWORD` | | Optional `AUTH PLAIN`; credentials are only ever sent over TLS (or to a loopback host) |
+| `WARDEN_SMTP__IMPLICIT_TLS` | `false` | TLS from the first byte (port 465) instead of STARTTLS |
+| `WARDEN_SMTP__PUBLIC_BASE_URL` | `http://localhost:5173` | Web UI address; links in emails are built from it |
+| `WARDEN_SMTP__DIGEST_HOUR` | `8` | UTC hour of the daily SLA digest |
 | `WARDEN_LOG__LEVEL` / `WARDEN_LOG__FORMAT` | `info` / `json` | |
 | `WARDEN_OTEL__ENABLED` | `false` | OpenTelemetry traces and metrics |
 
@@ -113,7 +124,8 @@ See [`.env.example`](.env.example) for a complete local setup and
 
 ## API
 
-REST under `/api/v1`, authenticated with OIDC bearer tokens (Keycloak access tokens, RS256).
+REST under `/api/v1`, authenticated with OIDC bearer tokens (Keycloak access tokens, RS256)
+or, for CI, with project API tokens (see below).
 The OpenAPI 3.1 document is served unauthenticated at `/api/v1/openapi.json`; health
 endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 
@@ -126,11 +138,13 @@ endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 | | |
 |---|---|
 | `GET /me` | Your profile, orgs and server limits. The first call creates your Warden user. |
-| `/orgs/{org_id}`, `/summary` | Organization, SLA days, dashboard counts |
+| `/me/notifications`, `/me/notification-prefs` | Your notifications (all orgs) and email preferences |
+| `/orgs/{org_id}`, `/summary`, `/metrics` | Organization and SLA policy, dashboard counts, trend metrics |
 | `/orgs/{org_id}/members` | Org members and roles (`org_admin`, `security_lead`, `member`) |
-| `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`) and scans |
-| `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel` |
-| `/orgs/{org_id}/issues` | Issues: filters, transitions, bulk assignment, comments, history |
+| `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`), scans, auto-assign rules, archiving |
+| `/orgs/{org_id}/projects/{id}/tokens` | API tokens for CI: list, create (the secret is shown once), revoke |
+| `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel`, and the CI `gate` |
+| `/orgs/{org_id}/issues` | Issues: filters, counts, transitions, bulk assignment, comments, history |
 | `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
 | `/orgs/{org_id}/audit-log` | Hash-chained audit log |
 
@@ -152,12 +166,141 @@ How it behaves:
   their own request, and risk acceptances expire within 180 days.
 - **Audit.** Every write appends an audit entry in the same transaction. Entries are
   hash-chained per organization and the application role can't update or delete them.
-- **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
-  `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`, `VERSION_CONFLICT`,
-  `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`, `RATE_LIMITED`. Unknown JSON
-  fields are rejected; internal errors are logged and returned as a generic `500`.
+- **Two-factor sign-in.** Roles listed in `WARDEN_OIDC__REQUIRE_MFA_ROLES` (by default
+  `org_admin` and `security_lead`) get `403 MFA_REQUIRED` under `/orgs/{org_id}` unless their
+  access token shows a second factor. `GET /me` lists those orgs in `mfa_required_orgs`, so the
+  UI can explain before calling.
+- **API tokens** (`wdn_<prefix>_<secret>`) are machine credentials for CI. A project owner or a
+  security lead creates one for one project, with scopes `scan:write` and/or `issues:read` and
+  an expiry of 1 to 365 days; the creator also needs `run_scan` there, because a token acts as
+  its creator. The secret is returned once; Warden stores only its SHA-256. A token can only
+  create, start, cancel and read scans and read the gate (`scan:write`), and list and read
+  issues (`issues:read`), in its own project: any other route is `403 TOKEN_SCOPE`, another
+  project or org is `404`. Every request re-checks that the creator is still an active member
+  who may run scans in the project. A bad, expired or revoked token gets the same `401` as a
+  bad access token. Each token is limited to 60 requests per minute (`429` with `Retry-After`,
+  counted per API instance). Tokens are exempt from the two-factor rule (creating one as an
+  admin or security lead needs it). Creation and revocation are audited (`token.created`,
+  `token.revoked`), scans record the token in `via_token`, and every write made with a token
+  carries `via_token` in its audit entry.
+- **Scan gate.** `GET …/scans/{id}/gate?fail_on=critical|high|medium|low` (default `high`)
+  returns `pass`, the severity `counts` of the active issues seen in that scan and up to 100
+  `blocking` issues at or above `fail_on`. `false_positive` and `risk_accepted` issues never
+  block; a scan that hasn't finished, failed or was cancelled never passes.
+- **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `MFA_REQUIRED`,
+  `TOKEN_SCOPE`, `NOT_FOUND`, `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`,
+  `VERSION_CONFLICT`, `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`,
+  `RATE_LIMITED`, `PROJECT_ARCHIVED`. Unknown JSON fields are rejected; internal errors are logged and returned as
+  a generic `500`.
 - Lists take `?limit=` (default 50, max 200) and an opaque `?cursor=`, and return
   `{ "items": [...], "next_cursor": … }`.
+- **Policy and automation.** Security leads set the SLA days per severity
+  (`PATCH /orgs/{org_id}`, optionally re-dating open issues). Project owners define ordered
+  auto-assign rules (path glob, tool, minimum severity → a project member); the first
+  matching rule assigns each *new* issue when a scan is processed. An archived project
+  keeps its issues readable but accepts no scans (`409 PROJECT_ARCHIVED`).
+
+## Notifications
+
+Changes that someone should hear about write an event to an outbox table in the same
+transaction as the change itself: an issue assigned to you, an issue reopened (its
+assignee, else the project owners), an exception requested (security leads) or decided
+(the requester), a scan finished (whoever started it), and a daily SLA digest of your
+issues that are overdue or due within three days. The worker's `dispatch_notifications`
+job (every minute, and right after each event) turns events into in-app notifications,
+re-checking that every recipient is still an active member who can see the object, and
+sends email to those whose preference allows it (on by default, except `scan.finished`).
+Delivery is idempotent per event and recipient; a failing address is retried with backoff
+without holding up anyone else's mail.
+
+Emails contain only the organization, project key, issue key, title, severity, status,
+the actor's name and a link to the web UI. They never include snippets, descriptions,
+file contents, comments or secrets; titles are HTML-escaped, and header values with line
+breaks are refused.
+
+## CI integration
+
+The `warden` CLI scans a git checkout from a pipeline and fails the build on blocking issues.
+It zips the tracked and untracked-but-not-ignored files (no symlinks), uploads the archive,
+starts the scan, waits for it and applies the scan gate:
+
+```bash
+export WARDEN_TOKEN=wdn_...   # a project API token with scope scan:write
+warden scan --url https://warden.example.com --org <org id> --project <project id> \
+  [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--timeout 30m]
+```
+
+It prints the blocking issues (key, severity, title, file:line, link) and exits `0` when the
+gate passes, `1` when it fails and `2` on any error (authentication, network, a failed or
+timed-out scan). The token is read only from `$WARDEN_TOKEN` and never printed; only `https://`
+servers are accepted (plain `http://` only for `localhost`). Create the token under the
+project's settings in the web UI (or `POST /orgs/{org_id}/projects/{id}/tokens`) and store it
+as a secret CI variable. The `warden` binary ships in the release archives
+(`go install github.com/aupv9/warden/backend/cmd/warden@<tag>` also works).
+
+### GitHub Actions
+
+```yaml
+name: Warden
+on:
+  push:
+    branches: [main]
+  pull_request:          # pull requests from forks get no secrets, so no scan
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    env:
+      WARDEN_VERSION: v0.2.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Install the Warden CLI (checksum and provenance verified)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          a="warden_${WARDEN_VERSION}_linux_amd64"
+          gh release download "$WARDEN_VERSION" -R aupv9/warden -D "$RUNNER_TEMP" -p "$a.tar.gz" -p "warden_${WARDEN_VERSION}_checksums.txt"
+          cd "$RUNNER_TEMP"
+          sha256sum -c --ignore-missing "warden_${WARDEN_VERSION}_checksums.txt"
+          gh attestation verify "$a.tar.gz" -R aupv9/warden
+          tar -xzf "$a.tar.gz" --strip-components=1 "$a/warden"
+      - name: Scan
+        env:
+          WARDEN_TOKEN: ${{ secrets.WARDEN_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/warden" scan --url https://warden.example.com \
+            --org 00000000-0000-0000-0000-000000000000 --project 00000000-0000-0000-0000-000000000000 --fail-on high
+```
+
+### GitLab CI
+
+Add `WARDEN_TOKEN` under Settings → CI/CD → Variables as a masked, protected variable.
+
+```yaml
+warden:
+  stage: test
+  image: alpine:3.22          # pin by digest
+  variables:
+    WARDEN_VERSION: v0.2.0
+    WARDEN_URL: https://warden.example.com
+    WARDEN_ORG: 00000000-0000-0000-0000-000000000000
+    WARDEN_PROJECT: 00000000-0000-0000-0000-000000000000
+  script:
+    - apk add --no-cache git curl
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - a="warden_${WARDEN_VERSION}_linux_amd64"
+    - base="https://github.com/aupv9/warden/releases/download/${WARDEN_VERSION}"
+    - curl -fsSLO "$base/$a.tar.gz" && curl -fsSLO "$base/warden_${WARDEN_VERSION}_checksums.txt"
+    - grep " $a.tar.gz\$" "warden_${WARDEN_VERSION}_checksums.txt" | sha256sum -c -
+    - tar -xzf "$a.tar.gz" --strip-components=1 "$a/warden"
+    - ./warden scan --url "$WARDEN_URL" --org "$WARDEN_ORG" --project "$WARDEN_PROJECT" --fail-on high
+  rules:
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
+```
+
+Protected variables are only exposed on protected branches and tags, hence the rule.
 
 ## Development
 
@@ -192,7 +335,7 @@ the pipeline locally: `go -C backend run ./cmd/selfscan -root .. -zip some.zip`.
 ```
 backend/                 Go module
   cmd/                   warden-api, warden-worker, warden-migrate, warden-admin,
-                         warden-redact, warden-sarif-gate, selfscan
+                         warden-redact, warden-sarif-gate, selfscan, warden (CI client)
   internal/api/          REST API (gin), OpenAPI document
   internal/service/      business rules: permissions, issue workflow, exceptions, scans
   internal/store/        Postgres repositories, hash-chained audit log
@@ -201,7 +344,10 @@ backend/                 Go module
   internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, result
                          processor (findings → issues), release gate
   internal/storage/      S3-compatible client (presigned uploads, download, delete)
-  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry
+  internal/notify/       notification dispatch (outbox → notifications), email rendering, SMTP
+  internal/pack/         zips a git working tree like an upload (selfscan, warden CLI)
+  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry,
+                         notifications, SLA digest
   internal/migrations/   SQL migrations (goose), River tables, role grants
 frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
@@ -219,7 +365,7 @@ logging, OpenTelemetry, health checks, the HTTP server and the response envelope
 
 Tags `vMAJOR.MINOR.PATCH` on `main` publish a [GitHub release](https://github.com/aupv9/warden/releases)
 after the full CI suite and the release self-scan gate pass: static Linux binaries
-(`warden-api`, `warden-worker`, `warden-migrate`; amd64 and arm64) with SPDX SBOMs and
+(`warden-api`, `warden-worker`, `warden-migrate` and the `warden` CI client; amd64 and arm64) with SPDX SBOMs and
 checksums, and the image `ghcr.io/aupv9/warden` (amd64 and arm64). The version is stamped
 into the binaries and served at `/info`.
 
@@ -250,6 +396,11 @@ Changes that weaken one of these need an explicit discussion in the pull request
 - Permissions are checked in the service layer (`internal/domain/rbac`); RLS is the second
   line of defence.
 - Authentication errors are generic; the reason is logged, never returned.
+- API tokens: only a SHA-256 of the secret is stored and the secret is shown once. Tokens
+  are looked up across orgs only through the `warden_lookup_token` SECURITY DEFINER function
+  (exact prefix, one row); everything after that runs under the token's org. What a token may
+  call is one allow-list (`internal/api/tokens.go`), default deny. Credentials never appear
+  in logs.
 
 ## Contributing
 

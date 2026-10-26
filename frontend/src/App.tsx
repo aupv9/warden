@@ -7,19 +7,29 @@ import { errorMessage, isForbidden, isToastedActionError, isUnauthorized, suppor
 import { AuthGate, sessionEnded } from "./auth/AuthGate";
 import { Toaster } from "./components/Toaster";
 import { NotFoundPage, OrgLayout, OrgNotFound } from "./layout/OrgLayout";
+import { lazyRoute } from "./lib/lazyRoute";
 import { showToast } from "./lib/toast";
-import { AuditLogPage } from "./routes/AuditLog";
-import { ExceptionsPage } from "./routes/Exceptions";
 import { Home } from "./routes/Home";
-import { IssuesPage } from "./routes/IssueList";
-import { MembersPage } from "./routes/Members";
 import { RouteError } from "./routes/NotFound";
-import { ProjectIssuesTab, ProjectLayout, ProjectMembersTab, ProjectSettingsTab } from "./routes/ProjectLayout";
-import { ProjectScansTab } from "./routes/ProjectScans";
-import { ProjectsPage } from "./routes/Projects";
 
 // react-router (data router) gives nested layouts (org → project tabs), URL search params for
 // the filters and NavLink active states without extra code.
+//
+// Every page is a lazy chunk (Suspense boundaries with a skeleton sit in OrgLayout and
+// ProjectLayout); the entry chunk keeps only auth, the shell and shared components.
+const OverviewPage = lazyRoute(() => import("./routes/Overview"), "OverviewPage");
+const ProjectsPage = lazyRoute(() => import("./routes/Projects"), "ProjectsPage");
+const ProjectLayout = lazyRoute(() => import("./routes/ProjectLayout"), "ProjectLayout");
+const ProjectIssuesTab = lazyRoute(() => import("./routes/ProjectLayout"), "ProjectIssuesTab");
+const ProjectMembersTab = lazyRoute(() => import("./routes/ProjectLayout"), "ProjectMembersTab");
+const ProjectScansTab = lazyRoute(() => import("./routes/ProjectScans"), "ProjectScansTab");
+const ProjectSettingsTab = lazyRoute(() => import("./routes/ProjectSettings"), "ProjectSettingsTab");
+const IssuesPage = lazyRoute(() => import("./routes/IssueList"), "IssuesPage");
+const ExceptionsPage = lazyRoute(() => import("./routes/Exceptions"), "ExceptionsPage");
+const MembersPage = lazyRoute(() => import("./routes/Members"), "MembersPage");
+const AuditLogPage = lazyRoute(() => import("./routes/AuditLog"), "AuditLogPage");
+const OrgSettingsPage = lazyRoute(() => import("./routes/OrgSettings"), "OrgSettingsPage");
+const PreferencesPage = lazyRoute(() => import("./routes/Preferences"), "PreferencesPage");
 
 export function createQueryClient(): QueryClient {
   const qc: QueryClient = new QueryClient({
@@ -35,6 +45,8 @@ export function createQueryClient(): QueryClient {
           sessionEnded.dispatchEvent(new Event("ended"));
           return;
         }
+        // MFA_REQUIRED swaps the org's pages for the two-factor explanation (lib/mfa.ts) and is
+        // not a toast (isToastedActionError is false for it).
         // Errors with no better place go to a toast (DESIGN.md "API error.code"); 403 also
         // refetches so the page shows only what the role allows.
         if (!isToastedActionError(err)) return;
@@ -71,6 +83,7 @@ export const appRoutes: RouteObject[] = [
         element: <OrgLayout />,
         children: [
           { index: true, element: <Navigate to="projects" replace /> },
+          { path: "overview", element: <OverviewPage /> },
           { path: "projects", element: <ProjectsPage /> },
           {
             path: "projects/:projectId",
@@ -90,6 +103,10 @@ export const appRoutes: RouteObject[] = [
           { path: "exceptions", element: <ExceptionsPage /> },
           { path: "members", element: <MembersPage /> },
           { path: "audit-log", element: <AuditLogPage /> },
+          { path: "settings", element: <OrgSettingsPage /> },
+          // Notification preferences are the user's own (they apply in every org); the page
+          // sits under the org so the navigation stays.
+          { path: "preferences", element: <PreferencesPage /> },
           { path: "*", element: <OrgNotFound /> },
         ],
       },

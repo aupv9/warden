@@ -1,13 +1,20 @@
 // Dev-only fixtures for VITE_MOCK=1 (never in a production build: see api/client.ts).
 // Shaped exactly like the API contract. Names, numbers and files are examples. Snippets are
 // already masked, as the API sends them; nothing here is a real or real-looking secret.
+import { NOTIFICATION_TYPES } from "../types";
 import type {
+  ApiToken,
+  AssignRule,
   AuditEntry,
   Comment,
   ExceptionRequest,
   Issue,
   IssueEvent,
   Me,
+  Metrics,
+  MetricsDays,
+  Notification,
+  NotificationType,
   Org,
   OrgMember,
   Project,
@@ -32,6 +39,11 @@ export function uuid(): string {
 
 export const ORG_ID = uuid();
 export const ORG2_ID = uuid();
+/** An org where the caller is an org admin and two-factor sign-in is required (v0.2 MFA rule). */
+export const ORG3_ID = uuid();
+
+/** `?mock_bulk=1` adds hundreds of tokens and notifications, to check long lists. */
+const BULK = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("mock_bulk") === "1";
 
 const u = (display_name: string, email: string): UserRef => ({ id: uuid(), display_name, email });
 export const users = {
@@ -48,12 +60,16 @@ export const me: Me = {
   sub: "mock-sub-linh",
   email: users.linh.email,
   name: users.linh.display_name,
-  mfa: true,
+  // The mock server behaves like `oidc.require_mfa_roles=["org_admin"]` with a session signed
+  // in without a second factor: blocked in Acme Security (org admin), fine elsewhere.
+  mfa: false,
   orgs: [
     { id: ORG_ID, name: "Acme Engineering", role: "security_lead" },
     { id: ORG2_ID, name: "Acme Labs", role: "member" },
+    { id: ORG3_ID, name: "Acme Security", role: "org_admin" },
   ],
   limits: { upload_max_mb: 200, unzip_max_mb: 1024, unzip_max_files: 100000, scan_timeout_minutes: 30, scans_per_hour: 20 },
+  mfa_required_orgs: [ORG3_ID],
 };
 
 export const org: Org = {
@@ -61,6 +77,14 @@ export const org: Org = {
   name: "Acme Engineering",
   sla_days: { critical: 7, high: 30, medium: 90, low: 180 },
   my_role: "security_lead",
+};
+
+/** Acme Labs: the caller is a plain member there, so policy is read-only. */
+export const org2: Org = {
+  id: ORG2_ID,
+  name: "Acme Labs",
+  sla_days: { critical: 3, high: 14, medium: 60, low: 120 },
+  my_role: "member",
 };
 
 const zero = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
@@ -77,6 +101,7 @@ function project(key: string, name: string, my_role: Project["my_role"], descrip
     past_sla: 0,
     last_scan: null,
     created_at: ago(40 * DAY),
+    archived_at: null,
   };
 }
 
@@ -85,6 +110,7 @@ export const projects: Project[] = [
   project("PAY", "Payments API", "developer", null),
   project("INFRA", "Terraform modules", null, "Shared infrastructure as code."),
   project("MOB", "Mobile app", "viewer", null),
+  { ...project("LEG", "Legacy portal", "owner", "The old customer portal, replaced by WEB."), archived_at: ago(20 * DAY) },
 ];
 const [WEB, PAY, INFRA] = projects as [Project, Project, Project, Project];
 
@@ -102,6 +128,7 @@ export const projectMembers: Record<string, ProjectMember[]> = {
   ],
   [INFRA.id]: [{ user: users.bao, role: "developer" }],
   [projects[3]!.id]: [{ user: users.linh, role: "viewer" }],
+  [projects[4]!.id]: [{ user: users.linh, role: "owner" }],
 };
 
 export const orgMembers: OrgMember[] = [
@@ -137,12 +164,22 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
       duration_ms: 12_000 + tool.length * 4000,
       error: null,
     })),
+    via_token: null,
     ...partial,
   };
 }
 
 export const scans: Scan[] = [
-  scan(WEB, { file_name: "storefront-release-2.3.zip", stats: { new: 4, fixed: 7, reopened: 1, total: 31 } }, 2 * H),
+  scan(
+    WEB,
+    {
+      file_name: "storefront-release-2.3.zip",
+      stats: { new: 4, fixed: 7, reopened: 1, total: 31 },
+      created_by: users.linh,
+      via_token: { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" },
+    },
+    2 * H,
+  ),
   scan(
     WEB,
     {
@@ -171,6 +208,7 @@ export const scans: Scan[] = [
   scan(WEB, { file_name: "storefront-2.2.zip", stats: { new: 26, fixed: 0, reopened: 0, total: 26 } }, 7 * DAY),
   scan(PAY, { file_name: "payments-api.zip" }, DAY),
   scan(INFRA, { file_name: "terraform.zip" }, 5 * DAY),
+  scan(projects[4]!, { file_name: "legacy-portal-final.zip", stats: { new: 0, fixed: 3, reopened: 0, total: 9 } }, 24 * DAY),
 ];
 
 const issueN: Record<string, number> = { WEB: 40, PAY: 6, INFRA: 3 };
@@ -416,3 +454,157 @@ export const audit: AuditEntry[] = [
   { id: uuid(), actor: null, action: "issue.transitioned", target_type: "issue", target_id: issues[10]!.id, ip: null, data: { issue_key: issues[10]!.key, from: "open", to: "fixed" }, created_at: ago(7 * DAY) },
   { id: uuid(), actor: users.huy, action: "project.created", target_type: "project", target_id: PAY.id, ip: "10.20.4.2", data: { project_key: "PAY", name: "Payments API" }, created_at: ago(40 * DAY) },
 ];
+
+// ---- v0.2 fixtures ----
+
+/** Deterministic pseudo-random numbers (mulberry32), so mock data is the same on every load. */
+export function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const B32 = "abcdefghijklmnopqrstuvwxyz234567";
+const tokenRand = seeded(2026);
+/** Lowercase base32 from the seeded generator. Mock token secrets are built with this at
+ *  runtime; no token-shaped string is committed (CLAUDE.md). */
+export function base32(n: number, rand: () => number = tokenRand): string {
+  let out = "";
+  for (let i = 0; i < n; i++) out += B32[Math.floor(rand() * 32)];
+  return out;
+}
+
+function token(t: Partial<ApiToken> & Pick<ApiToken, "name" | "prefix">): ApiToken {
+  return {
+    id: uuid(),
+    scopes: ["scan:write"],
+    created_by: users.linh,
+    created_at: ago(30 * DAY),
+    expires_at: ahead(60 * DAY),
+    last_used_at: null,
+    revoked_at: null,
+    ...t,
+  };
+}
+
+export const tokens: Record<string, ApiToken[]> = {
+  [WEB.id]: [
+    token({ id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa", last_used_at: ago(2 * H), created_at: ago(12 * DAY), expires_at: ahead(78 * DAY) }),
+    token({ name: "Release pipeline", prefix: "p3rt6vbn", scopes: ["scan:write", "issues:read"], created_by: users.minh, created_at: ago(3 * DAY), expires_at: ahead(362 * DAY) }),
+    token({ name: "Nightly scan", prefix: "f6ny3sle", created_at: ago(95 * DAY), expires_at: ago(5 * DAY), last_used_at: ago(6 * DAY) }),
+    token({ name: "Jenkins (old)", prefix: "j2hd5wcz", last_used_at: ago(16 * DAY), created_at: ago(120 * DAY), expires_at: ahead(5 * DAY), revoked_at: ago(14 * DAY) }),
+  ],
+  [PAY.id]: [token({ name: "GitLab CI", prefix: "m4qz7tdk", created_by: users.an, last_used_at: ago(DAY) })],
+};
+if (BULK) {
+  const list = tokens[WEB.id]!;
+  for (let i = 0; i < 240; i++) {
+    list.push(
+      token({
+        name: `Service pipeline ${i + 1} for the monorepo build matrix`,
+        prefix: base32(8),
+        created_at: ago((i + 1) * H),
+        last_used_at: i % 3 ? ago(i * 60_000) : null,
+        revoked_at: i % 7 === 0 ? ago(i * 60_000) : null,
+      }),
+    );
+  }
+}
+
+export const assignRules: Record<string, AssignRule[]> = {
+  [WEB.id]: [
+    { match: { path_glob: "internal/payments/**" }, assignee_id: users.an.id },
+    { match: { tool: "gitleaks" }, assignee_id: users.minh.id },
+    { match: { path_glob: "deploy/**", severity_at_least: "high" }, assignee_id: users.linh.id },
+  ],
+};
+
+const notifRand = seeded(41);
+function notification(
+  type: NotificationType,
+  title: string,
+  link: string,
+  actor: UserRef | null,
+  createdAgo: number,
+  read: boolean,
+  orgId = ORG_ID,
+): Notification {
+  return { id: uuid(), org_id: orgId, type, title, link, actor, read_at: read ? ago(createdAgo - 60_000) : null, created_at: ago(createdAgo) };
+}
+const issueLink = (i: Issue) => `/orgs/${ORG_ID}/issues/${i.id}`;
+
+export const notifications: Notification[] = [
+  notification("issue.assigned", `${issues[1]!.key} assigned to you`, issueLink(issues[1]!), users.minh, 12 * 60_000, false),
+  notification("exception.requested", `${issues[5]!.key}: exception requested (risk accepted)`, `/orgs/${ORG_ID}/exceptions?id=${exceptions[0]!.id}`, users.an, 2 * H, false),
+  notification("scan.finished", "Scan of storefront-release-2.3.zip finished: 4 new, 7 fixed", `/orgs/${ORG_ID}/projects/${WEB.id}/scans?scan=${scans[0]!.id}`, null, 2 * H + 5 * 60_000, false),
+  notification("sla.overdue", "3 of your issues are past their SLA", `/orgs/${ORG_ID}/issues?assignee=me&past_sla=true`, null, 9 * H, true),
+  notification("issue.reopened", `${issues[1]!.key} reopened by a scan`, issueLink(issues[1]!), null, DAY + H, true),
+  notification("exception.decided", `${issues[7]!.key}: your exception request was approved`, `/orgs/${ORG_ID}/exceptions?tab=approved&id=${exceptions[2]!.id}`, users.huy, 3 * DAY, true),
+  notification("sla.due_soon", "2 of your issues are due within 3 days", `/orgs/${ORG_ID}/issues?assignee=me`, null, 3 * DAY + 2 * H, true),
+  notification("issue.assigned", "LAB-7 assigned to you", `/orgs/${ORG2_ID}/issues`, users.huy, 5 * DAY, true, ORG2_ID),
+];
+if (BULK) {
+  for (let i = 0; i < 300; i++) {
+    const t = NOTIFICATION_TYPES[Math.floor(notifRand() * NOTIFICATION_TYPES.length)]!;
+    notifications.push(notification(t, `WEB-${100 + i} assigned to you`, issueLink(issues[i % issues.length]!), users.minh, (6 + i) * DAY, i % 4 !== 0));
+  }
+}
+
+/** Email preference per type; missing = the default (on, except scan.finished). */
+export const notificationPrefs: Partial<Record<NotificationType, boolean>> = { "sla.due_soon": false };
+
+const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Metrics shaped like GET /orgs/{org}/metrics: a slow downward trend with weekly noise,
+ *  scaled per project. Deterministic for a given (days, project, day of generation). */
+export function metrics(days: MetricsDays, projectId: string | null): Metrics {
+  const idx = projectId ? projects.findIndex((p) => p.id === projectId) : -1;
+  const scale = idx < 0 ? 1 : ([0.55, 0.25, 0.15, 0.05, 0.02][idx] ?? 0.1);
+  const rand = seeded(idx + 7);
+  const today = new Date(now());
+  today.setUTCHours(0, 0, 0, 0);
+  const open_by_day: Metrics["open_by_day"] = [];
+  const new_by_day: Metrics["new_by_day"] = [];
+  const fixed_by_day: Metrics["fixed_by_day"] = [];
+  const total = 180;
+  // Open issues follow from what was found and fixed: open(t) = open(t-1) + new − fixed, split
+  // by severity shares that drift towards fewer Critical and High issues.
+  let open = 210 * scale;
+  for (let i = total - 1; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * DAY);
+    const t = (total - i) / total;
+    const monday = d.getUTCDay() === 1 ? 1 : 0;
+    const add = Math.round((rand() * 5 + monday * 8) * scale);
+    const fix = Math.round((rand() * 5 + 1.6 + t * 0.8) * scale);
+    open = Math.max(0, open + add - fix);
+    const share = { critical: 0.06 - 0.03 * t, high: 0.22 - 0.06 * t, medium: 0.42, low: 0 };
+    share.low = 1 - share.critical - share.high - share.medium;
+    if (i < days) {
+      const date = isoDate(d);
+      open_by_day.push({
+        date,
+        critical: Math.round(open * share.critical),
+        high: Math.round(open * share.high),
+        medium: Math.round(open * share.medium),
+        low: Math.round(open * share.low),
+      });
+      new_by_day.push({ date, count: add });
+      fixed_by_day.push({ date, count: fix });
+    }
+  }
+  const fixedTotal = fixed_by_day.reduce((n, d) => n + d.count, 0);
+  const late = Math.round(fixedTotal * 0.14);
+  return {
+    days,
+    open_by_day,
+    mttr_hours: idx === 3 ? { critical: null, high: null, medium: 410, low: null } : { critical: 52, high: 190, medium: 610, low: 1340 },
+    sla: { fixed_in_time: fixedTotal - late, fixed_late: late, open_overdue: Math.round(11 * scale) },
+    new_by_day,
+    fixed_by_day,
+  };
+}

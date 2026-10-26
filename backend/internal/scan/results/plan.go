@@ -97,10 +97,16 @@ func Fingerprints(findings map[string][]sarif.Finding, tools map[string]bool) []
 	return out
 }
 
+// AutoFixGuardMin: a scan may always fix fewer issues than this. Below it the
+// ratio would block the common case of a small project fixing its only finding,
+// and a wrong upload can't close much anyway.
+const AutoFixGuardMin = 5
+
 // AutoFixAllowed is the guard against a truncated or wrong upload closing
-// everything: a scan may fix at most ratio of the project's active issues.
+// everything: a scan that would fix AutoFixGuardMin or more issues may fix at
+// most ratio of the project's active issues.
 func AutoFixAllowed(candidates, active int, ratio float64) bool {
-	return candidates == 0 || float64(candidates) <= ratio*float64(active)
+	return candidates < AutoFixGuardMin || float64(candidates) <= ratio*float64(active)
 }
 
 // BuildPlan decides what this scan does to the project's issues. Replaying it

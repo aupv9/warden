@@ -4,8 +4,21 @@
 //
 // Try: append ?mock_error=CODE to any page URL (e.g. VERSION_CONFLICT, RATE_LIMITED, NOT_FOUND)
 // to make the next write fail with that code.
-import { ACTIVE_STATUSES, SEVERITIES } from "../types";
-import type { ExceptionRequest, Issue, IssueStatus, Project, Scan, SeverityCounts } from "../types";
+import { ACTIVE_STATUSES, METRICS_DAYS, NOTIFICATION_TYPES, SEVERITIES, TOOLS } from "../types";
+import type {
+  ApiToken,
+  AssignRule,
+  CreateTokenBody,
+  ExceptionRequest,
+  Issue,
+  IssueStatus,
+  MetricsDays,
+  NotificationPref,
+  Project,
+  Scan,
+  SeverityCounts,
+  UpdatePolicyBody,
+} from "../types";
 import * as db from "./fixtures";
 
 const LATENCY = import.meta.env.MODE === "test" ? 0 : 250;
@@ -127,10 +140,212 @@ function audit(action: string, target_type: string, target_id: string, data: unk
   db.audit.unshift({ id: db.uuid(), actor: { id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email }, action, target_type, target_id, ip: "127.0.0.1", data, created_at: new Date().toISOString() });
 }
 
+function orgOf(id: string | undefined) {
+  if (id === db.ORG_ID) return db.org;
+  if (id === db.ORG2_ID) return db.org2;
+  throw NOT_FOUND();
+}
+
+const meRef = () => ({ id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email });
+
+/** `manage_project_members` for the caller: security lead in Acme Engineering, else project owner. */
+function canManageProject(orgId: string, p: Project): boolean {
+  return orgOf(orgId).my_role !== "member" || p.my_role === "owner";
+}
+
+function prefsView(): { items: NotificationPref[] } {
+  return { items: NOTIFICATION_TYPES.map((type) => ({ type, email: db.notificationPrefs[type] ?? type !== "scan.finished" })) };
+}
+
+const GLOB_MAX = 200;
+
+function validateRules(p: Project, items: AssignRule[]): void {
+  if (!Array.isArray(items) || items.length > 50) throw new Fail(422, "VALIDATION_FAILED", { items: "at most 50 rules" });
+  const members = db.projectMembers[p.id] ?? [];
+  items.forEach((r, i) => {
+    const m = r.match ?? {};
+    if (!m.path_glob && !m.tool && !m.severity_at_least) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match`]: "needs at least one matcher" });
+    if (m.path_glob && m.path_glob.length > GLOB_MAX) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.path_glob`]: "at most 200 characters" });
+    if (m.tool && !TOOLS.includes(m.tool)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.tool`]: "unknown tool" });
+    if (!members.some((x) => x.user.id === r.assignee_id)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].assignee_id`]: "not a project member" });
+  });
+}
+
 const O = "/orgs/([^/]+)";
 const routes: [string, RegExp, Handler][] = [
   ["GET", /^\/me$/, () => db.me],
-  ["GET", new RegExp(`^${O}$`), (m) => (m[1] === db.ORG_ID ? db.org : (() => { throw NOT_FOUND(); })())],
+  // ---- v0.2 notifications (own data only) ----
+  [
+    "GET",
+    /^\/me\/notifications$/,
+    (_m, url) => {
+      const unread = url.searchParams.get("unread") === "true";
+      const list = [...db.notifications].filter((n) => !unread || !n.read_at).sort((a, b) => b.created_at.localeCompare(a.created_at));
+      return page(list, url);
+    },
+  ],
+  ["GET", /^\/me\/notifications\/unread-count$/, () => ({ count: db.notifications.filter((n) => !n.read_at).length })],
+  [
+    "POST",
+    /^\/me\/notifications\/read$/,
+    (_m, _u, body) => {
+      const b = body as { ids?: string[]; all?: boolean };
+      const at = new Date().toISOString();
+      if (b.all === true) {
+        for (const n of db.notifications) n.read_at ??= at;
+      } else {
+        if (!Array.isArray(b.ids) || b.ids.length < 1 || b.ids.length > 200) throw new Fail(422, "VALIDATION_FAILED", { ids: "1 to 200 ids" });
+        for (const n of db.notifications) if (b.ids.includes(n.id)) n.read_at ??= at;
+      }
+      return [204, null];
+    },
+  ],
+  ["GET", /^\/me\/notification-prefs$/, () => prefsView()],
+  [
+    "PUT",
+    /^\/me\/notification-prefs$/,
+    (_m, _u, body) => {
+      const items = (body as { items: NotificationPref[] }).items;
+      for (const it of items) {
+        if (!NOTIFICATION_TYPES.includes(it.type)) throw new Fail(422, "VALIDATION_FAILED", { type: "unknown notification type" });
+        db.notificationPrefs[it.type] = it.email;
+      }
+      return prefsView();
+    },
+  ],
+  ["GET", new RegExp(`^${O}$`), (m) => orgOf(m[1])],
+  [
+    "PATCH",
+    new RegExp(`^${O}$`),
+    (m, _u, body) => {
+      const o = orgOf(m[1]);
+      if (o.my_role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+      const b = body as UpdatePolicyBody;
+      const fields: Record<string, string> = {};
+      for (const k of ["critical", "high", "medium", "low"] as const) {
+        const v = b.sla_days?.[k];
+        if (!Number.isInteger(v) || v < 1 || v > 365) fields[`sla_days.${k}`] = "1 to 365 days";
+      }
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const from = o.sla_days;
+      o.sla_days = { ...b.sla_days };
+      audit("org.policy_changed", "org", o.id, { from, to: o.sla_days, recompute_open: !!b.recompute_open });
+      return o;
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/metrics$`),
+    (_m, url) => {
+      const days = Number(url.searchParams.get("days") ?? 30);
+      if (!METRICS_DAYS.includes(days as MetricsDays)) throw new Fail(422, "VALIDATION_FAILED", { days: "30, 90 or 180" });
+      const pid = url.searchParams.get("project_id");
+      if (pid) findProject(pid);
+      return db.metrics(days as MetricsDays, pid);
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/issues/counts$`),
+    (_m, url) => {
+      const pid = url.searchParams.get("project_id");
+      const active = db.issues.filter((i) => ACTIVE.includes(i.status) && (!pid || i.project_id === pid));
+      return {
+        active: active.length,
+        mine: active.filter((i) => i.assignee?.id === db.me.id).length,
+        past_sla: active.filter((i) => i.past_sla).length,
+        secrets: active.filter((i) => i.tool === "gitleaks").length,
+      };
+    },
+  ],
+  // ---- v0.2 API tokens ----
+  [
+    "GET",
+    new RegExp(`^${O}/projects/([^/]+)/tokens$`),
+    (m) => {
+      const p = findProject(m[2]!);
+      if (!canManageProject(m[1]!, p)) throw NOT_FOUND();
+      return { items: [...(db.tokens[p.id] ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at)) };
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/projects/([^/]+)/tokens$`),
+    (m, _u, body) => {
+      const p = findProject(m[2]!);
+      if (!canManageProject(m[1]!, p)) throw NOT_FOUND();
+      // Creating also needs run_scan: the token scans as its creator.
+      const role = orgOf(m[1]).my_role;
+      if (role !== "security_lead" && p.my_role !== "owner" && p.my_role !== "developer") throw new Fail(403, "FORBIDDEN");
+      const b = body as CreateTokenBody;
+      const fields: Record<string, string> = {};
+      const name = (b.name ?? "").trim();
+      if (name.length < 1 || name.length > 80) fields.name = "1 to 80 characters";
+      if (!Array.isArray(b.scopes) || b.scopes.length < 1 || b.scopes.some((x) => x !== "scan:write" && x !== "issues:read")) fields.scopes = "at least one of scan:write, issues:read";
+      if (!Number.isInteger(b.expires_in_days) || b.expires_in_days < 1 || b.expires_in_days > 365) fields.expires_in_days = "1 to 365 days";
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const prefix = db.base32(8);
+      const t: ApiToken = {
+        id: db.uuid(),
+        name,
+        prefix,
+        scopes: b.scopes,
+        created_by: meRef(),
+        created_at: new Date().toISOString(),
+        expires_at: new Date(db.now() + b.expires_in_days * 86_400_000).toISOString(),
+        last_used_at: null,
+        revoked_at: null,
+      };
+      (db.tokens[p.id] ??= []).unshift(t);
+      audit("token.created", "project", p.id, { project_key: p.key, name, prefix, scopes: b.scopes });
+      // Like the server: the secret goes back once and is not kept (the mock keeps nothing).
+      // Valid base32 of the right length, but plainly fake, so screenshots never show a
+      // real-looking token.
+      return [201, { token: t, secret: `wdn_${prefix}_${"mocksecret".repeat(6).slice(0, 52)}` }];
+    },
+  ],
+  [
+    "DELETE",
+    new RegExp(`^${O}/projects/([^/]+)/tokens/([^/]+)$`),
+    (m) => {
+      const p = findProject(m[2]!);
+      if (!canManageProject(m[1]!, p)) throw NOT_FOUND();
+      const t = (db.tokens[p.id] ?? []).find((x) => x.id === m[3]);
+      if (!t) throw NOT_FOUND();
+      if (!t.revoked_at) {
+        t.revoked_at = new Date().toISOString();
+        audit("token.revoked", "project", p.id, { project_key: p.key, name: t.name, prefix: t.prefix, scopes: t.scopes });
+      }
+      return [204, null];
+    },
+  ],
+  // ---- v0.2 auto-assign rules and archiving ----
+  ["GET", new RegExp(`^${O}/projects/([^/]+)/assign-rules$`), (m) => ({ items: db.assignRules[findProject(m[2]!).id] ?? [] })],
+  [
+    "PUT",
+    new RegExp(`^${O}/projects/([^/]+)/assign-rules$`),
+    (m, _u, body) => {
+      const p = findProject(m[2]!);
+      if (!canManageProject(m[1]!, p)) throw new Fail(403, "FORBIDDEN");
+      const items = (body as { items: AssignRule[] }).items;
+      validateRules(p, items);
+      db.assignRules[p.id] = items;
+      return { items };
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/projects/([^/]+)/(archive|unarchive)$`),
+    (m) => {
+      const p = findProject(m[2]!);
+      if (orgOf(m[1]).my_role === "member") throw new Fail(403, "FORBIDDEN");
+      const archive = m[3] === "archive";
+      if (archive && !p.archived_at) p.archived_at = new Date().toISOString();
+      if (!archive) p.archived_at = null;
+      audit(archive ? "project.archived" : "project.unarchived", "project", p.id, { project_key: p.key, name: p.name });
+      return projectView(p);
+    },
+  ],
   [
     "GET",
     new RegExp(`^${O}/summary$`),
@@ -196,7 +411,13 @@ const routes: [string, RegExp, Handler][] = [
       return [204, null];
     },
   ],
-  ["GET", new RegExp(`^${O}/projects$`), () => ({ items: db.projects.map(projectView) })],
+  [
+    "GET",
+    new RegExp(`^${O}/projects$`),
+    (_m, url) => ({
+      items: db.projects.filter((p) => !p.archived_at || url.searchParams.get("include_archived") === "true").map(projectView),
+    }),
+  ],
   [
     "POST",
     new RegExp(`^${O}/projects$`),
@@ -215,6 +436,7 @@ const routes: [string, RegExp, Handler][] = [
         past_sla: 0,
         last_scan: null,
         created_at: new Date().toISOString(),
+        archived_at: null,
       };
       db.projects.push(p);
       db.projectMembers[p.id] = [];
@@ -268,6 +490,7 @@ const routes: [string, RegExp, Handler][] = [
     (m, _u, body) => {
       const p = findProject(m[2]!);
       const b = body as { file_name: string; file_size: number; sha256: string; tools?: Scan["tools"] };
+      if (p.archived_at) throw new Fail(409, "PROJECT_ARCHIVED");
       if (b.file_name.includes("ratelimit")) throw new Fail(429, "RATE_LIMITED");
       if (!/^[0-9a-f]{64}$/.test(b.sha256)) throw new Fail(422, "VALIDATION_FAILED", { sha256: "must be 64 hex characters" });
       const tools = b.tools ?? p.default_tools;
@@ -285,6 +508,7 @@ const routes: [string, RegExp, Handler][] = [
         queued_at: null,
         started_at: null,
         finished_at: null,
+        via_token: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
@@ -518,7 +742,7 @@ function nextForcedError(method: string): string | null {
   return code && /^[A-Z_]+$/.test(code) ? code : null;
 }
 
-const STATUS: Record<string, number> = { VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
+const STATUS: Record<string, number> = { MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
 
 export const mockFetch: typeof fetch = async (input, init) => {
   await new Promise((r) => setTimeout(r, LATENCY));
@@ -534,7 +758,9 @@ export const mockFetch: typeof fetch = async (input, init) => {
     if (m !== method) continue;
     const match = path.match(re);
     if (!match) continue;
-    if (match[1] && match[1] !== db.ORG_ID && match[1] !== db.ORG2_ID) return envelope(404, null, { code: "NOT_FOUND", message: "not found" });
+    if (match[1] && match[1] !== db.ORG_ID && match[1] !== db.ORG2_ID && match[1] !== db.ORG3_ID) return envelope(404, null, { code: "NOT_FOUND", message: "not found" });
+    // v0.2 MFA rule: the caller is an org admin in Acme Security and signed in without MFA.
+    if (match[1] === db.ORG3_ID) return envelope(403, null, { code: "MFA_REQUIRED", message: "Your role requires two-factor sign-in." });
     try {
       const out = handler(match, url, body);
       if (Array.isArray(out) && out.length === 2 && typeof out[0] === "number") return envelope(out[0], out[1], null);

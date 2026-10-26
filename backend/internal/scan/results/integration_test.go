@@ -207,7 +207,7 @@ func TestProcessLifecycle(t *testing.T) {
 	if !nums[1] || !nums[2] || !nums[3] || f.count(`SELECT issue_seq FROM project WHERE id = $1`, f.project) != 3 {
 		t.Fatalf("numbers %v", nums)
 	}
-	if f.count(`SELECT count(*) FROM issue_event WHERE type = 'created' AND actor_id IS NULL`) != 3 ||
+	if f.count(`SELECT count(*) FROM issue_event WHERE type = 'created' AND actor_id IS NULL AND org_id = $1`, f.org) != 3 ||
 		f.count(`SELECT count(*) FROM occurrence WHERE scan_id = $1`, s1) != 3 {
 		t.Fatal("events/occurrences")
 	}
@@ -235,8 +235,8 @@ func TestProcessLifecycle(t *testing.T) {
 	if p.Stats != (results.Stats{Fixed: 1, Total: 2}) || f.issues()["xss"].Status != "fixed" {
 		t.Fatalf("%+v %+v", p.Stats, f.issues())
 	}
-	if f.count(`SELECT count(*) FROM issue_event WHERE type = 'seen_again'`) != 2 ||
-		f.count(`SELECT count(*) FROM issue_event WHERE type = 'status_changed' AND to_value = 'fixed'`) != 1 {
+	if f.count(`SELECT count(*) FROM issue_event WHERE type = 'seen_again' AND org_id = $1`, f.org) != 2 ||
+		f.count(`SELECT count(*) FROM issue_event WHERE type = 'status_changed' AND to_value = 'fixed' AND org_id = $1`, f.org) != 1 {
 		t.Fatal("events after scan 2")
 	}
 
@@ -258,13 +258,32 @@ func TestProcessLifecycle(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 
-	// Scan 5: everything vanishes → guard trips, nothing fixed, scan flagged.
+	// Scan 5: everything vanishes, but only 3 issues: below the guard's minimum, so
+	// a small project fixing its findings gets them closed.
 	s5 := f.scan("opengrep")
 	if p, err = f.process(s5, ok("opengrep"), map[string][]sarif.Finding{"opengrep": {}}); err != nil {
 		t.Fatal(err)
 	}
-	if !p.NeedsConfirmation || f.count(`SELECT count(*) FROM scan WHERE id = $1 AND needs_confirmation`, s5) != 1 ||
-		f.count(`SELECT count(*) FROM issue WHERE status = 'fixed' AND project_id = $1`, f.project) != 0 {
+	if p.NeedsConfirmation || f.count(`SELECT count(*) FROM issue WHERE status = 'fixed' AND project_id = $1`, f.project) != 3 {
+		t.Fatalf("small project: %+v", p)
+	}
+
+	// Scans 6–7: six new findings, then an empty upload → guard trips, nothing
+	// fixed, scan flagged.
+	var six []sarif.Finding
+	for i := range 6 {
+		six = append(six, fnd("opengrep", fmt.Sprintf("rule-%d", i), "big.py", severity.Medium, ""))
+	}
+	s6 := f.scan("opengrep")
+	if _, err = f.process(s6, ok("opengrep"), map[string][]sarif.Finding{"opengrep": six}); err != nil {
+		t.Fatal(err)
+	}
+	s7 := f.scan("opengrep")
+	if p, err = f.process(s7, ok("opengrep"), map[string][]sarif.Finding{"opengrep": {}}); err != nil {
+		t.Fatal(err)
+	}
+	if !p.NeedsConfirmation || f.count(`SELECT count(*) FROM scan WHERE id = $1 AND needs_confirmation`, s7) != 1 ||
+		f.count(`SELECT count(*) FROM issue WHERE status = 'fixed' AND project_id = $1`, f.project) != 3 {
 		t.Fatalf("guard: %+v", p)
 	}
 }

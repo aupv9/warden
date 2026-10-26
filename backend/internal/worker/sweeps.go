@@ -12,6 +12,7 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/domain/issuestate"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
+	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/results"
 )
 
@@ -181,7 +182,9 @@ func reopenExpired(ctx context.Context, db DB, org uuid.UUID, x expiredException
 	if tag.RowsAffected() == 0 {
 		return nil
 	}
-	_, err = db.Exec(ctx, `INSERT INTO issue_event (org_id, issue_id, actor_id, type, from_value, to_value, note)
-		VALUES ($1, $2, NULL, $3, 'risk_accepted', 'reopened', 'risk acceptance expired')`, org, x.IssueID, results.EventStatusChanged)
-	return err
+	if _, err = db.Exec(ctx, `INSERT INTO issue_event (org_id, issue_id, actor_id, type, from_value, to_value, note)
+		VALUES ($1, $2, NULL, $3, 'risk_accepted', 'reopened', 'risk acceptance expired')`, org, x.IssueID, results.EventStatusChanged); err != nil {
+		return err
+	}
+	return notify.Insert(ctx, db, notify.Event{OrgID: org, Type: notify.IssueReopened, Payload: notify.Payload{IssueID: notify.ID(x.IssueID)}})
 }

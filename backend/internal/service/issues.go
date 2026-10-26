@@ -14,6 +14,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/domain/issuestate"
 	"github.com/aupv9/warden/backend/internal/domain/rbac"
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/notify"
 )
 
 const (
@@ -179,6 +180,14 @@ func (s *Service) Issues(ctx context.Context, a *Actor, f IssueFilter) (IssuePag
 		q, err := s.issueQuery(a, f)
 		if err != nil {
 			return err
+		}
+		if a.Token != nil { // an API token lists its own project only
+			if q.ProjectID == nil {
+				q.ProjectID = &a.Token.ProjectID
+			}
+			if _, err := projectAccess(ctx, r, a, *q.ProjectID); err != nil {
+				return err
+			}
 		}
 		rq := q
 		rq.Limit = q.Limit + 1 // one extra row tells whether there is a next page
@@ -383,6 +392,11 @@ func (s *Service) Transition(ctx context.Context, a *Actor, issueID uuid.UUID, i
 				From: idString(iss.AssigneeID), To: idString(newAssignee)}); err != nil {
 				return err
 			}
+			if newAssignee != nil {
+				if err := outbox(ctx, r, a, notify.IssueAssigned, notify.Payload{IssueID: notify.ID(iss.ID), UserID: newAssignee}); err != nil {
+					return err
+				}
+			}
 		}
 		data := map[string]any{"from": iss.Status, "to": string(to)}
 		if newAssignee != nil {
@@ -533,6 +547,9 @@ func (s *Service) BulkAssign(ctx context.Context, a *Actor, in BulkAssignInput) 
 			}
 			if err := r.InsertIssueEvent(ctx, NewEvent{OrgID: a.OrgID, IssueID: iss.ID, ActorID: &uid, Type: "assigned",
 				From: idString(iss.AssigneeID), To: ptr(assignee.String())}); err != nil {
+				return err
+			}
+			if err := outbox(ctx, r, a, notify.IssueAssigned, notify.Payload{IssueID: notify.ID(iss.ID), UserID: notify.ID(assignee)}); err != nil {
 				return err
 			}
 			updated = append(updated, iss.ID.String())

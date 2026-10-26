@@ -151,6 +151,8 @@ func (h *harness) scanSteps(status string, overrides ...dbtest.Step) []dbtest.St
 		{Prefix: "SELECT issue_seq FROM project", Rows: row(0)},
 		{Prefix: "SELECT sla_days FROM organization", Rows: row([]byte(`{"high":30}`))},
 		{Prefix: "SELECT id, fingerprint"},
+		{Prefix: "SELECT assign_rules FROM project", Rows: row([]byte(`[]`))},
+		{Prefix: "INSERT INTO outbox_event", Affected: 1},
 		{Prefix: "UPDATE project SET issue_seq", Rows: row(1)},
 		{Prefix: "INSERT INTO issue (", Affected: 1},
 		{Prefix: "INSERT INTO issue_event", Affected: 1},
@@ -236,6 +238,10 @@ func (h *harness) failedWith(code string) {
 	}
 	if len(h.db.Calls("INSERT INTO issue")) != 0 {
 		h.t.Fatal("issues written for a failed scan")
+	}
+	// The creator hears about it (scan.finished), in the same transaction.
+	if ob := h.db.Calls("INSERT INTO outbox_event"); len(ob) != 1 || ob[0].Args[1] != "scan.finished" {
+		h.t.Fatalf("outbox %v", ob)
 	}
 }
 
