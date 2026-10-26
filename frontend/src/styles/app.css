@@ -98,6 +98,21 @@ table,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Every scroll container is a containing block. Otherwise absolutely positioned children
+   (the .visually-hidden labels in each row) escape its clipping, are laid out against the
+   page, and stretch the document: a long issue list scrolled into a blank screen. */
+.segmented,
+.table-wrap,
+.code-json,
+.person-list,
+.palette-list,
+.issues-list,
+.issue-pane,
+.code,
+.seg-scroll,
+.chip-scroll {
+  position: relative;
+}
 .visually-hidden {
   position: absolute !important;
   width: 1px;
