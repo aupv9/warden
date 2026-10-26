@@ -1,7 +1,8 @@
-# Warden web UI: design spec (v0.1)
+# Warden web UI: design spec (v0.2)
 
-This is the target for the first usable release of the web UI: a team uploads code, sees
-issues, and works them to closed. The images below are screenshots of the app running on its
+v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
+v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
+projects, an Overview page and the MFA rule; see "v0.2 screens" below. The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -36,6 +37,10 @@ enforces them anyway.
 | 5 | Exceptions | security lead decides; others see their own | Tabs: pending, approved, rejected, expiring soon. A queue on the left and a review panel on the right: reason, "accepted until" (≤ 180 days), decision note (required to reject), approve or reject |
 | 6 | Members & roles | org admin, security lead, project owner | Org members with org role, projects, MFA, status; project roles per project; the permission matrix, read-only, generated from `rbac.Matrix` |
 | 7 | Audit log | org admin, security lead | Filters for action, actor and date range; one row per entry (time, actor, action, target, IP) that expands to show the entry's `data`; a note that the log is append-only and hash-chained |
+| 8 | Overview (v0.2) | everyone (`view_dashboard`) | First item in the navigation. Range 30 / 90 / 180 days and a project filter; open now, new, fixed, open past SLA; open issues per severity over time; new vs fixed; time to fix per severity; SLA compliance. Every chart has its data as a table |
+| 9 | Project settings (v0.2) | everyone reads; project owner, security lead edit | General details; API tokens (create with a show-once token, revoke); CI setup snippets; auto-assign rules; archive / unarchive |
+| 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates |
+| 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation.
 States, the upload flow, dialogs and the phone layout are specified below the screenshots.
@@ -80,6 +85,41 @@ Desktop width (1440 px) unless marked as phone (390 px).
 ### 12. Phone (390 px)
 <img src="design/11-phone-issue-list.png" alt="Phone: issue list as stacked rows" width="260"> <img src="design/12-phone-issue.png" alt="Phone: issue page with vertical stepper" width="260"> <img src="design/13-phone-menu.png" alt="Phone: navigation drawer open" width="260">
 
+Screenshots 02 and 04–14 were taken before v0.2 and don't show the Overview and Settings
+navigation items or the bell; 01 and 03 are current.
+
+### 13. Overview (v0.2)
+![Overview: filters, stat strip, open issues per severity, new vs fixed, time to fix, SLA compliance](design/15-overview.png)
+
+### 14. Project settings: API tokens and CI setup (v0.2)
+![Project settings: general, API tokens table, CI setup snippet](design/16-project-settings.png)
+
+### 15. A new API token, shown once (v0.2)
+![Create token dialog after creation: warning, the token, Copy](design/17-token-created.png)
+
+### 16. Auto-assign rules (v0.2)
+![Rules editor with a moved rule and an invalid new rule](design/18-assign-rules.png)
+
+### 17. Org settings: SLA policy (v0.2)
+![SLA policy form](design/19-org-settings.png)
+
+### 18. Notifications (v0.2)
+![Bell popover with unread and read notifications](design/20-notifications.png)
+![Notification preferences: an email switch per type](design/21-notification-preferences.png)
+
+### 19. Two-factor sign-in required (v0.2)
+![MFA_REQUIRED full-page state](design/22-mfa-required.png)
+
+### 20. Archived project (v0.2)
+![Archived banner and the disabled upload on the Scans tab](design/23-archived-project.png)
+
+### 21. Dark theme (v0.2 screens)
+![Overview in the dark theme](design/24-dark-overview.png)
+![A new API token in the dark theme](design/25-dark-project-settings.png)
+
+### 22. Phone (v0.2)
+<img src="design/26-phone-overview.png" alt="Phone: Overview with the severity panels stacked" width="260"> <img src="design/27-phone-notifications.png" alt="Phone: notifications popover from the top bar" width="260">
+
 ## Issue triage
 
 - **Saved views** in the header are presets of the URL filters: Active (default), Assigned to me
@@ -107,6 +147,137 @@ Desktop width (1440 px) unless marked as phone (390 px).
   | `⌘K` / `Ctrl+K` | Command palette: jump to an issue by key or title, a project, or a page |
 
   A footer bar shows these hints on the issue list.
+
+- **Counts (v0.2):** every saved view shows its count from `GET /issues/counts` (for the
+  project in scope). While a search narrows the current view, that view shows the live match
+  count instead.
+
+## v0.2 screens
+
+### Overview
+
+- First item in the navigation (`/orgs/:org/overview`); the org still opens on Projects.
+- One row of filters above everything they scope: range as a segmented control (30, 90, 180
+  days; `?days=`) and a project select (`?project=`). Changing them keeps the previous charts
+  on screen at reduced opacity until the new data arrives (no skeleton flash).
+- Stat strip: open now (last day of `open_by_day`), new and fixed in the range, open past SLA
+  (`sla.open_overdue`, in the danger colour when above 0).
+- **Open issues by severity:** small multiples, one panel per severity, rather than a stacked
+  area: Critical and High are too close in colour to share a chart, so each panel is named
+  by its label and colour is only a second cue. 2 px line with a 10 % area wash, the current
+  value and the change over the range in the panel header, each panel on its own scale (said
+  in the subtitle, the maximum on the axis). One crosshair runs through all four panels and
+  every header shows the value for that day; the group is focusable and the arrow keys
+  (Shift for a week, Home/End, Esc) move the crosshair.
+- **New vs fixed:** columns around one zero line, new above (accent) and fixed below (the
+  verified green), on one scale. Per day for 30 days, per week (7-day buckets ending today)
+  for 90 and 180. Columns are at most 24 px with a 4 px rounded end; hovering a column shows
+  both values. A legend with the totals sits in the card header.
+- **Time to fix:** a horizontal bar per severity (mean hours from found to first fixed or
+  verified, for issues fixed in the range) with the value at the tip ("2.2 days");
+  `null` reads "No fixes".
+- **SLA compliance:** the share of SLA outcomes that met the SLA, `fixed_in_time ÷
+  (fixed_in_time + fixed_late + open_overdue)`, as a large figure, a 100 % bar with 2 px gaps
+  (in time green, late amber, open past SLA red) and a legend with the counts.
+- Every chart card ends with "Show the data as a table" (a `<details>` with a real table, the
+  text alternative for every chart); charts that aren't interactive carry a summary in
+  `aria-label`. Colours are theme tokens, so both themes work; text never takes a series colour.
+
+### Project settings
+
+Cards in this order; a project owner or security lead (`manage_project_members`) edits, everyone
+else reads.
+
+- **General:** the v0.1 details plus Status (Active / Archived on a date).
+- **API tokens:** table of name with the prefix only (`wdn_k7m2q4xa_…`), scopes, created
+  (date and by), last used, status (Active with the end date, "Expires in n days" in amber
+  within 7 days, Expired, Revoked with the date). Revoked rows are dimmed; "n active of m"
+  under the table. "Create token" needs `run_scan` as well (a token scans as its creator): an
+  org admin who isn't a project member sees it disabled, with the reason, and can still list
+  and revoke. Archived projects can't get new tokens.
+- **Create token dialog:** name (1–80, "say where it's used"), scopes as cards (Run scans
+  `scan:write`, default on; Read issues `issues:read`; at least one), expiry (7, 30, 90
+  (default), 180 days, 1 year, with the date). After "Create token" the same dialog shows the
+  token once: a warning banner ("Copy the token now. This is the only time Warden shows it…"),
+  the token in a read-only mono box that is focused and selected, a Copy button whose result
+  is announced in a polite live region (or, when the Clipboard API fails, the text stays
+  selected and the message says to press ⌘C / Ctrl+C), the hint to store it as `WARDEN_TOKEN`,
+  and "Done".
+- **Revoke:** confirm dialog naming the token and its prefix ("CI jobs that use it start failing
+  at once. This can't be undone."), danger button "Revoke token".
+- **CI setup:** three steps (create a token with `scan:write`, store it as the CI secret
+  `WARDEN_TOKEN`, add the job), then tabs (ARIA tabs, arrow keys) for GitHub Actions and
+  GitLab CI with a Copy button. The snippets run `warden scan --url <this server> --org <org id>
+  --project <project id> --fail-on high` and read the token from the CI secret; no token is
+  ever written into a snippet, not even right after one was created. A note explains the exit
+  codes (1 gate failed, 2 error).
+- **Auto-assign rules:** an ordered list; the first matching rule wins and only new issues are
+  assigned. Each rule is a fieldset ("Rule n") with path glob (mono, ≤ 200 characters), scanner
+  (Any or one), severity at least (Any or one) and the assignee (project members with their
+  role). Move up / down and remove are icon buttons with names ("Move rule 2 up"); after a move
+  focus stays on the moved rule and a live region says "Rule moved to position 1 of 3".
+  Errors under the fields: no condition, glob too long or not printable, no assignee, an
+  assignee who left the project ("Former member (skipped)" in the select); at most 50 rules.
+  Server field errors (`items[i].…`) map to the rule. "n of 50", "Discard changes", "Save
+  rules" (enabled when something changed). Without the permission the rules read as sentences
+  ("Path matches deploy/** and severity is High or above → Linh Tran").
+- **Archive / Unarchive** (org admin, security lead): a card with a red border, explaining what
+  stops and what stays, and a confirm dialog.
+- **Archived projects:** a warning-coloured strip under the project header ("Archived Oct 6,
+  2026. This project takes no new scans…", with "Unarchive…" for those who may), an Archived
+  tag in the title, no "Upload .zip" button, and the New scan card replaced by a disabled drop
+  zone. The Projects page hides archived projects unless "Show archived" is ticked
+  (`?archived=1`), where they carry an Archived tag. The scan history names the token for scans
+  run from CI ("via token GitHub Actions (main)").
+
+### Org settings
+
+`/orgs/:org/settings`, "Settings" under Organization in the navigation. SLA policy: one field
+per severity (whole days, 1–365, text inputs with a "days" suffix so scrolling can't change
+them), and "Also recalculate the due dates of open issues" (`recompute_open`) with what it
+does. "Save policy" is enabled once something changed; the toast says whether open issues
+were recalculated. Without `configure_policy` the values are shown as text with "Only security
+leads can change the SLA policy."
+
+### Notifications
+
+- **Bell:** next to the org switcher in the sidebar header (in the phone top bar, next to the
+  avatar). The accessible name carries the count ("Notifications, 3 unread"); the badge shows
+  up to 99+. The count is polled every 60 s while the tab is visible and not at all while it's
+  hidden; coming back to the tab refreshes it at once.
+- **Popover:** "Notifications" with "Mark all as read"; the latest 20 (then "Load older"), each
+  with an unread dot, the server's title (as text), who and when, and the org when the user is in
+  several; a check button marks one read. Opening one marks it read and goes to its link. Links
+  are followed only when they are same-origin app paths (`/…`, not `//…` or a URL); otherwise
+  the item has no link. Footer link to the preferences.
+- **Preferences** (user menu → Notification preferences; `/orgs/:org/preferences`): one row per
+  type with what it means and an Email switch (a checkbox with `role="switch"`). Defaults: all
+  on except "Scan finished". These are the user's own and apply in every org.
+- **User menu:** the person at the bottom of the sidebar is now a menu button (email,
+  Notification preferences, Sign out).
+
+### Two-factor sign-in required
+
+When `me.mfa_required_orgs` lists the org, or any request in the org answers `MFA_REQUIRED`, the
+org's pages are replaced by one full-page state: "Two-factor sign-in required", why (the role
+in that org needs it; this session didn't use it), what to do, a primary "Sign out and sign in
+again" button, and links to the user's other orgs. The org's navigation, search and data stay
+unloaded behind it; the org switcher, theme and bell still work. It is never shown as a 403 or
+a toast.
+
+### Code splitting
+
+Every page is its own chunk, loaded on first visit (`React.lazy`, a Suspense skeleton in the
+org and project layouts after the usual 300 ms). React, the router, TanStack Query and
+oidc-client-ts are vendor chunks preloaded next to the entry, cached across Warden upgrades.
+
+### Mock mode (v0.2)
+
+`npm run dev:mock` also has: tokens (active, expiring, expired, revoked; a created token is a
+plainly fake `wdn_<prefix>_mocksecret…`), auto-assign rules on WEB, notifications, preferences,
+deterministic metrics per project, an archived project (LEG), a read-only org (Acme Labs, where
+the user is a member) and an org that requires MFA (Acme Security). `?mock_bulk=1` adds 240
+tokens and 300 notifications to check long lists.
 
 ## Audit log
 
@@ -217,6 +388,9 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 | `UPLOAD_MISMATCH` (422) | Upload card, same layout as "upload failed" | "The upload didn't arrive complete. Upload the file again." |
 | `RATE_LIMITED` (429) | Upload card (scan create); toast elsewhere | Scans: "You've reached the scan limit for this hour. Nothing was uploaded. Try again later." Elsewhere: "Too many requests in a short time. Wait a minute, then try again." If the response has `Retry-After`, say when. |
 | network error, 5xx | Load: in place of the data. Action: error toast | "Warden didn't answer. Check your connection and try again." plus the request ID if there is one. |
+| `MFA_REQUIRED` (403, v0.2) | Whole org: the "Two-factor sign-in required" page | Never a 403 page or a toast. |
+| `PROJECT_ARCHIVED` (409, v0.2) | Upload card | "This project is archived, so it doesn't take new scans. Unarchive it first." (The UI hides uploads for archived projects, so this only shows after a race.) |
+| `TOKEN_SCOPE` (403, v0.2) | CLI only | "This API token isn't allowed to do that." The UI never uses tokens. |
 
 ## Upload flow
 
@@ -306,6 +480,12 @@ Below 800 px (screenshots in section 12):
 - Text that came from scanned code or other users (titles, snippets, comments, audit `data`,
   server error messages) is rendered as text, never as HTML.
 - A 404 never says whether the object exists in an org or project the user can't see.
+- **API tokens (v0.2):** the full token is in the create response only. It is kept in the
+  dialog's component state and dropped when the dialog closes; the create mutation resolves
+  with the token's metadata only, so it never reaches TanStack Query's caches, and it is never
+  put in the URL, browser storage or a log (`src/api/tokens.test.ts`). Lists show the prefix
+  only. CI snippets read the token from a CI secret and never contain one.
+- **Notification links (v0.2)** are followed only when they are same-origin app paths.
 
 ## Visual system
 
@@ -406,7 +586,8 @@ In the design but not in the API contract:
   issue's project. The API doesn't say what happens when the assignee isn't a member of one of
   them; it should skip that issue and count it as skipped.
 
-## Not in v0.1
+## Not in v0.2
 
-API tokens and a CI gate, email or Slack notifications, trend dashboards, automatic assignment
-rules, per-org SLA and severity overrides, and archiving projects.
+Slack notifications, severity overrides, editing project details (name, default scanners),
+and a custom date range on the Overview. (API tokens and the CI gate, email notifications,
+trend charts, auto-assign rules, the per-org SLA policy and archiving shipped in v0.2.)

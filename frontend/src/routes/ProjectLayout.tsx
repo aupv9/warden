@@ -1,27 +1,21 @@
-import { createContext, useContext } from "react";
+import { Suspense } from "react";
 import { Link, NavLink, Outlet, useLocation, useParams } from "react-router";
 import { useProject } from "../api/hooks/projects";
-import type { Project } from "../api/types";
 import { ProjectDot } from "../components/Avatar";
 import { ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
-import { UploadIcon } from "../components/Icons";
+import { ArchiveIcon, UploadIcon } from "../components/Icons";
 import { PageHeader, Segmented } from "../components/PageHeader";
-import { ErrorState, Skeleton } from "../components/States";
+import { ErrorState, RouteFallback, Skeleton } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
-import { TOOL_LABELS, formatDate } from "../lib/format";
-import { can, PROJECT_ROLE_LABELS } from "../lib/permissions";
+import { formatDate } from "../lib/format";
+import { can } from "../lib/permissions";
 import { usePageTitle } from "../lib/usePageTitle";
 import { IssueList } from "./IssueList";
 import { ProjectRolesCard } from "./ProjectRoles";
+import { ProjectContext, useProjectCtx } from "./projectCtx";
 
-const ProjectContext = createContext<Project | null>(null);
-
-export function useProjectCtx(): Project {
-  const p = useContext(ProjectContext);
-  if (!p) throw new Error("useProjectCtx outside ProjectLayout");
-  return p;
-}
+export { useProjectCtx } from "./projectCtx";
 
 export function ProjectLayout() {
   const { orgId, org } = useOrgCtx();
@@ -30,8 +24,10 @@ export function ProjectLayout() {
   const project = useProject(orgId, projectId);
   usePageTitle(project.data?.name);
   const base = `/orgs/${orgId}/projects/${projectId}`;
-  const canScan = !!project.data && can("run_scan", org.role, project.data.my_role);
+  const archived = !!project.data?.archived_at;
+  const canScan = !!project.data && can("run_scan", org.role, project.data.my_role) && !archived;
   const onScans = pathname.startsWith(`${base}/scans`);
+  const onSettings = pathname.startsWith(`${base}/settings`);
 
   return (
     <div className="page">
@@ -49,6 +45,11 @@ export function ProjectLayout() {
                 <ProjectDot projectKey={project.data.key} />
                 <span className="ellipsis">{project.data.name}</span>
                 <span className="mono faint crumb-key">{project.data.key}</span>
+                {archived && (
+                  <span className="tag crumb-tag">
+                    <ArchiveIcon size={12} /> Archived
+                  </span>
+                )}
               </>
             ) : (
               <Skeleton width={160} height={14} />
@@ -78,7 +79,23 @@ export function ProjectLayout() {
         </div>
       ) : project.data ? (
         <ProjectContext value={project.data}>
-          <Outlet />
+          {archived && (
+            <div className="archived-banner" role="status">
+              <ArchiveIcon size={15} />
+              <span>
+                <strong>Archived {formatDate(project.data.archived_at)}.</strong> This project takes no new scans. Its issues
+                and history stay readable.
+              </span>
+              {can("create_archive_project", org.role) && !onSettings && (
+                <Link to={`${base}/settings#archive`} className="archived-banner-link">
+                  Unarchive…
+                </Link>
+              )}
+            </div>
+          )}
+          <Suspense fallback={<RouteFallback />}>
+            <Outlet />
+          </Suspense>
         </ProjectContext>
       ) : (
         <div className="page-body">
@@ -101,33 +118,6 @@ export function ProjectMembersTab() {
   return (
     <div className="page-body">
       <ProjectRolesCard fixedProject={project} />
-    </div>
-  );
-}
-
-export function ProjectSettingsTab() {
-  const p = useProjectCtx();
-  return (
-    <div className="page-body">
-    <Card title="Settings" titleId="settings-h">
-      <dl className="kv">
-        <dt>Key</dt>
-        <dd className="mono">{p.key}</dd>
-        <dt>Name</dt>
-        <dd>{p.name}</dd>
-        <dt>Description</dt>
-        <dd className="prose">{p.description ?? <span className="muted">None</span>}</dd>
-        <dt>Default scanners</dt>
-        <dd>{p.default_tools.map((t) => TOOL_LABELS[t]).join(", ")}</dd>
-        <dt>Your role</dt>
-        <dd>{p.my_role ? PROJECT_ROLE_LABELS[p.my_role] : "Not a member (org-wide access)"}</dd>
-        <dt>Created</dt>
-        <dd>{formatDate(p.created_at)}</dd>
-      </dl>
-      <p className="faint small" style={{ marginTop: 16 }}>
-        Editing project settings and archiving projects aren't available in v0.1.
-      </p>
-    </Card>
     </div>
   );
 }

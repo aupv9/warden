@@ -1,12 +1,33 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import { qk } from "../keys";
-import type { AddOrgMemberBody, ItemList, Org, OrgMember, OrgRole, OrgSummary } from "../types";
+import type { AddOrgMemberBody, ItemList, Org, OrgMember, OrgRole, OrgSummary, UpdatePolicyBody } from "../types";
 
 const base = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}`;
 
 export function useOrg(orgId: string) {
   return useQuery({ queryKey: qk.orgDetail(orgId), queryFn: ({ signal }) => api<Org>(base(orgId), { signal }) });
+}
+
+/** v0.2: SLA policy (perm configure_policy). */
+export function useUpdatePolicy(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: UpdatePolicyBody) => api<Org>(base(orgId), { method: "PATCH", body }),
+    onSuccess: (org, body) => {
+      qc.setQueryData(qk.orgDetail(orgId), org);
+      // Recomputed due dates change past-SLA counts everywhere.
+      if (body.recompute_open) {
+        return Promise.all([
+          qc.invalidateQueries({ queryKey: qk.issueLists(orgId) }),
+          qc.invalidateQueries({ queryKey: qk.issueAll(orgId) }),
+          qc.invalidateQueries({ queryKey: qk.summary(orgId) }),
+          qc.invalidateQueries({ queryKey: qk.projects(orgId) }),
+          qc.invalidateQueries({ queryKey: qk.metricsAll(orgId) }),
+        ]);
+      }
+    },
+  });
 }
 
 export function useOrgSummary(orgId: string) {

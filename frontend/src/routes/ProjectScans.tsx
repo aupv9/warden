@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { DragEvent, RefObject } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { errorMessage, waitText } from "../api/errors";
 import { IN_PROGRESS, useCancelScan, useScan, useScans, useUploadScan } from "../api/hooks/scans";
 import { isApiError } from "../api/client";
@@ -30,7 +30,7 @@ import {
 } from "../lib/format";
 import { can } from "../lib/permissions";
 import { validateArchive } from "../lib/upload";
-import { useProjectCtx } from "./ProjectLayout";
+import { useProjectCtx } from "./projectCtx";
 
 function useLimits(): Limits {
   return useOrgCtx().me.limits ?? DEFAULT_LIMITS;
@@ -42,7 +42,9 @@ export function ProjectScansTab() {
   const [params, setParams] = useSearchParams();
   const scans = useScans(orgId, project.id);
   const history = flattenPages(scans.data?.pages);
-  const canRun = can("run_scan", org.role, project.my_role);
+  const archived = !!project.archived_at;
+  // An archived project takes no new scans (the API answers 409 PROJECT_ARCHIVED).
+  const canRun = can("run_scan", org.role, project.my_role) && !archived;
   const picker = useRef<HTMLInputElement>(null);
 
   // The right-hand card shows the scan named in ?scan=, else the newest one still in progress.
@@ -65,6 +67,23 @@ export function ProjectScansTab() {
       <div className="grid grid-2">
         {canRun ? (
           <NewScan pickerRef={picker} onStarted={(scan) => select(scan.id)} />
+        ) : archived ? (
+          <Card title="New scan" titleId="new-scan-h">
+            <div className="dropzone is-disabled" aria-hidden="true">
+              <UploadIcon size={22} />
+              <span>Uploads are turned off</span>
+            </div>
+            <p className="muted" style={{ marginTop: 12 }}>
+              This project is archived, so it doesn't take new scans. Its issues and scan history stay readable.
+              {can("create_archive_project", org.role) && (
+                <>
+                  {" "}
+                  <Link to={`/orgs/${orgId}/projects/${project.id}/settings#archive`}>Unarchive it in Settings</Link> to scan
+                  again.
+                </>
+              )}
+            </p>
+          </Card>
         ) : (
           <Card title="New scan" titleId="new-scan-h">
             <p className="muted">
@@ -167,8 +186,13 @@ function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boo
       <td data-label="File" className="mono" style={{ fontSize: 13, wordBreak: "break-all" }}>
         {s.file_name}
       </td>
-      <td data-label="By" className="nowrap">
-        {userName(s.created_by)}
+      <td data-label="By">
+        <span className="nowrap">{userName(s.created_by)}</span>
+        {s.via_token && (
+          <span className="via-token" title={`API token wdn_${s.via_token.prefix}_…`}>
+            via token {s.via_token.name}
+          </span>
+        )}
       </td>
       <td data-label="Status">
         <span className="row" style={{ display: "inline-flex" }}>
