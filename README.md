@@ -10,9 +10,9 @@ in throw-away sandboxes and turns every finding into a tracked issue with an own
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
 
 > [!WARNING]
-> Warden is in early development. The scan engine, sandboxing, authentication and data
-> model are implemented and tested; the upload API, issue workflow endpoints and web UI
-> are not finished yet. Don't run it in production.
+> Warden is alpha software. Uploads, scans, the issue workflow, exceptions, members and the
+> audit log are implemented, but the API and data model may still change between releases.
+> Don't run it in production yet.
 
 ## Why Warden
 
@@ -191,9 +191,11 @@ the pipeline locally: `go -C backend run ./cmd/selfscan -root .. -zip some.zip`.
 
 ```
 backend/                 Go module
-  cmd/                   warden-api, warden-worker, warden-migrate, warden-redact,
-                         warden-sarif-gate, selfscan
-  internal/api/          REST API (gin)
+  cmd/                   warden-api, warden-worker, warden-migrate, warden-admin,
+                         warden-redact, warden-sarif-gate, selfscan
+  internal/api/          REST API (gin), OpenAPI document
+  internal/service/      business rules: permissions, issue workflow, exceptions, scans
+  internal/store/        Postgres repositories, hash-chained audit log
   internal/auth/         OIDC access-token and JWKS verification
   internal/domain/       fingerprints, severity mapping, issue state machine, permission matrix
   internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, result
@@ -201,7 +203,7 @@ backend/                 Go module
   internal/storage/      S3-compatible client (presigned uploads, download, delete)
   internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry
   internal/migrations/   SQL migrations (goose), River tables, role grants
-frontend/                React + TypeScript + Vite, OIDC (PKCE)
+frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
 rules/opengrep/          Warden's own guardrail rules, run on every self-scan
 deploy/                  Keycloak realm, Postgres role bootstrap
