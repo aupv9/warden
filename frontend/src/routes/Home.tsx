@@ -21,12 +21,13 @@ function NoOrg() {
   const me = useCurrentUser();
   return (
     <Shell me={me} minimal>
-      <section className="card" aria-labelledby="no-org-h" style={{ maxWidth: 640 }}>
+      <div className="page-body">
+      <section className="card" aria-labelledby="no-org-h" style={{ maxWidth: 640, margin: "40px auto 0", width: "100%" }}>
         <div className="empty">
           <span className="state-icon" aria-hidden="true">
             <BuildingIcon />
           </span>
-          <h1 id="no-org-h" style={{ fontSize: 22 }}>
+          <h1 id="no-org-h" className="state-title">
             You're not in an organization yet
           </h1>
           <p className="muted">
@@ -54,6 +55,7 @@ function NoOrg() {
           </div>
         </div>
       </section>
+      </div>
     </Shell>
   );
 }
