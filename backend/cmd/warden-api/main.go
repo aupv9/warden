@@ -42,7 +42,12 @@ func main() {
 	if *healthcheck {
 		os.Exit(probe(cfg.Server.Port))
 	}
-	fx.New(
+	fx.New(appOptions(cfg)).Run()
+}
+
+// appOptions is the API's dependency graph.
+func appOptions(cfg *config.Config) fx.Option {
+	return fx.Options(
 		app.Core(cfg),
 		db.Module,
 		httpserver.Module(api.ServerOptions()...),
@@ -58,7 +63,7 @@ func main() {
 			return service.New(store.New(pool, jobs), objects, ServiceConfig(c), log)
 		}),
 		fx.Invoke(api.Register),
-	).Run()
+	)
 }
 
 // ServiceConfig maps the configuration to the service's settings.
