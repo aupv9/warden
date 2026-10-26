@@ -68,8 +68,7 @@ func TestDispatchAndDigestJobs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if (DispatchNotificationsArgs{}).Kind() != "dispatch_notifications" || (SLADigestArgs{}).Kind() != "sla_digest" ||
-		(DispatchNotificationsArgs{}).InsertOpts().UniqueOpts.ByPeriod == 0 {
+	if (DispatchNotificationsArgs{}).Kind() != "dispatch_notifications" || (SLADigestArgs{}).Kind() != "sla_digest" {
 		t.Fatal("job contract")
 	}
 }

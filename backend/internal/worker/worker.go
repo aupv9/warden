@@ -47,6 +47,7 @@ func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) error {
 	if w.Env == nil {
 		return errNoEnv
 	}
+	defer kickDispatch(ctx) // scan.finished, auto-assign and reopen events
 	return w.Env.RunScan(ctx, job.Args.Job, job.Attempt)
 }
 
@@ -79,6 +80,7 @@ func (w ReopenExpiredRiskAcceptedWorker) Work(ctx context.Context, _ *river.Job[
 	if w.Env == nil {
 		return errNoEnv
 	}
+	defer kickDispatch(ctx) // issue.reopened events
 	return w.Env.ReopenExpiredRiskAccepted(ctx)
 }
 

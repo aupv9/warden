@@ -8,6 +8,27 @@ All notable changes to Warden are listed here. The format follows
 
 ### Added
 
+- CI integration: project API tokens (`wdn_…`, one project, scopes `scan:write` /
+  `issues:read`, 1–365 day expiry, stored as a SHA-256 hash, shown once, revocable, rate
+  limited), a scan gate endpoint, and the `warden scan` CLI that uploads a git checkout,
+  waits for the scan and exits non-zero on blocking issues. README has GitHub Actions and
+  GitLab CI examples that install a checksum- and provenance-verified CLI release.
+- Two-factor sign-in required for org admins and security leads (configurable with
+  `WARDEN_OIDC__REQUIRE_MFA_ROLES`); `warden-admin org set-role` as a break-glass.
+- Notifications: in-app (bell) and email for assignments, reopened issues, exception requests
+  and decisions, finished scans and a daily SLA digest; per-user preferences. Emails never
+  contain snippets, descriptions or secrets.
+- Org SLA policy, project auto-assign rules (path glob, scanner, severity) and archiving.
+- Overview page with metrics: open issues by severity over time, new vs fixed, time to fix,
+  SLA compliance; counts on every saved view.
+- Route-level code splitting in the web UI (entry chunk 586 kB → 70 kB).
+
+### Changed
+
+- CI blocks un-baselined High self-scan findings on every pull request, not only on tags.
+- The auto-close guard applies only when a scan would fix 5 or more issues, so a small
+  project fixing its only finding gets it closed.
+
 - REST API for the first usable release (OpenAPI 3.1 at `/api/v1/openapi.json`):
   - sign-in provisions the user; orgs are created by an operator with
     `warden-admin org create`
