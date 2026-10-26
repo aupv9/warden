@@ -2,7 +2,9 @@
 
 Self-hosted security scanning service, open source (MIT). README.md is the user-facing
 documentation; keep it accurate when behaviour or configuration changes. There is no
-separate design doc: record the reason for a non-obvious choice in a code comment.
+separate backend design doc: record the reason for a non-obvious choice in a code comment.
+The web UI's target (flows, screens, visual tokens) is `frontend/DESIGN.md`. Notable changes
+go under `[Unreleased]` in `CHANGELOG.md`.
 
 ## Commands
 - `make test` (unit, race detector), `make test-int` (Postgres + River via testcontainers-go,
