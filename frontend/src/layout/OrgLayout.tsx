@@ -73,7 +73,9 @@ export function Shell({ me, org, minimal, children }: { me: Me; org?: MeOrg; min
       first.current = false;
       return;
     }
-    mainRef.current?.focus();
+    // preventScroll: focusing <main> would scroll it under the sticky phone top bar.
+    window.scrollTo(0, 0);
+    mainRef.current?.focus({ preventScroll: true });
   }, [pathname]);
 
   const displayName = me.name?.trim() || me.email;
