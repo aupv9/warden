@@ -1,6 +1,10 @@
 SHELL   := /bin/bash
 GO      := go -C backend
 FAIL_ON ?= critical
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+HEALTH  := github.com/aupv9/common-go/health
+LDFLAGS := -s -w -X $(HEALTH).Version=$(VERSION) -X $(HEALTH).Commit=$(shell git rev-parse --short HEAD) \
+           -X $(HEALTH).BuildTime=$(shell date -u +%FT%TZ)
 # Colima: testcontainers needs the VM-side socket path for its reaper container.
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE ?= /var/run/docker.sock
 
@@ -50,8 +54,8 @@ lint:  ## gofmt + go vet + staticcheck + tsc
 vulncheck:  ## Known vulnerabilities in deps and the Go toolchain
 	$(GO) tool govulncheck ./...
 
-build:  ## Build all binaries into backend/bin
-	CGO_ENABLED=0 $(GO) build -trimpath -o bin/ ./cmd/...
+build:  ## Build all binaries into backend/bin (version from git describe)
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o bin/ ./cmd/...
 
 mirror:  ## Sync Trivy DB + Opengrep rules + Gitleaks config into .cache/mirror
 	./scripts/sync-mirror.sh

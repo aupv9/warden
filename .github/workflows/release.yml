@@ -1,0 +1,195 @@
+# Pushing a tag vMAJOR.MINOR.PATCH[-pre] on main runs the full CI suite (with the
+# release self-scan gate), then publishes static binaries, a multi-arch image on
+# GHCR, SBOMs and checksums, each with a Sigstore build-provenance attestation.
+# Same pinning rules as ci.yml: SHA / digest / checksum, releases ≥ 2 weeks old.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+  IMAGE: ghcr.io/aupv9/warden
+  SYFT_VERSION: "1.52.0"
+  SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
+  BUILDKIT_IMAGE: moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      commit: ${{ steps.v.outputs.commit }}
+      build_time: ${{ steps.v.outputs.build_time }}
+      epoch: ${{ steps.v.outputs.epoch }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - name: Tag is semver and on main
+        id: v
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::$tag is not vMAJOR.MINOR.PATCH[-pre]"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$tag does not point at a commit on main"; exit 1; }
+          {
+            echo "version=$tag"
+            echo "commit=$(git rev-parse --short "$GITHUB_SHA")"
+            # Commit time, not wall-clock time, so a rebuild of the tag is byte-identical.
+            echo "build_time=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$GITHUB_SHA")"
+            echo "epoch=$(git log -1 --format=%ct "$GITHUB_SHA")"
+            [[ "$tag" == *-* ]] && echo prerelease=true || echo prerelease=false
+          } >> "$GITHUB_OUTPUT"
+
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  binaries:
+    runs-on: ubuntu-24.04
+    needs: [meta, ci]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      COMMIT: ${{ needs.meta.outputs.commit }}
+      BUILD_TIME: ${{ needs.meta.outputs.build_time }}
+      SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache: false # a release builds from a clean module cache
+      - name: Build static binaries
+        run: |
+          H=github.com/aupv9/common-go/health
+          ld="-s -w -X $H.Version=$VERSION -X $H.Commit=$COMMIT -X $H.BuildTime=$BUILD_TIME"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            d="warden_${VERSION}_linux_${arch}"
+            out="$PWD/build/$d"
+            mkdir -p "$out"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go -C backend build -trimpath -ldflags="$ld" -o "$out/" \
+              ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate
+            # -trimpath keeps -ldflags out of the buildinfo, so look for the string itself.
+            grep -qaF "$VERSION" "$out/warden-api" || { echo "version not stamped"; exit 1; }
+            cp LICENSE README.md "$out/"
+            tar -C build --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -cf - "$d" \
+              | gzip -n > "dist/$d.tar.gz"
+          done
+      - name: SBOMs (syft, SPDX)
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: "false"
+        run: |
+          curl -fsSL -o /tmp/syft.tgz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tgz" | sha256sum -c -
+          tar -xzf /tmp/syft.tgz -C /tmp syft
+          for d in build/*/; do
+            n="$(basename "$d")"
+            /tmp/syft scan "dir:$d" -o "spdx-json=dist/$n.sbom.spdx.json"
+          done
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > "warden_${VERSION}_checksums.txt" && cat "warden_${VERSION}_checksums.txt"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  image:
+    runs-on: ubuntu-24.04
+    needs: [meta, ci]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      COMMIT: ${{ needs.meta.outputs.commit }}
+      BUILD_TIME: ${{ needs.meta.outputs.build_time }}
+      SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.epoch }}
+      PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Buildx builder (pinned BuildKit)
+        run: docker buildx create --use --name release --driver docker-container --driver-opt "image=${BUILDKIT_IMAGE}"
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push (linux/amd64, linux/arm64)
+        id: push
+        run: |
+          tags=(-t "$IMAGE:${VERSION#v}")
+          [ "$PRERELEASE" = false ] && tags+=(-t "$IMAGE:latest")
+          docker buildx build -f backend/Dockerfile --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION --build-arg COMMIT --build-arg BUILD_TIME --build-arg SOURCE_DATE_EPOCH \
+            --provenance=false --sbom=false "${tags[@]}" --metadata-file /tmp/meta.json --push .
+          digest="$(jq -r '."containerimage.digest"' /tmp/meta.json)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest in build metadata"; exit 1; }
+          docker buildx imagetools inspect "$IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    runs-on: ubuntu-24.04
+    needs: [meta, binaries, image]
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+      DIGEST: ${{ needs.image.outputs.digest }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Create GitHub release
+        run: |
+          cat > notes.md <<EOF
+          Container image (linux/amd64, linux/arm64):
+
+          \`\`\`
+          ${IMAGE}:${VERSION#v}
+          ${IMAGE}@${DIGEST}
+          \`\`\`
+
+          Verify before running (see README, "Verifying a release"):
+
+          \`\`\`bash
+          sha256sum -c --ignore-missing warden_${VERSION}_checksums.txt
+          gh attestation verify warden_${VERSION}_linux_amd64.tar.gz -R ${GITHUB_REPOSITORY}
+          gh attestation verify oci://${IMAGE}@${DIGEST} -R ${GITHUB_REPOSITORY}
+          \`\`\`
+          EOF
+          pre=(); [ "$PRERELEASE" = true ] && pre=(--prerelease)
+          gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$VERSION" --notes-file notes.md --generate-notes "${pre[@]}"

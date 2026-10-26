@@ -15,6 +15,9 @@ separate design doc: record the reason for a non-obvious choice in a code commen
 - Built on github.com/aupv9/common-go (config, logger, observability, health, httpserver, response,
   errors). Don't use its `auth` JWKS verifier, `database.Module` or `foundation.Core`: Warden's
   own replacements are stricter (see comments in `internal/auth`, `internal/db`, `internal/app`).
+- Release: push a tag `vX.Y.Z[-pre]` on main; `.github/workflows/release.yml` reruns ci.yml (High gate),
+  then publishes binaries, SBOMs, checksums and `ghcr.io/aupv9/warden`, all with provenance attestations.
+  Version is stamped via `-X github.com/aupv9/common-go/health.Version` (Makefile, Dockerfile, release.yml).
 - Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`).
 
 ## Rules
