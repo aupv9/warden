@@ -62,6 +62,27 @@ func TestOutboxIsWrittenInTheChangesTransaction(t *testing.T) {
 		t.Fatal(jobs, err)
 	}
 
+	// One dispatch per transaction, never swallowed by an earlier job: a
+	// transaction with two events right after another dispatch adds exactly one.
+	if _, err := w.pool.Exec(ctx, `UPDATE river_job SET state = 'completed', finalized_at = now() WHERE kind = 'dispatch_notifications'`); err != nil {
+		t.Fatal(err)
+	}
+	jobs0 := jobs
+	err = w.db.InOrg(ctx, f.id, func(r service.Repo) error {
+		for range 2 {
+			if err := r.AppendOutbox(ctx, notify.Event{OrgID: f.id, Type: notify.IssueReopened, Payload: notify.Payload{IssueID: &iss}}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'dispatch_notifications'`).Scan(&jobs); err != nil || jobs != jobs0+1 {
+		t.Fatal("want one new dispatch job", jobs0, jobs, err)
+	}
+
 	// A change that fails after writing its event leaves neither behind.
 	before := w.count(f.id, `SELECT count(*) FROM outbox_event`)
 	boom := errors.New("boom")

@@ -5,20 +5,30 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
 	"github.com/aupv9/warden/backend/internal/notify"
 )
 
 // DispatchNotificationsArgs runs the notification dispatcher over every org.
-// The API enqueues it with each outbox event; River keeps at most one per
-// dedupe period, and the periodic run every minute catches the rest.
+// Every transaction that writes outbox events enqueues one (the API in the same
+// transaction, the worker right after its commit), and a periodic run every
+// minute catches anything else. It is not unique: River's uniqueness also
+// covers running and recently completed jobs, so an event committed just after
+// a dispatch started would wait for the next periodic run. Dispatch is
+// idempotent and takes rows with SKIP LOCKED, so extra runs are cheap no-ops.
 type DispatchNotificationsArgs struct{}
 
 func (DispatchNotificationsArgs) Kind() string { return "dispatch_notifications" }
 
-func (DispatchNotificationsArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{UniqueOpts: river.UniqueOpts{ByPeriod: 5 * time.Second}}
+// kickDispatch enqueues a dispatch after work that may have written outbox
+// events outside the API (scan results, sweeps). Best effort: the periodic run
+// delivers them anyway if this insert fails.
+func kickDispatch(ctx context.Context) {
+	if c, err := river.ClientFromContextSafely[pgx.Tx](ctx); err == nil {
+		_, _ = c.Insert(ctx, DispatchNotificationsArgs{}, nil)
+	}
 }
 
 type DispatchNotificationsWorker struct {

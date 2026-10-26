@@ -43,6 +43,8 @@ func (d *DB) InOrg(ctx context.Context, orgID uuid.UUID, fn func(service.Repo) e
 type Repo struct {
 	tx    pgx.Tx
 	river *river.Client[pgx.Tx]
+	// dispatchQueued: this transaction already enqueued a notification dispatch.
+	dispatchQueued bool
 }
 
 var _ service.Repo = (*Repo)(nil)

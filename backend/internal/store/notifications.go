@@ -27,17 +27,20 @@ func (d *DB) InUser(ctx context.Context, userID uuid.UUID, fn func(service.Repo)
 }
 
 // AppendOutbox writes the event and, when a job client is configured, enqueues
-// a dispatch in the same transaction (River dedupes it to one per few seconds;
-// the periodic run picks up anything else).
+// one dispatch per transaction in that same transaction (a bulk assign of 100
+// issues gets one job, not 100).
 func (r *Repo) AppendOutbox(ctx context.Context, e notify.Event) error {
 	if err := notify.Insert(ctx, r.tx, e); err != nil {
 		return err
 	}
-	if r.river == nil {
+	if r.river == nil || r.dispatchQueued {
 		return nil
 	}
-	_, err := r.river.InsertTx(ctx, r.tx, worker.DispatchNotificationsArgs{}, nil)
-	return err
+	if _, err := r.river.InsertTx(ctx, r.tx, worker.DispatchNotificationsArgs{}, nil); err != nil {
+		return err
+	}
+	r.dispatchQueued = true
+	return nil
 }
 
 // Notifications lists the user's notifications in orgs they still belong to.

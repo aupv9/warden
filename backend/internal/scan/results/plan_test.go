@@ -189,7 +189,16 @@ func TestAutoFixGuard(t *testing.T) {
 		cand, active int
 		ratio        float64
 		want         bool
-	}{{0, 0, 0, true}, {1, 1, 0.5, false}, {1, 2, 0.5, true}, {3, 3, 1, true}, {1, 10, 0, false}} {
+	}{
+		{0, 0, 0, true},
+		{1, 1, 0.5, true},  // a small project fixing its only issue
+		{4, 4, 0.5, true},  // below the minimum the ratio doesn't apply
+		{5, 5, 0.5, false}, // a wrong upload closing everything
+		{5, 10, 0.5, true},
+		{6, 10, 0.5, false},
+		{3, 3, 1, true},
+		{5, 10, 0, false},
+	} {
 		if AutoFixAllowed(c.cand, c.active, c.ratio) != c.want {
 			t.Errorf("%+v", c)
 		}
