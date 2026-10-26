@@ -201,10 +201,10 @@ export interface IssuePage extends Page<IssueSummary> {
 }
 
 export interface Issue extends IssueSummary {
-  description: string;
-  remediation: string;
+  description: string | null;
+  remediation: string | null;
   /** Already masked by the server (`AKIA****`). Never a raw secret. */
-  snippet: string;
+  snippet: string | null;
   end_line: number | null;
   cwe: string[];
   cve: string[];
@@ -300,8 +300,8 @@ export interface AuditEntry {
   id: UUID;
   actor: UserRef | null;
   action: string;
-  target_type: string;
-  target_id: string;
+  target_type: string | null;
+  target_id: string | null;
   ip: string | null;
   data: unknown;
   created_at: Timestamp;
