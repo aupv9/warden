@@ -5,8 +5,8 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
+  workflow_call: # release.yml runs the whole suite before building a tag
 
 permissions:
   contents: read
@@ -105,7 +105,7 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/warden-migrate warden/api:ci && exit 1 || test $? -eq 2
 
   # Warden scans itself with the production sandbox (gVisor). Critical findings
-  # block every run; on tags any un-baselined High blocks the release.
+  # block every run; on tags (via release.yml) any un-baselined High blocks the release.
   selfscan:
     runs-on: ubuntu-24.04
     needs: [lint, test]
