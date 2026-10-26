@@ -332,8 +332,55 @@ button.org-switch:hover {
   height: 8px;
   border-radius: var(--radius-mark);
 }
-.user-box {
+.theme-row {
   margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 4px 8px 8px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.theme-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--hover);
+  border-radius: var(--radius-control);
+}
+.theme-switch > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.theme-switch > button:hover {
+  color: var(--ink);
+}
+.theme-switch > button[aria-checked="true"] {
+  background: var(--surface);
+  border-color: var(--control-line);
+  color: var(--ink);
+  box-shadow: var(--shadow-hairline);
+}
+.theme-switch > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (max-width: 800px) {
+  .theme-switch > button {
+    width: 44px;
+    height: 40px;
+  }
+}
+.user-box {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -965,7 +1012,7 @@ table.table {
 .textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 /* A 2 px Critical-coloured border (1 px border + 1 px inset). */
 .input[aria-invalid="true"],
@@ -991,7 +1038,7 @@ table.table {
 }
 .search:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .search input {
   flex: 1;
@@ -1255,7 +1302,7 @@ dialog.palette {
   overflow: hidden;
 }
 dialog.palette::backdrop {
-  background: rgba(17, 19, 24, 0.32);
+  background: var(--scrim);
 }
 .palette-body {
   display: flex;
@@ -1904,7 +1951,7 @@ button.fchip-main:hover {
 .step.done .step-dot {
   background: var(--accent);
   border-color: var(--accent);
-  color: #ffffff;
+  color: var(--accent-fg);
 }
 .step.current .step-dot {
   border-color: var(--accent);
@@ -2434,12 +2481,12 @@ button.fchip-main:hover {
   overflow-wrap: anywhere;
 }
 .toast-success {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: #ffffff;
+  background: var(--toast-bg);
+  border-color: var(--toast-bg);
+  color: var(--toast-fg);
 }
 .toast-success > svg {
-  color: #3dd68c;
+  color: var(--toast-icon);
 }
 .toast-error {
   background: var(--msg-error-bg);
@@ -2469,7 +2516,7 @@ button.fchip-main:hover {
   opacity: 1;
 }
 .toast-success .toast-close:focus-visible {
-  outline-color: #ffffff;
+  outline-color: var(--toast-fg);
 }
 
 /* ---------- Dialogs and the phone drawer ---------- */
@@ -2484,7 +2531,7 @@ dialog.dialog {
   background: var(--surface);
 }
 dialog.dialog::backdrop {
-  background: rgba(17, 19, 24, 0.32);
+  background: var(--scrim);
 }
 .dialog-body {
   display: flex;

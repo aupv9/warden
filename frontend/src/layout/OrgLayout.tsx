@@ -26,6 +26,7 @@ import {
 } from "../components/Icons";
 import { Kbd } from "../components/PageHeader";
 import { Popover } from "../components/Popover";
+import { ThemeSwitch } from "../components/ThemeSwitch";
 import { NotFoundState } from "../components/States";
 import { can, ORG_ROLE_LABELS } from "../lib/permissions";
 import { useShortcuts } from "../lib/shortcuts";
@@ -232,6 +233,10 @@ function Sidebar({
         </button>
       )}
       {org && <OrgNav org={org} />}
+      <div className="theme-row">
+        <span>Theme</span>
+        <ThemeSwitch />
+      </div>
       {!minimal && (
         <div className="user-box">
           <Avatar name={displayName} size={24} />
