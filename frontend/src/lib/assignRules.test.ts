@@ -104,6 +104,15 @@ describe("CI snippets", () => {
     expect(gl).toContain("--org org-1 --project proj-1");
     expect(gl).toContain("WARDEN_TOKEN");
   });
+  it("install a checksum-verified release, never go install @latest, with actions pinned by SHA", () => {
+    const gh = githubActionsSnippet(p);
+    expect(gh).toContain("sha256sum -c");
+    expect(gh).toContain("gh attestation verify");
+    expect(gh).toMatch(/actions\/checkout@[0-9a-f]{40}/);
+    const gl = gitlabCiSnippet(p);
+    expect(gl).toContain("sha256sum -c");
+    for (const s of [gh, gl]) expect(s).not.toMatch(/go install|@latest/);
+  });
   it("never contain a token", () => {
     for (const s of [githubActionsSnippet(p), gitlabCiSnippet(p)]) {
       expect(s).not.toMatch(/wdn_/);
