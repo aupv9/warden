@@ -77,20 +77,25 @@ func client(t *testing.T, bucket string) *storage.Client {
 			return aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secretKey}, nil
 		}),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	// SeaweedFS may still be wiring its filer right after the port opens.
-	for i := 0; ; i++ {
-		if err = c.Ping(ctx); err == nil {
-			break
-		}
+	// SeaweedFS answers on the S3 port before its volume server accepts writes
+	// (slow on a loaded CI machine), so wait until a real write succeeds.
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		_, _ = admin.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
-		if i == 20 {
+		_, err = admin.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String("ready"), Body: strings.NewReader("ok")})
+		if err == nil {
+			err = c.Ping(ctx)
+		}
+		cancel()
+		if err == nil {
+			return c
+		}
+		if time.Now().After(deadline) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Second)
 	}
-	return c
 }
 
 func put(t *testing.T, url string, headers map[string]string, body []byte) int {
@@ -206,7 +211,7 @@ func TestDownloadEnforcesMaxSize(t *testing.T) {
 // The dev store allows browser uploads from the web UI's origin only.
 func TestUploadCORSPreflight(t *testing.T) {
 	ctx := context.Background()
-	c := client(t, "warden-itest-cors")
+	c := client(t, "warden-itest")
 	url, _, err := c.PresignPut(ctx, "scans/org/cors.zip", 10, strings.Repeat("0", 64), time.Minute)
 	if err != nil {
 		t.Fatal(err)
