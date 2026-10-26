@@ -6,12 +6,11 @@ import { ApiError } from "./api/client";
 import { errorMessage, isForbidden, isToastedActionError, isUnauthorized, supportReference } from "./api/errors";
 import { AuthGate, sessionEnded } from "./auth/AuthGate";
 import { Toaster } from "./components/Toaster";
-import { NotFoundPage, OrgLayout } from "./layout/OrgLayout";
+import { NotFoundPage, OrgLayout, OrgNotFound } from "./layout/OrgLayout";
 import { showToast } from "./lib/toast";
 import { AuditLogPage } from "./routes/AuditLog";
 import { ExceptionsPage } from "./routes/Exceptions";
 import { Home } from "./routes/Home";
-import { IssueDetailPage } from "./routes/IssueDetail";
 import { IssuesPage } from "./routes/IssueList";
 import { MembersPage } from "./routes/Members";
 import { RouteError } from "./routes/NotFound";
@@ -84,12 +83,14 @@ export const appRoutes: RouteObject[] = [
               { path: "settings", element: <ProjectSettingsTab /> },
             ],
           },
-          { path: "issues", element: <IssuesPage /> },
-          { path: "issues/:issueId", element: <IssueDetailPage /> },
+          // One page for the list and an opened issue, so the list stays mounted (scroll,
+          // selection) while the split view's pane changes. IssuesPage decides between the
+          // split view (≥ 1200 px) and the issue as its own page.
+          { path: "issues", element: <IssuesPage />, children: [{ path: ":issueId", element: null }] },
           { path: "exceptions", element: <ExceptionsPage /> },
           { path: "members", element: <MembersPage /> },
           { path: "audit-log", element: <AuditLogPage /> },
-          { path: "*", element: <NotFoundPage /> },
+          { path: "*", element: <OrgNotFound /> },
         ],
       },
       { path: "*", element: <NotFoundPage /> },

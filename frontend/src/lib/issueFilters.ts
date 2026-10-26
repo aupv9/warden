@@ -124,3 +124,50 @@ export function describeFilters(f: IssueFilters, names: { project?: string; assi
 export function hasActiveFilters(f: IssueFilters): boolean {
   return issueFiltersToSearch({ ...f, sort: DEFAULT_FILTERS.sort }).toString() !== "";
 }
+
+// ---- Saved views: presets of the URL filters above (no state of their own) ----
+
+export type SavedView = "active" | "mine" | "past_sla" | "secrets";
+
+export const SAVED_VIEWS: { id: SavedView; label: string }[] = [
+  { id: "active", label: "Active" },
+  { id: "mine", label: "Assigned to me" },
+  { id: "past_sla", label: "Past SLA" },
+  { id: "secrets", label: "Secrets" },
+];
+
+const VIEW_PRESETS: Record<SavedView, Partial<IssueFilters>> = {
+  active: {},
+  mine: { assignee: "me" },
+  past_sla: { pastSla: true },
+  secrets: { tool: "gitleaks" },
+};
+
+/** The filters for a saved view. The search text, sort and project scope are kept. */
+export function applyView(f: IssueFilters, view: SavedView): IssueFilters {
+  return { ...DEFAULT_FILTERS, q: f.q, sort: f.sort, project: f.project, ...VIEW_PRESETS[view] };
+}
+
+/** The saved view these filters are exactly, or null for a custom set of filters. */
+export function currentView(f: IssueFilters): SavedView | null {
+  const key = (x: IssueFilters) => issueFiltersToSearch(x).toString();
+  return SAVED_VIEWS.find((v) => key(applyView(f, v.id)) === key(f))?.id ?? null;
+}
+
+// ---- Split view links: the list's filters travel with the selected issue ----
+
+function withSearch(path: string, search: URLSearchParams): string {
+  const s = search.toString();
+  return s ? `${path}?${s}` : path;
+}
+
+/** `/orgs/:org/issues/:issue?<filters>`: the issue, opened from a list with these filters.
+ *  Only the parsed, validated filters are carried over, never other query parameters. */
+export function issueHref(orgId: string, issueId: string, f: IssueFilters): string {
+  return withSearch(`/orgs/${orgId}/issues/${encodeURIComponent(issueId)}`, issueFiltersToSearch(f));
+}
+
+/** `/orgs/:org/issues?<filters>`: back to the list (closing the pane, or the phone back link). */
+export function issueListHref(orgId: string, f: IssueFilters): string {
+  return withSearch(`/orgs/${orgId}/issues`, issueFiltersToSearch(f));
+}

@@ -1,58 +1,100 @@
-/* Visual tokens from frontend/DESIGN.md ("Visual system"). Change values there first. */
+/* Visual tokens ("Quiet precision", light theme). Text colours are checked for 4.5:1 against
+   the backgrounds they sit on: --faint is the lightest allowed text colour and is never placed
+   on --hover-strong, --nav-active or --accent-tint-strong (it drops below 4.5:1 there). */
 :root {
-  --ink: #0b1220;
-  --muted: #556070; /* ≥ 4.5:1 on white and on --ground */
-  --ground: #f4f6f8;
+  /* Surfaces */
+  --ground: #fbfbfc;
   --surface: #ffffff;
-  --line: #dde2e8;
-  --line-soft: #edf0f3;
-  --control-line: #c7ced6;
-  --accent: #0f766e;
-  --accent-hover: #115e59;
-  --accent-tint: #f0fdfa;
-  --accent-tint-strong: #99f6e4;
-  --accent-ring: #ccfbf1;
-  --sidebar-bg: #0b1220;
-  --sidebar-text: #cbd5e1;
-  --sidebar-muted: #94a3b8;
-  --sidebar-hover: #16213a;
-  --sidebar-active-bg: #134e4a;
-  --sidebar-active-text: #5eead4;
-  --sidebar-line: #1e293b;
-  --sidebar-control: #111a2e;
-  --sidebar-control-line: #2a3550;
+  --sidebar-bg: #f6f6f8;
+  --hover: #f3f4f6;
+  --hover-strong: #eeeff2;
+  --row-hover: #f8f8fa;
+  --nav-active: #e9e9ee;
+  --group-bg: #fafafb;
 
-  --sev-critical-bg: #9f1239;
-  --sev-critical-fg: #ffffff;
-  --sev-high-bg: #c2410c;
-  --sev-high-fg: #ffffff;
-  --sev-medium-bg: #fef3c7;
-  --sev-medium-fg: #92400e;
-  --sev-low-bg: #e2e8f0;
-  --sev-low-fg: #334155;
-  --sev-info-bg: #ffffff;
-  --sev-info-fg: #334155;
-  --danger: #9f1239; /* "Past SLA" text and the highlighted secret line */
-  --danger-tint: #fff1f2;
-  --pill-fg: #334155;
-  --msg-error-bg: #fff1f2;
-  --msg-error-fg: #881337;
-  --msg-error-line: #9f1239;
-  --msg-warn-bg: #fffbeb;
-  --msg-warn-fg: #78350f;
-  --msg-warn-line: #f59e0b;
-  --skeleton: #e2e7ec;
+  /* Lines */
+  --line: #ecedf0; /* dividers, panel borders */
+  --line-soft: #f1f2f4; /* table row dividers */
+  --control-line: #e3e5e8; /* control borders */
+  --control-line-strong: #d3d6db; /* filter chips, hover on controls */
 
-  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  /* Text */
+  --ink: #111318;
+  --text-2: #3f4450;
+  --muted: #5e6470;
+  --faint: #6b7079; /* lightest text colour; ≥ 4.5:1 on white, ground, sidebar, row hover */
 
-  --radius-card: 12px;
-  --radius-control: 8px;
-  --radius-pill: 999px;
-  --control-h: 44px;
-  --control-h-dense: 36px;
-  --page-pad-y: 32px;
-  --page-pad-x: 40px;
-  --gap: 20px;
-  --sidebar-w: 232px;
+  /* Accent (links, focus rings, selection, active states) */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-tint: #f5f5ff; /* selected rows: faint text still ≥ 4.5:1 here */
+  --accent-tint-strong: #e8e7fc;
+  --accent-line: #c7c4f5;
+
+  /* Primary button */
+  --primary-bg: #111318;
+  --primary-hover: #2a2d35;
+  --primary-fg: #ffffff;
+
+  /* Danger / overdue */
+  --danger: #d1343a;
+  --danger-line: #f1c4c6;
+  --danger-tint: #fef2f2;
+
+  /* Severity marks (an 8 px square next to the label, never colour alone) */
+  --sev-critical: #e5484d;
+  --sev-high: #f76b15;
+  --sev-medium: #ffb224;
+  --sev-low: #8b8d98;
+  --sev-info: #c1c4cb;
+
+  /* Status icons */
+  --st-open: #6b7079;
+  --st-progress: #4f46e5;
+  --st-track: #d9d7fb;
+  --st-reopened: #d97706;
+  --st-fixed: #4f46e5;
+  --st-verified: #2b9a66;
+  --st-closed: #8b8d98;
+  --success-text: #2b7a4b;
+
+  /* Messages */
+  --msg-error-bg: #fef2f2;
+  --msg-error-fg: #9b1c1f;
+  --msg-error-line: #f1c4c6;
+  --msg-warn-bg: #fff8eb;
+  --msg-warn-fg: #7a2e0b;
+  --msg-warn-line: #f5d9a8;
+  --msg-info-bg: #ffffff;
+  --skeleton: #edeef1;
+
+  /* Code blocks */
+  --code-bg: #111318;
+  --code-fg: #e6e8eb;
+  --code-ln: #8b8d98;
+  --code-hl-bg: #4a1d22;
+  --code-hl-bar: #e5484d;
+
+  /* Type */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --text-base: 13px;
+  --text-sm: 12px;
+  --text-xs: 11px;
+
+  /* Shape and density */
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --radius-mark: 2px;
+  --control-h: 32px;
+  --control-h-sm: 28px;
+  --touch-h: 44px;
+  --row-h: 46px;
+  --head-h: 52px;
+  --sidebar-w: 224px;
+  --page-pad-x: 24px;
+  --page-pad-y: 20px;
+  --gap: 16px;
+  --shadow-hairline: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-pop: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.1);
 }
