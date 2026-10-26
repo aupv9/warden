@@ -26,7 +26,7 @@ export function ShieldIcon({ size = 20 }: P) {
   return (
     <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" style={{ flex: "0 0 auto" }}>
       <path d="M12 2l8 3.5v6c0 5-3.4 9.3-8 10.5-4.6-1.2-8-5.5-8-10.5v-6L12 2z" fill="var(--ink)" />
-      <path d="M9 12l2 2 4-4" stroke="#FFFFFF" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 12l2 2 4-4" stroke="var(--surface)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -229,6 +229,32 @@ export function SignOutIcon({ size = 15 }: P) {
     <Svg size={size}>
       <path d="M15 4h4v16h-4" />
       <path d="M10 16l-4-4 4-4M6 12h10" />
+    </Svg>
+  );
+}
+
+export function SystemThemeIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4" />
+    </Svg>
+  );
+}
+
+export function SunIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </Svg>
+  );
+}
+
+export function MoonIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z" />
     </Svg>
   );
 }

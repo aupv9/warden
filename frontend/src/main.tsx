@@ -11,6 +11,10 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { isMockMode } from "./api/client";
 import { completeSignIn, isAuthCallback } from "./auth/oidc";
+import { initTheme } from "./lib/theme";
+
+// Before the first render, so an explicit Light/Dark choice doesn't flash the other theme.
+initTheme();
 
 async function boot() {
   let authFailed = false;
