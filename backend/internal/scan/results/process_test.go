@@ -184,4 +184,3 @@ func TestDueAt(t *testing.T) {
 		t.Fatal("no SLA → no due date")
 	}
 }
-
