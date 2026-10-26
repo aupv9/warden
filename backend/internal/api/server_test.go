@@ -24,6 +24,8 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/auth"
 	"github.com/aupv9/warden/backend/internal/db"
+	"github.com/aupv9/warden/backend/internal/service"
+	"github.com/aupv9/warden/backend/internal/service/servicetest"
 )
 
 const (
@@ -45,6 +47,11 @@ func (p pinger) Ping(context.Context) error { return p.err }
 // module (health, /admin, middleware) plus Warden's routes, without listening.
 func server(t *testing.T, dbErr error) http.Handler {
 	t.Helper()
+	return serverWith(t, dbErr, service.New(servicetest.New(), nil, service.Config{}, nil))
+}
+
+func serverWith(t *testing.T, dbErr error, svc *service.Service) http.Handler {
+	t.Helper()
 	var engine *gin.Engine
 	app := fx.New(
 		fx.NopLogger,
@@ -53,7 +60,7 @@ func server(t *testing.T, dbErr error) http.Handler {
 		health.Module,
 		httpserver.Module(ServerOptions()...),
 		fx.Invoke(func(reg *health.Registry) { reg.Register(db.Checker(pinger{dbErr}, slog.New(slog.DiscardHandler))) }),
-		fx.Invoke(func(e *gin.Engine) { Register(e, verifier()) }),
+		fx.Invoke(func(e *gin.Engine) { Register(e, verifier(), svc) }),
 		fx.Populate(&engine),
 	)
 	if err := app.Err(); err != nil {

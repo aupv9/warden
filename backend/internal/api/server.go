@@ -16,7 +16,7 @@ import (
 	"github.com/aupv9/common-go/transport/httpserver"
 	"github.com/gin-gonic/gin"
 
-	"github.com/aupv9/warden/backend/internal/auth"
+	"github.com/aupv9/warden/backend/internal/service"
 )
 
 const (
@@ -56,9 +56,18 @@ func denyAll() gin.HandlerFunc {
 	}
 }
 
+// ObjectStore and ErrObjectNotFound are the object-storage seam (presigned
+// uploads, HEAD before a scan starts); see service.ObjectStore.
+type ObjectStore = service.ObjectStore
+
+var ErrObjectNotFound = service.ErrObjectNotFound
+
 // Register mounts Warden's routes on the engine.
-func Register(e *gin.Engine, v cgauth.Verifier) {
+func Register(e *gin.Engine, v cgauth.Verifier, svc *service.Service) {
 	e.HandleMethodNotAllowed = true
+	// No proxy is trusted: X-Forwarded-For would otherwise let clients choose
+	// the IP that gets logged. (The audit log uses the peer address regardless.)
+	_ = e.SetTrustedProxies(nil)
 	e.NoRoute(func(c *gin.Context) {
 		response.Error(c.Writer, c.Request, apperrors.NotFound("NOT_FOUND", "not found"))
 	})
@@ -70,8 +79,8 @@ func Register(e *gin.Engine, v cgauth.Verifier) {
 		c.Data(http.StatusOK, "application/json", openAPI)
 	})
 
-	v1 := e.Group(Prefix, Authenticate(v))
-	v1.GET("/me", me)
+	v1 := e.Group(Prefix, Authenticate(v), identify(svc))
+	handlers{svc: svc}.routes(v1)
 }
 
 // Authenticate requires a valid bearer token. Failures are 401 with a generic
@@ -95,25 +104,4 @@ func Authenticate(v cgauth.Verifier) gin.HandlerFunc {
 		c.Request = c.Request.WithContext(cgauth.IntoContext(c.Request.Context(), p))
 		c.Next()
 	}
-}
-
-type meOut struct {
-	Sub   string  `json:"sub"`
-	Email *string `json:"email"`
-	Name  *string `json:"name"`
-	MFA   bool    `json:"mfa"`
-}
-
-func optional(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-func me(c *gin.Context) {
-	p, _ := cgauth.FromContext(c.Request.Context())
-	response.OK(c.Writer, c.Request, meOut{
-		Sub: p.Subject, Email: optional(auth.Email(p)), Name: optional(auth.Name(p)), MFA: auth.MFA(p),
-	})
 }
