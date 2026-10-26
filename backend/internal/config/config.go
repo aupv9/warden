@@ -91,11 +91,19 @@ type StorageSection struct {
 	SecretKey Secret `koanf:"secret_key"`
 }
 
+// SMTPSection configures notification email. STARTTLS is required unless the
+// host is a loopback name (see notify.SMTPSender).
 type SMTPSection struct {
 	Host          string `koanf:"host"`
-	Port          int    `koanf:"port"`
+	Port          int    `koanf:"port" validate:"min=1,max=65535"`
 	From          string `koanf:"from"`
 	PublicBaseURL string `koanf:"public_base_url"`
+	Username      string `koanf:"username"`
+	Password      Secret `koanf:"password"`
+	// ImplicitTLS: TLS from the first byte (port 465) instead of STARTTLS.
+	ImplicitTLS bool `koanf:"implicit_tls"`
+	// DigestHour is the UTC hour of the daily SLA digest.
+	DigestHour int `koanf:"digest_hour" validate:"min=0,max=23"`
 }
 
 type ScanSection struct {
@@ -145,7 +153,7 @@ func settingsDefaults() *Settings {
 			RequireMFARoles: List{"org_admin", "security_lead"},
 		},
 		Storage: StorageSection{Endpoint: "http://localhost:8333", Bucket: "warden-uploads"},
-		SMTP:    SMTPSection{Host: "localhost", Port: 1025, From: "warden@localhost", PublicBaseURL: "http://localhost:5173"},
+		SMTP:    SMTPSection{Host: "localhost", Port: 1025, From: "warden@localhost", PublicBaseURL: "http://localhost:5173", DigestHour: 8},
 		Scan: ScanSection{
 			UploadMaxMB:         200,
 			UnzipMaxMB:          1024,
@@ -206,7 +214,7 @@ var orgRoles = []string{"org_admin", "security_lead", "member"}
 
 // resolveSecrets expands "file:/path" references.
 func (c *Config) resolveSecrets() error {
-	for _, s := range []*Secret{&c.Migrate.DSN, &c.Storage.AccessKey, &c.Storage.SecretKey, &c.Scan.HMACKey} {
+	for _, s := range []*Secret{&c.Migrate.DSN, &c.Storage.AccessKey, &c.Storage.SecretKey, &c.Scan.HMACKey, &c.SMTP.Password} {
 		v, err := cgconfig.ResolveSecret(string(*s))
 		if err != nil {
 			return err

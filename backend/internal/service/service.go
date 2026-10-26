@@ -40,6 +40,7 @@ type Service struct {
 	cfg     Config
 	log     *slog.Logger
 	now     func() time.Time
+	metrics *ttlCache
 }
 
 func New(db DB, objects ObjectStore, cfg Config, log *slog.Logger) *Service {
@@ -49,7 +50,7 @@ func New(db DB, objects ObjectStore, cfg Config, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Service{db: db, objects: objects, cfg: cfg, log: log, now: time.Now}
+	return &Service{db: db, objects: objects, cfg: cfg, log: log, now: time.Now, metrics: &ttlCache{}}
 }
 
 // SetClock replaces the clock (tests).

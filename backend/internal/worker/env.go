@@ -18,6 +18,7 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
+	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
@@ -71,6 +72,10 @@ type Settings struct {
 	AbandonUploadAfter time.Duration
 	// StuckAfter: queued/running scans older than this lose their source too.
 	StuckAfter time.Duration
+	// PublicBaseURL prefixes links in notification emails (validated).
+	PublicBaseURL string
+	// DigestHour is the UTC hour of the daily SLA digest.
+	DigestHour int
 }
 
 // Env is everything the jobs need; tests substitute fakes.
@@ -78,6 +83,8 @@ type Env struct {
 	Tx      TxFunc
 	Store   Store
 	Sandbox Sandbox
+	// Mailer sends notification email; nil disables email.
+	Mailer notify.Sender
 	Settings
 	Now func() time.Time
 	Log *slog.Logger
@@ -113,12 +120,23 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 	if s.SandboxRuntime != "runsc" {
 		log.Warn("scanner sandbox is not gVisor (runsc); acceptable for local development only", "runtime", s.SandboxRuntime)
 	}
+	m := cfg.SMTP
+	base, err := notify.BaseURL(m.PublicBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("WARDEN_SMTP__PUBLIC_BASE_URL: %w", err)
+	}
+	mailer, err := notify.NewSMTP(notify.SMTPConfig{Host: m.Host, Port: m.Port, From: m.From,
+		Username: m.Username, Password: m.Password.Reveal(), ImplicitTLS: m.ImplicitTLS})
+	if err != nil {
+		return nil, fmt.Errorf("smtp: %w", err)
+	}
 	return &Env{
-		Tx: PoolTx(pool), Store: store, Sandbox: DockerSandbox{}, Now: time.Now, Log: log,
+		Tx: PoolTx(pool), Store: store, Sandbox: DockerSandbox{}, Mailer: mailer, Now: time.Now, Log: log,
 		Settings: Settings{
 			ScratchDir: scratch, MirrorDir: mirror, Runtime: s.SandboxRuntime, Images: s.Images,
 			HMACMaster: master, GuardRatio: s.AutocloseGuardRatio, ScanTimeout: s.Timeout,
 			SourceRetention: s.SourceRetention, AbandonUploadAfter: abandonUploadAfter, StuckAfter: stuckAfter,
+			PublicBaseURL: base, DigestHour: m.DigestHour,
 		},
 	}, nil
 }

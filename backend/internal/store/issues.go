@@ -56,9 +56,12 @@ func likePattern(s string) string {
 
 // issueWhere builds the filter shared by the list and the severity counts.
 func issueWhere(a *args, q service.IssueQuery) string {
-	w := []string{`p.org_id = ` + a.add(q.Vis.OrgID), `p.archived_at IS NULL`, visible(a, q.Vis)}
+	w := []string{`p.org_id = ` + a.add(q.Vis.OrgID), visible(a, q.Vis)}
 	if q.ProjectID != nil {
+		// An archived project's issues stay readable when asked for by project.
 		w = append(w, `i.project_id = `+a.add(*q.ProjectID))
+	} else {
+		w = append(w, `p.archived_at IS NULL`)
 	}
 	if len(q.Statuses) > 0 {
 		w = append(w, `i.status = ANY(`+a.add(q.Statuses)+`::issue_status[])`)

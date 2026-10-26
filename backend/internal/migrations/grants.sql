@@ -15,5 +15,8 @@ DO $$ BEGIN
     GRANT UPDATE (last_used_at, revoked_at) ON api_token TO warden_app;
     -- Token lookup before the org is known (see 00003_api_tokens.sql).
     GRANT EXECUTE ON FUNCTION warden_lookup_token(text) TO warden_app;
+    -- The outbox and notifications are only ever appended and marked
+    -- (dispatched, read, emailed); the app never deletes them.
+    REVOKE DELETE, TRUNCATE ON outbox_event, notification FROM warden_app;
   END IF;
 END $$;

@@ -110,6 +110,12 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan may auto-fix at most this fraction of a project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation` |
 | `WARDEN_STORAGE__ENDPOINT` / `WARDEN_STORAGE__BUCKET` | `http://localhost:8333` / `warden-uploads` | S3-compatible store. Any non-AWS endpoint uses path-style URLs; for AWS use `https://s3.<region>.amazonaws.com` (the region is read from it). The bucket must exist and allow CORS `PUT` from the web UI's origin |
 | `WARDEN_STORAGE__ACCESS_KEY` / `WARDEN_STORAGE__SECRET_KEY` | | Needs object read, write and delete on the bucket only |
+| `WARDEN_SMTP__HOST` / `WARDEN_SMTP__PORT` | `localhost` / `1025` | Mail relay for notification email (Mailpit in development). STARTTLS is required unless the host is `localhost` or a loopback address |
+| `WARDEN_SMTP__FROM` | `warden@localhost` | Sender address |
+| `WARDEN_SMTP__USERNAME` / `WARDEN_SMTP__PASSWORD` | | Optional `AUTH PLAIN`; credentials are only ever sent over TLS (or to a loopback host) |
+| `WARDEN_SMTP__IMPLICIT_TLS` | `false` | TLS from the first byte (port 465) instead of STARTTLS |
+| `WARDEN_SMTP__PUBLIC_BASE_URL` | `http://localhost:5173` | Web UI address; links in emails are built from it |
+| `WARDEN_SMTP__DIGEST_HOUR` | `8` | UTC hour of the daily SLA digest |
 | `WARDEN_LOG__LEVEL` / `WARDEN_LOG__FORMAT` | `info` / `json` | |
 | `WARDEN_OTEL__ENABLED` | `false` | OpenTelemetry traces and metrics |
 
@@ -132,12 +138,13 @@ endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 | | |
 |---|---|
 | `GET /me` | Your profile, orgs and server limits. The first call creates your Warden user. |
-| `/orgs/{org_id}`, `/summary` | Organization, SLA days, dashboard counts |
+| `/me/notifications`, `/me/notification-prefs` | Your notifications (all orgs) and email preferences |
+| `/orgs/{org_id}`, `/summary`, `/metrics` | Organization and SLA policy, dashboard counts, trend metrics |
 | `/orgs/{org_id}/members` | Org members and roles (`org_admin`, `security_lead`, `member`) |
-| `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`) and scans |
+| `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`), scans, auto-assign rules, archiving |
 | `/orgs/{org_id}/projects/{id}/tokens` | API tokens for CI: list, create (the secret is shown once), revoke |
 | `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel`, and the CI `gate` |
-| `/orgs/{org_id}/issues` | Issues: filters, transitions, bulk assignment, comments, history |
+| `/orgs/{org_id}/issues` | Issues: filters, counts, transitions, bulk assignment, comments, history |
 | `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
 | `/orgs/{org_id}/audit-log` | Hash-chained audit log |
 
@@ -183,10 +190,33 @@ How it behaves:
 - **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `MFA_REQUIRED`,
   `TOKEN_SCOPE`, `NOT_FOUND`, `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`,
   `VERSION_CONFLICT`, `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`,
-  `RATE_LIMITED`. Unknown JSON fields are rejected; internal errors are logged and returned as
+  `RATE_LIMITED`, `PROJECT_ARCHIVED`. Unknown JSON fields are rejected; internal errors are logged and returned as
   a generic `500`.
 - Lists take `?limit=` (default 50, max 200) and an opaque `?cursor=`, and return
   `{ "items": [...], "next_cursor": … }`.
+- **Policy and automation.** Security leads set the SLA days per severity
+  (`PATCH /orgs/{org_id}`, optionally re-dating open issues). Project owners define ordered
+  auto-assign rules (path glob, tool, minimum severity → a project member); the first
+  matching rule assigns each *new* issue when a scan is processed. An archived project
+  keeps its issues readable but accepts no scans (`409 PROJECT_ARCHIVED`).
+
+## Notifications
+
+Changes that someone should hear about write an event to an outbox table in the same
+transaction as the change itself: an issue assigned to you, an issue reopened (its
+assignee, else the project owners), an exception requested (security leads) or decided
+(the requester), a scan finished (whoever started it), and a daily SLA digest of your
+issues that are overdue or due within three days. The worker's `dispatch_notifications`
+job (every minute, and right after each event) turns events into in-app notifications,
+re-checking that every recipient is still an active member who can see the object, and
+sends email to those whose preference allows it (on by default, except `scan.finished`).
+Delivery is idempotent per event and recipient; a failing address is retried with backoff
+without holding up anyone else's mail.
+
+Emails contain only the organization, project key, issue key, title, severity, status,
+the actor's name and a link to the web UI. They never include snippets, descriptions,
+file contents, comments or secrets; titles are HTML-escaped, and header values with line
+breaks are refused.
 
 ## CI integration
 
@@ -314,8 +344,10 @@ backend/                 Go module
   internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, result
                          processor (findings → issues), release gate
   internal/storage/      S3-compatible client (presigned uploads, download, delete)
+  internal/notify/       notification dispatch (outbox → notifications), email rendering, SMTP
   internal/pack/         zips a git working tree like an upload (selfscan, warden CLI)
-  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry
+  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry,
+                         notifications, SLA digest
   internal/migrations/   SQL migrations (goose), River tables, role grants
 frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
