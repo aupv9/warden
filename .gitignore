@@ -1,0 +1,14 @@
+backend/bin/
+coverage.out
+
+node_modules/
+frontend/dist/
+
+.cache/
+reports/
+.env
+*.local
+
+.DS_Store
+.idea/
+.vscode/

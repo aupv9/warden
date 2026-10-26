@@ -1,0 +1,29 @@
+{
+  "_comment": "Scanner pins, by digest. Chosen releases were at least 2 weeks old when pinned (supply-chain cooling-off). Bump only via a reviewed pull request, after verifying real scanner output.",
+  "gitleaks": {
+    "version": "v8.30.1",
+    "upstream": "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f",
+    "build": "scanners/gitleaks/Dockerfile"
+  },
+  "opengrep": {
+    "version": "v1.30.2",
+    "upstream": "https://github.com/opengrep/opengrep/releases/tag/v1.30.2",
+    "sha256": {
+      "amd64": "a66aa3278457f02b287b985a45b6762aebcaba5000f2689245fd1ed86d1456c7",
+      "arm64": "90acea5df4b733083f388d4feeb250ca802f671b33d1f222653d1e571dd2b0d8"
+    },
+    "build": "scanners/opengrep/Dockerfile",
+    "rules": {
+      "repo": "https://github.com/opengrep/opengrep-rules",
+      "commit": "f1d2b562b414783763fd02a6ed2736eaed622efa"
+    }
+  },
+  "trivy": {
+    "version": "0.75.0",
+    "upstream": "docker.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa"
+  },
+  "checkov": {
+    "version": "3.3.22",
+    "upstream": "docker.io/bridgecrew/checkov:3.3.22@sha256:617c76e3f9b1f7907ebca9abb6b9d746844edcb48e9bd775e4692c69c1c6ac47"
+  }
+}

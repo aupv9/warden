@@ -1,0 +1,145 @@
+# Actions are pinned by commit SHA and tools by version + checksum, all to releases
+# at least 2 weeks old when pinned (supply-chain cooling-off). Bump via pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local # use exactly the toolchain setup-go installed from go.mod
+  GOFLAGS: -mod=readonly
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Toolchain matches go.mod
+        run: |
+          want="go$(awk '/^go /{print $2}' backend/go.mod)"
+          go version | grep -q " ${want} " || { echo "want ${want}, got $(go version)"; exit 1; }
+      - name: gofmt
+        run: test -z "$(gofmt -l backend)" || { gofmt -l backend; exit 1; }
+      - run: go -C backend vet ./...
+      - run: go -C backend vet -tags integration ./...
+      - run: go -C backend tool staticcheck ./...
+
+  vulncheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: go -C backend tool govulncheck ./...
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: go -C backend test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
+      - name: Coverage ≥ 80%
+        run: |
+          go -C backend tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+          go -C backend tool cover -func=coverage.out | awk '/^total:/ { sub("%", "", $3); if ($3 + 0 < 80) { print "coverage below 80%"; exit 1 } }'
+
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Postgres (testcontainers) — RLS, grants, River
+        run: go -C backend test -tags integration -count=1 ./...
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci # .npmrc: ignore-scripts=true
+        working-directory: frontend
+      - run: npm run lint && npm run build
+        working-directory: frontend
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Build API image
+        run: docker build -f backend/Dockerfile -t warden/api:ci .
+      - name: Image runs as non-root and the healthcheck binary works
+        run: |
+          test "$(docker image inspect -f '{{.Config.User}}' warden/api:ci)" = "65532:65532"
+          docker run --rm --entrypoint /usr/local/bin/warden-migrate warden/api:ci && exit 1 || test $? -eq 2
+
+  # Warden scans itself with the production sandbox (gVisor). Critical findings
+  # block every run; on tags any un-baselined High blocks the release.
+  selfscan:
+    runs-on: ubuntu-24.04
+    needs: [lint, test]
+    env:
+      GVISOR_RELEASE: "20261005.0"
+      GVISOR_SHA512: 79869ae9a589355a46d46fdac068d9a954e741741ffe77c64e38c56ea955498c1cb04e9bce44e1cce5155333e6b76bee72347c6661bb7c78fd2fe3aad198c8fe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Install gVisor (runsc)
+        run: |
+          curl -fsSL -o /tmp/gvisor.tar.bz2 \
+            "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2"
+          echo "${GVISOR_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c -
+          sudo tar -xjf /tmp/gvisor.tar.bz2 -C /usr/local/bin runsc containerd-shim-runsc-v1
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+          docker info -f '{{json .Runtimes}}' | grep -q '"runsc"'
+      - name: Offline mirror (Trivy DB, pinned Opengrep rules)
+        run: ./scripts/sync-mirror.sh
+      - name: Self-scan
+        run: |
+          FAIL_ON=$([ "${GITHUB_REF_TYPE}" = tag ] && echo high || echo critical)
+          go -C backend run ./cmd/selfscan -root "$GITHUB_WORKSPACE" -runtime runsc -fail-on "$FAIL_ON"
+      - name: Kernel OOM log (on failure)
+        if: failure()
+        run: sudo dmesg -T | grep -iE 'out of memory|oom|killed process' | tail -20 || echo "no OOM entries"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: selfscan-reports
+          path: reports/selfscan/
+          retention-days: 90
