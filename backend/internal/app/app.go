@@ -21,7 +21,13 @@ import (
 func Core(cfg *config.Config) fx.Option {
 	return fx.Options(
 		fx.Supply(cfg),
-		fx.Provide(func(c *config.Config) *cgconfig.AppConfig { return &c.AppConfig }),
+		fx.Provide(func(c *config.Config) *cgconfig.AppConfig {
+			// Traces report the version stamped at build time unless config overrides it.
+			if c.Otel.Version == "" {
+				c.Otel.Version = health.Version
+			}
+			return &c.AppConfig
+		}),
 		logger.Module,
 		observability.Module,
 		health.Module,
