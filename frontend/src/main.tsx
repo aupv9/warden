@@ -1,19 +1,33 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-sans/700.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "./styles/tokens.css";
+import "./styles/app.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { userManager } from "./auth/oidc";
+import { isMockMode } from "./api/client";
+import { completeSignIn, isAuthCallback } from "./auth/oidc";
 
 async function boot() {
-  if (new URLSearchParams(window.location.search).has("code")) {
-    await userManager.signinRedirectCallback();
-    window.history.replaceState({}, "", "/");
+  let authFailed = false;
+  if (!isMockMode && isAuthCallback(window.location.search)) {
+    let next = "/";
+    try {
+      next = await completeSignIn();
+    } catch {
+      // Any failure (state mismatch, IdP error, expired code) shows one generic message.
+      authFailed = true;
+    }
+    // Drop ?code=&state= from the address bar and history.
+    window.history.replaceState({}, "", next);
   }
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <QueryClientProvider client={new QueryClient()}>
-        <App />
-      </QueryClientProvider>
+      <App authFailed={authFailed} />
     </StrictMode>,
   );
 }
