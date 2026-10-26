@@ -67,6 +67,18 @@ make worker
 make web        # http://localhost:5173
 ```
 
+Sign in to the web UI once (that creates your Warden user), then create an organization
+with yourself as its first admin. Organizations are created by an operator; there is no
+API for it:
+
+```bash
+set -a; source .env; set +a
+go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@example.com
+```
+
+`warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API.
+`warden-admin audit verify --org <org id>` checks an organization's audit-log hash chain.
+
 On macOS there is no gVisor, so local scans fall back to `runc` with a warning.
 CI and production must use `runsc`.
 
@@ -95,16 +107,51 @@ See [`.env.example`](.env.example) for a complete local setup and
 
 ## API
 
-REST under `/api/v1`, authenticated with OIDC bearer tokens. Every response is an envelope:
+REST under `/api/v1`, authenticated with OIDC bearer tokens (Keycloak access tokens, RS256).
+The OpenAPI 3.1 document is served unauthenticated at `/api/v1/openapi.json`; health
+endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 
 ```json
-{ "data": { "sub": "…", "email": "dev@example.com", "name": null, "mfa": true },
+{ "data": { "id": "…", "sub": "…", "email": "dev@example.com", "name": null, "mfa": true, "orgs": [], "limits": { … } },
   "error": null,
   "meta": { "request_id": "…" } }
 ```
 
-Errors carry a stable `error.code` (`UNAUTHORIZED`, `NOT_FOUND`, …). The OpenAPI document is
-served at `/api/v1/openapi.json`. Health endpoints: `/healthz`, `/readyz`, `/info`.
+| | |
+|---|---|
+| `GET /me` | Your profile, orgs and server limits. The first call creates your Warden user. |
+| `/orgs/{org_id}`, `/summary` | Organization, SLA days, dashboard counts |
+| `/orgs/{org_id}/members` | Org members and roles (`org_admin`, `security_lead`, `member`) |
+| `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`) and scans |
+| `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel` |
+| `/orgs/{org_id}/issues` | Issues: filters, transitions, bulk assignment, comments, history |
+| `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
+| `/orgs/{org_id}/audit-log` | Hash-chained audit log |
+
+How it behaves:
+
+- **Uploads bypass the API.** `POST …/projects/{id}/scans` returns a presigned `PUT` URL
+  (15 minutes, pinned size and SHA-256); the browser uploads the `.zip` to object storage and
+  then calls `POST …/scans/{id}/start`, which checks the object and queues the scan. Scan
+  creation is limited per user per hour (`WARDEN_SCAN__RATE_LIMIT_PER_HOUR`, default 10;
+  `429` with `Retry-After`).
+- **Tenancy.** Anything under `/orgs/{org_id}` requires membership; non-members get `404`, as
+  do projects, scans and issues the caller can't see. Each request's database work runs with
+  `app.org_id` set, so row-level security backs up the permission checks.
+- **Permissions** follow the matrix in [`internal/domain/rbac`](backend/internal/domain/rbac/rbac.go)
+  (`403 FORBIDDEN` when a member lacks one). Developers may change only issues assigned to them.
+- **Issue workflow.** Status changes follow [`internal/domain/issuestate`](backend/internal/domain/issuestate/issuestate.go)
+  and carry the issue's `version` (`409 VERSION_CONFLICT` if stale). `false_positive` and
+  `risk_accepted` are reached only through an approved exception; a requester can't decide
+  their own request, and risk acceptances expire within 180 days.
+- **Audit.** Every write appends an audit entry in the same transaction. Entries are
+  hash-chained per organization and the application role can't update or delete them.
+- **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
+  `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`, `VERSION_CONFLICT`,
+  `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`, `RATE_LIMITED`. Unknown JSON
+  fields are rejected; internal errors are logged and returned as a generic `500`.
+- Lists take `?limit=` (default 50, max 200) and an opaque `?cursor=`, and return
+  `{ "items": [...], "next_cursor": … }`.
 
 ## Development
 
