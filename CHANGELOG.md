@@ -10,8 +10,8 @@ All notable changes to Warden are listed here. The format follows
 
 - UI/UX design for the first usable release ([`frontend/DESIGN.md`](frontend/DESIGN.md)):
   - core flows (scan, triage, fix, exception, access)
-  - wireframes for six screens: projects, upload and scans, issue list, issue detail,
-    exceptions, members and roles
+  - wireframes for six screens, with images in `frontend/design/`: projects, upload and
+    scans, issue list, issue detail, exceptions, members and roles
   - security rules for the UI
   - a visual system of its own: dark sidebar, teal accent, severity colors that differ in
     lightness, IBM Plex type

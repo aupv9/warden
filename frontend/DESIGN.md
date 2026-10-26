@@ -37,6 +37,28 @@ enforces them anyway.
 
 Audit log is in the navigation but has no screen yet.
 
+## Wireframes
+
+Desktop width (1440 px). Names, numbers and files are examples.
+
+### 1. Projects
+![Projects: org summary and project cards](design/01-projects.png)
+
+### 2. Upload & scans
+![Upload and scans: drop zone, live scanner progress, scan history](design/02-upload-and-scans.png)
+
+### 3. Issue list
+![Issue list: search, filters, severity chips, results table](design/03-issue-list.png)
+
+### 4. Issue detail
+![Issue detail: masked secret, how to fix, comments, details, workflow, history](design/04-issue-detail.png)
+
+### 5. Exceptions
+![Exceptions: pending queue and review panel](design/05-exceptions.png)
+
+### 6. Members & roles
+![Members and roles: org members, project roles, permission matrix](design/06-members-and-roles.png)
+
 ## Security rules for the UI
 
 - Never show a raw secret. Secret findings show the masked value only (`AKIA****`, from
