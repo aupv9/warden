@@ -92,6 +92,25 @@ export function auditTargetSummary(e: Pick<AuditEntry, "action" | "target_type" 
     }
     case "project_member.removed":
       return who ? `${projectKey ? `${projectKey} ` : ""}${who}` : fallback;
+    case "token.created":
+    case "token.revoked": {
+      // name, prefix and scopes only: the audit data never holds the secret.
+      const name = str(d, "name");
+      const prefix = str(d, "prefix");
+      if (!name && !prefix) return fallback;
+      return [projectKey, name ? `“${name}”` : null, prefix ? `wdn_${prefix}_…` : null].filter(Boolean).join(" ");
+    }
+    case "project.archived":
+    case "project.unarchived": {
+      const name = str(d, "name", "project_name");
+      return projectKey || name ? [projectKey, name].filter(Boolean).join(" ") : fallback;
+    }
+    case "org.policy_changed": {
+      const to = d.to && typeof d.to === "object" ? (d.to as Data) : (d.sla_days as Data | undefined);
+      if (!to || typeof to !== "object") return fallback;
+      const days = (["critical", "high", "medium", "low"] as const).map((k) => str(to, k) ?? "?");
+      return `SLA days ${days.join(" / ")}${d.recompute_open === true ? ", open issues recomputed" : ""}`;
+    }
     default:
       return fallback;
   }

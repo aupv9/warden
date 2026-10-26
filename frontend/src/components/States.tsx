@@ -185,6 +185,35 @@ export function SkeletonRows({ label, rows = 5 }: { label: string; rows?: number
   );
 }
 
+/** Suspense fallback while a page's code chunk loads: the page body with skeleton cards,
+ *  after the usual 300 ms delay (fast loads show nothing). */
+export function RouteFallback() {
+  return (
+    <div className="page-body" data-route-loading="">
+      <Loading label="page">
+        <div className="stack" style={{ gap: 16 }}>
+          <div className="card">
+            <SkeletonBlockBars lines={3} />
+          </div>
+          <div className="card">
+            <SkeletonBlockBars lines={5} />
+          </div>
+        </div>
+      </Loading>
+    </div>
+  );
+}
+
+function SkeletonBlockBars({ lines }: { lines: number }) {
+  return (
+    <div className="stack" style={{ gap: 12 }}>
+      {Array.from({ length: lines }, (_, i) => (
+        <Skeleton key={i} height={14} width={i === 0 ? "30%" : i === lines - 1 ? "60%" : "100%"} />
+      ))}
+    </div>
+  );
+}
+
 export function SkeletonCards({ label, count = 3, height = 150 }: { label: string; count?: number; height?: number }) {
   return (
     <Loading label={label}>
