@@ -1,0 +1,58 @@
+/* Visual tokens from frontend/DESIGN.md ("Visual system"). Change values there first. */
+:root {
+  --ink: #0b1220;
+  --muted: #556070; /* ≥ 4.5:1 on white and on --ground */
+  --ground: #f4f6f8;
+  --surface: #ffffff;
+  --line: #dde2e8;
+  --line-soft: #edf0f3;
+  --control-line: #c7ced6;
+  --accent: #0f766e;
+  --accent-hover: #115e59;
+  --accent-tint: #f0fdfa;
+  --accent-tint-strong: #99f6e4;
+  --accent-ring: #ccfbf1;
+  --sidebar-bg: #0b1220;
+  --sidebar-text: #cbd5e1;
+  --sidebar-muted: #94a3b8;
+  --sidebar-hover: #16213a;
+  --sidebar-active-bg: #134e4a;
+  --sidebar-active-text: #5eead4;
+  --sidebar-line: #1e293b;
+  --sidebar-control: #111a2e;
+  --sidebar-control-line: #2a3550;
+
+  --sev-critical-bg: #9f1239;
+  --sev-critical-fg: #ffffff;
+  --sev-high-bg: #c2410c;
+  --sev-high-fg: #ffffff;
+  --sev-medium-bg: #fef3c7;
+  --sev-medium-fg: #92400e;
+  --sev-low-bg: #e2e8f0;
+  --sev-low-fg: #334155;
+  --sev-info-bg: #ffffff;
+  --sev-info-fg: #334155;
+  --danger: #9f1239; /* "Past SLA" text and the highlighted secret line */
+  --danger-tint: #fff1f2;
+  --pill-fg: #334155;
+  --msg-error-bg: #fff1f2;
+  --msg-error-fg: #881337;
+  --msg-error-line: #9f1239;
+  --msg-warn-bg: #fffbeb;
+  --msg-warn-fg: #78350f;
+  --msg-warn-line: #f59e0b;
+  --skeleton: #e2e7ec;
+
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --radius-pill: 999px;
+  --control-h: 44px;
+  --control-h-dense: 36px;
+  --page-pad-y: 32px;
+  --page-pad-x: 40px;
+  --gap: 20px;
+  --sidebar-w: 232px;
+}

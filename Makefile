@@ -22,6 +22,7 @@ env:  ## Generate .env with random dev secrets
 
 up: env  ## Start Postgres, Redis, S3, Keycloak, Mailpit
 	docker compose up -d --wait
+	./scripts/dev-s3-init.sh
 
 down:  ## Stop the dev stack
 	docker compose down

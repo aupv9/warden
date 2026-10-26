@@ -21,8 +21,10 @@ const (
 	MaxScanAttempts = 2
 )
 
-var errNotImplemented = errors.New("scan persistence layer not implemented yet")
+var errNoEnv = river.JobCancel(errors.New("worker has no job environment"))
 
+// ScanArgs is enqueued by the API on scan start. Field names and JSON are a
+// contract with the API: keep them stable.
 type ScanArgs struct {
 	orchestrator.Job
 }
@@ -35,14 +37,17 @@ func (ScanArgs) InsertOpts() river.InsertOpts {
 
 type ScanWorker struct {
 	river.WorkerDefaults[ScanArgs]
+	Env        *Env
 	MaxRuntime time.Duration
 }
 
 func (w *ScanWorker) Timeout(*river.Job[ScanArgs]) time.Duration { return w.MaxRuntime }
 
-func (w *ScanWorker) Work(context.Context, *river.Job[ScanArgs]) error {
-	// TODO: live orchestrator.Deps (S3, Postgres, Docker) → orchestrator.Execute → result processor.
-	return river.JobCancel(errNotImplemented)
+func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) error {
+	if w.Env == nil {
+		return errNoEnv
+	}
+	return w.Env.RunScan(ctx, job.Args.Job, job.Attempt)
 }
 
 type PurgeExpiredSourcesArgs struct{}
@@ -51,10 +56,14 @@ func (PurgeExpiredSourcesArgs) Kind() string { return "purge_expired_sources" }
 
 type PurgeExpiredSourcesWorker struct {
 	river.WorkerDefaults[PurgeExpiredSourcesArgs]
+	Env *Env
 }
 
-func (PurgeExpiredSourcesWorker) Work(context.Context, *river.Job[PurgeExpiredSourcesArgs]) error {
-	return river.JobCancel(errors.New("purge_expired_sources not implemented yet"))
+func (w PurgeExpiredSourcesWorker) Work(ctx context.Context, _ *river.Job[PurgeExpiredSourcesArgs]) error {
+	if w.Env == nil {
+		return errNoEnv
+	}
+	return w.Env.PurgeExpiredSources(ctx)
 }
 
 type ReopenExpiredRiskAcceptedArgs struct{}
@@ -63,10 +72,14 @@ func (ReopenExpiredRiskAcceptedArgs) Kind() string { return "reopen_expired_risk
 
 type ReopenExpiredRiskAcceptedWorker struct {
 	river.WorkerDefaults[ReopenExpiredRiskAcceptedArgs]
+	Env *Env
 }
 
-func (ReopenExpiredRiskAcceptedWorker) Work(context.Context, *river.Job[ReopenExpiredRiskAcceptedArgs]) error {
-	return river.JobCancel(errors.New("reopen_expired_risk_accepted not implemented yet"))
+func (w ReopenExpiredRiskAcceptedWorker) Work(ctx context.Context, _ *river.Job[ReopenExpiredRiskAcceptedArgs]) error {
+	if w.Env == nil {
+		return errNoEnv
+	}
+	return w.Env.ReopenExpiredRiskAccepted(ctx)
 }
 
 // HourlyAt fires once an hour at the given minute.
@@ -83,32 +96,49 @@ func (m HourlyAt) Next(now time.Time) time.Time {
 type Options struct {
 	ScanTimeout time.Duration
 	ScanSlots   int
+	// Env runs the jobs. Without it (queue plumbing tests) every job is
+	// cancelled and no periodic job is scheduled.
+	Env *Env
+}
+
+// Config builds the River configuration. ScanSlots=0 gives an insert-only
+// client (the API enqueues scans but doesn't run them).
+func Config(opts Options) (*river.Config, error) {
+	cfg := &river.Config{}
+	if opts.ScanSlots <= 0 {
+		return cfg, nil
+	}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &ScanWorker{Env: opts.Env, MaxRuntime: opts.ScanTimeout + finalizeTimeout + time.Minute})
+	river.AddWorker(workers, PurgeExpiredSourcesWorker{Env: opts.Env})
+	river.AddWorker(workers, ReopenExpiredRiskAcceptedWorker{Env: opts.Env})
+	cfg.Workers = workers
+	cfg.Queues = map[string]river.QueueConfig{
+		QueueScan:          {MaxWorkers: opts.ScanSlots},
+		river.QueueDefault: {MaxWorkers: 10},
+	}
+	// Must exceed the job's runtime, or a running scan would be "rescued" and run twice.
+	cfg.RescueStuckJobsAfter = opts.ScanTimeout + finalizeTimeout + 10*time.Minute
+	if opts.Env == nil {
+		return cfg, nil
+	}
+	cfg.PeriodicJobs = []*river.PeriodicJob{
+		river.NewPeriodicJob(river.PeriodicInterval(10*time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return PurgeExpiredSourcesArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "purge_expired_sources", RunOnStart: true}),
+		river.NewPeriodicJob(HourlyAt(15),
+			func() (river.JobArgs, *river.InsertOpts) { return ReopenExpiredRiskAcceptedArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "reopen_expired_risk_accepted"}),
+	}
+	return cfg, nil
 }
 
 // NewClient builds the River client. Pass Options{} with ScanSlots=0 for an
-// insert-only client (the API enqueues scans but doesn't run them).
+// insert-only client.
 func NewClient(pool *pgxpool.Pool, opts Options) (*river.Client[pgx.Tx], error) {
-	cfg := &river.Config{}
-	if opts.ScanSlots > 0 {
-		workers := river.NewWorkers()
-		river.AddWorker(workers, &ScanWorker{MaxRuntime: opts.ScanTimeout + 5*time.Minute})
-		river.AddWorker(workers, PurgeExpiredSourcesWorker{})
-		river.AddWorker(workers, ReopenExpiredRiskAcceptedWorker{})
-		cfg.Workers = workers
-		cfg.Queues = map[string]river.QueueConfig{
-			QueueScan:          {MaxWorkers: opts.ScanSlots},
-			river.QueueDefault: {MaxWorkers: 10},
-		}
-		// Must exceed the scan timeout, or a running scan would be "rescued" and run twice.
-		cfg.RescueStuckJobsAfter = opts.ScanTimeout + 10*time.Minute
-		cfg.PeriodicJobs = []*river.PeriodicJob{
-			river.NewPeriodicJob(river.PeriodicInterval(10*time.Minute),
-				func() (river.JobArgs, *river.InsertOpts) { return PurgeExpiredSourcesArgs{}, nil },
-				&river.PeriodicJobOpts{ID: "purge_expired_sources"}),
-			river.NewPeriodicJob(HourlyAt(15),
-				func() (river.JobArgs, *river.InsertOpts) { return ReopenExpiredRiskAcceptedArgs{}, nil },
-				&river.PeriodicJobOpts{ID: "reopen_expired_risk_accepted"}),
-		}
+	cfg, err := Config(opts)
+	if err != nil {
+		return nil, err
 	}
 	return river.NewClient(riverpgxv5.New(pool), cfg)
 }

@@ -25,7 +25,10 @@ const EnvPrefix = "WARDEN_"
 
 var Scanners = []string{"gitleaks", "opengrep", "trivy", "checkov"}
 
-var digestPinned = regexp.MustCompile(`^[a-z0-9.\-]+(:\d+)?(/[a-z0-9._\-]+)+@sha256:[0-9a-f]{64}$`)
+// digestPinned: a registry reference pinned by digest (a tag may precede the digest,
+// as in scanners/images.lock.json; the digest decides), or a local image ID (content
+// addressed, so just as immutable; used for scanner images built from scanners/).
+var digestPinned = regexp.MustCompile(`^([a-z0-9.\-]+(:\d+)?(/[a-z0-9._\-]+)+(:[A-Za-z0-9_][A-Za-z0-9._\-]{0,127})?@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64})$`)
 
 // Secret never prints its value (logs, %v, JSON).
 type Secret string
