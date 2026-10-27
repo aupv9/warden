@@ -4,7 +4,7 @@
 //
 // Try: append ?mock_error=CODE to any page URL (e.g. VERSION_CONFLICT, RATE_LIMITED, NOT_FOUND)
 // to make the next write fail with that code.
-import { ACTIVE_STATUSES, METRICS_DAYS, NOTIFICATION_TYPES, SEVERITIES, TOOLS } from "../types";
+import { ACTIVE_STATUSES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS } from "../types";
 import type {
   ApiToken,
   AssignRule,
@@ -14,6 +14,7 @@ import type {
   IssueStatus,
   MetricsDays,
   NotificationPref,
+  OrgRole,
   Project,
   Scan,
   SeverityCounts,
@@ -145,6 +146,14 @@ function orgOf(id: string | undefined) {
   if (id === db.ORG2_ID) return db.org2;
   throw NOT_FOUND();
 }
+
+/** The caller's org role from /me (so `?mock_role=` applies to the API too). */
+function callerRole(orgId: string): OrgRole | "none" {
+  return db.me.orgs.find((o) => o.id === orgId)?.role ?? "none";
+}
+
+/** Lowercase DNS name with at least one dot; labels don't start or end with a hyphen. */
+const DNS_NAME = /^(?=[a-z0-9.-]{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
 const meRef = () => ({ id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email });
 
@@ -371,11 +380,73 @@ const routes: [string, RegExp, Handler][] = [
       })),
     }),
   ],
+  // ---- Sign-in settings and policy (org admin, security lead read; org admin writes) ----
+  [
+    "GET",
+    new RegExp(`^${O}/sign-in$`),
+    (m) => {
+      if (!["org_admin", "security_lead"].includes(callerRole(m[1]!))) throw new Fail(403, "FORBIDDEN");
+      const s = db.signIn[m[1]!];
+      if (!s) throw NOT_FOUND();
+      return s;
+    },
+  ],
+  [
+    "PUT",
+    new RegExp(`^${O}/sign-in-policy$`),
+    (m, _u, body) => {
+      const orgId = m[1]!;
+      const role = callerRole(orgId);
+      if (role !== "org_admin") throw new Fail(403, "FORBIDDEN");
+      const current = db.signIn[orgId];
+      if (!current) throw NOT_FOUND();
+      const b = (body ?? {}) as { mfa_roles?: unknown; allowed_email_domains?: unknown };
+      const fields: Record<string, string> = {};
+      const extra = Object.keys(b).filter((k) => k !== "mfa_roles" && k !== "allowed_email_domains");
+      for (const k of extra) fields[k] = "unknown field";
+      const roles = b.mfa_roles;
+      if (!Array.isArray(roles)) fields.mfa_roles = "required";
+      else if (roles.some((r) => !ORG_ROLES.includes(r as OrgRole)) || new Set(roles).size !== roles.length) {
+        fields.mfa_roles = "must be distinct values of org_admin, security_lead, member";
+      }
+      const domains = b.allowed_email_domains;
+      if (!Array.isArray(domains)) fields.allowed_email_domains = "required";
+      else if (domains.length > 20) fields.allowed_email_domains = "at most 20 domains";
+      else {
+        const seen = new Set<string>();
+        domains.forEach((raw, i) => {
+          const d = typeof raw === "string" ? raw.toLowerCase() : "";
+          if (!DNS_NAME.test(d) || d.length > 253) fields[`allowed_email_domains[${i}]`] = "must be a DNS name such as example.com (no wildcard)";
+          else if (seen.has(d)) fields[`allowed_email_domains[${i}]`] = "duplicate domain";
+          seen.add(d);
+        });
+      }
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const policy = {
+        mfa_roles: ORG_ROLES.filter((r) => (roles as OrgRole[]).includes(r)),
+        allowed_email_domains: (domains as string[]).map((d) => d.toLowerCase()),
+      };
+      // Self-lockout guard. The server checks the caller's current sign-in; in the mock, a caller
+      // whose role is already required got here with a second factor (else MFA_REQUIRED), so
+      // only a role newly required, with me.mfa false, is refused. Or try ?mock_error=MFA_NOT_ENABLED.
+      const next = new Set([...current.mfa.instance_roles, ...policy.mfa_roles]);
+      if (next.has(role) && !current.mfa.effective_roles.includes(role) && !db.me.mfa) throw new Fail(409, "MFA_NOT_ENABLED");
+      const from = current.policy;
+      const updated = db.rebuildSignIn(orgId, policy);
+      if (JSON.stringify(from) !== JSON.stringify(policy)) audit("org.sign_in_policy_changed", "org", orgId, { from, to: policy });
+      return updated;
+    },
+  ],
   [
     "POST",
     new RegExp(`^${O}/members$`),
-    (_m, _u, body) => {
+    (match, _u, body) => {
       const b = body as { email: string; role: "member" };
+      const allowed = db.signIn[match[1]!]?.policy.allowed_email_domains ?? [];
+      const domain = b.email.slice(b.email.lastIndexOf("@") + 1).toLowerCase();
+      if (allowed.length > 0 && !allowed.includes(domain)) {
+        throw new Fail(422, "VALIDATION_FAILED", { email: `must be an address at one of: ${allowed.join(", ")}` });
+      }
       if (!b.email.endsWith("@acme.example")) throw new Fail(404, "USER_NOT_FOUND");
       if (db.orgMembers.some((x) => x.user.email === b.email)) throw new Fail(409, "CONFLICT");
       const user = { id: db.uuid(), email: b.email, display_name: b.email.split("@")[0]!, is_active: true };
@@ -742,7 +813,7 @@ function nextForcedError(method: string): string | null {
   return code && /^[A-Z_]+$/.test(code) ? code : null;
 }
 
-const STATUS: Record<string, number> = { MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
+const STATUS: Record<string, number> = { MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
 
 export const mockFetch: typeof fetch = async (input, init) => {
   await new Promise((r) => setTimeout(r, LATENCY));

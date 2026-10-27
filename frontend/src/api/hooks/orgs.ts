@@ -1,7 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import { qk } from "../keys";
-import type { AddOrgMemberBody, ItemList, Org, OrgMember, OrgRole, OrgSummary, UpdatePolicyBody } from "../types";
+import type {
+  AddOrgMemberBody,
+  ItemList,
+  Org,
+  OrgMember,
+  OrgRole,
+  OrgSummary,
+  SignInPolicyInput,
+  SignInSettings,
+  UpdatePolicyBody,
+} from "../types";
 
 const base = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}`;
 
@@ -26,6 +36,32 @@ export function useUpdatePolicy(orgId: string) {
           qc.invalidateQueries({ queryKey: qk.metricsAll(orgId) }),
         ]);
       }
+    },
+  });
+}
+
+/** How Warden trusts the identity provider, and the org's sign-in policy (org admin, security
+ *  lead). Reading it never makes the server fetch keys. */
+export function useSignInSettings(orgId: string, enabled = true) {
+  return useQuery({
+    queryKey: qk.signIn(orgId),
+    queryFn: ({ signal }) => api<SignInSettings>(`${base(orgId)}/sign-in`, { signal }),
+    enabled,
+  });
+}
+
+/** Org admins only. Answers with the same body as GET …/sign-in. */
+export function useUpdateSignInPolicy(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SignInPolicyInput) => api<SignInSettings>(`${base(orgId)}/sign-in-policy`, { method: "PUT", body }),
+    onSuccess: (settings) => {
+      qc.setQueryData(qk.signIn(orgId), settings);
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: qk.signIn(orgId) }),
+        // The effective two-factor roles feed /me's mfa_required_orgs.
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]);
     },
   });
 }

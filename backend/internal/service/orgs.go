@@ -85,6 +85,13 @@ func (s *Service) AddMember(ctx context.Context, a *Actor, in AddMemberInput) (O
 		if err := fe.err(); err != nil {
 			return err
 		}
+		p, err := r.OrgSignInPolicy(ctx, a.OrgID)
+		if err != nil {
+			return err
+		}
+		if err := CheckEmailDomain(email, p); err != nil {
+			return err
+		}
 		u, err := r.UserByEmail(ctx, email)
 		if errors.Is(err, ErrNotFound) {
 			return apperrors.NotFound("USER_NOT_FOUND", "no user with this email has signed in to Warden yet")

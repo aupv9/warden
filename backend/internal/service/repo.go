@@ -259,6 +259,7 @@ type Repo interface {
 
 	TokenRepo
 	GateRepo
+	SignInRepo
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }

@@ -23,6 +23,8 @@ go under `[Unreleased]` in `CHANGELOG.md`.
   Version is stamped via `-X github.com/aupv9/common-go/health.Version` (Makefile, Dockerfile, release.yml).
 - Auth is plain OIDC: keys from the issuer's discovery document (or `oidc.jwks_url`), RS256/ES256,
   MFA from `amr`/`acr` per `oidc.mfa_*`. Don't add provider-specific paths; Keycloak is only the dev default.
+  The provider is server config only; an org's sign-in policy (`internal/service/signin.go`) may only
+  tighten it. Never link accounts by email: `warden-admin user relink` is the only way to move a subject.
 - Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`).
 
 ## Rules

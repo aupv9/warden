@@ -82,7 +82,9 @@ go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@exampl
 `warden-admin org set-role --org <org id> --email them@example.com --role org_admin` is the
 break-glass path when nobody who manages members can sign in (for example, an admin lost
 their second factor); it keeps at least one `org_admin` and is audited as `member.role_changed`
-with `via: warden-admin`.
+with `via: warden-admin`. `warden-admin org add-member --org <org id> --email … --role …` adds
+someone who has signed in once (it honours the org's allowed email domains). Moving people to
+another identity provider is `warden-admin user relink` (see "Sign-in and identity providers").
 
 On macOS there is no gVisor, so local scans fall back to `runc` with a warning.
 CI and production must use `runsc`.
@@ -102,7 +104,8 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_OIDC__JWKS_URL` | | Pin the signing-key URL instead of discovering it |
 | `WARDEN_OIDC__ALGORITHMS` | `RS256` | Accepted token signatures: `RS256` and/or `ES256` (anything else is refused at startup) |
 | `WARDEN_OIDC__MFA_AMR` / `WARDEN_OIDC__MFA_ACR` | `otp,mfa,hwk,webauthn` / | A token proves a second factor when its `amr` claim holds one of these, or its `acr` equals one of these (for providers that use `acr`) |
-| `WARDEN_OIDC__REQUIRE_MFA_ROLES` | `org_admin,security_lead` | Org roles that must sign in with a second factor (the token's `amr` claim: `otp`, `mfa`, `hwk` or `webauthn`); otherwise every request under the org is `403 MFA_REQUIRED`. Comma-separated (a YAML list in `config.yaml`); empty disables the rule, as `.env.example` does for the dev realm. API tokens are exempt |
+| `WARDEN_OIDC__REQUIRE_MFA_ROLES` | `org_admin,security_lead` | Org roles that must sign in with a second factor (the token's `amr` claim: `otp`, `mfa`, `hwk` or `webauthn`); otherwise every request under the org is `403 MFA_REQUIRED`. Comma-separated (a YAML list in `config.yaml`); empty disables the rule, as `.env.example` does for the dev realm. Orgs can add roles, not remove these. API tokens are exempt |
+| `WARDEN_OIDC__CONSOLE_URL` | | Optional link to the identity provider's admin console, shown to org admins on the Sign-in settings page (http or https; never fetched) |
 | `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
 | `WARDEN_SCAN__HMAC_KEY` | | Master key for secret fingerprints, at least 32 bytes (`openssl rand -hex 32`). Each organization gets its own key derived from it, so changing it changes every secret's fingerprint |
@@ -158,6 +161,47 @@ API, so put them behind a broker (Keycloak, Auth0, Dex). The token must carry `s
 `amr` (for example Okta's `urn:okta:loa:2fa:any`), set `WARDEN_OIDC__MFA_ACR`, or the
 two-factor rule will block org admins and security leads.
 
+**What org admins see and control.** *Settings → Sign-in* in the web UI shows org admins
+and security leads how Warden trusts the identity provider: issuer, audience, algorithms,
+where the keys come from and whether the last fetch worked, which `amr`/`acr` values count as
+a second factor, and a link to the provider's console (`WARDEN_OIDC__CONSOLE_URL`). None of
+that can be changed from the UI: the issuer is the root of trust for every org on the
+server, so switching providers stays an operator setting. What an org admin can change is the
+org's sign-in policy, which only tightens the server's rules:
+
+- **Two-factor roles**: require a second factor for more roles (for example every member)
+  on top of `WARDEN_OIDC__REQUIRE_MFA_ROLES`. An admin who signed in without one can't
+  require it for their own role (`409 MFA_NOT_ENABLED`), so the rule can't lock them out.
+- **Allowed email domains**: up to 20 domains; adding a member at any other address is
+  refused. Existing members stay. Subdomains must be listed themselves.
+
+**Moving to another identity provider.** Warden links an account to the provider's `sub`
+claim, and a new provider gives everyone a new one. A sign-in whose email belongs to an
+existing account with a different subject is refused (Warden never merges accounts by
+email; the warning in the API log names the new `sub`). To move accounts over:
+
+```bash
+# the account's subject at the new provider, if you know it
+warden-admin user relink --email them@example.com --sub 00u1abcd2EFGH3ijk4x7
+# or: the next sign-in with this email, verified by the new provider, takes over the account
+warden-admin user relink --email them@example.com --next-sign-in --within 24h
+```
+
+The window (`--within`, at most 7 days) closes after the first sign-in that uses it, and it
+needs `email_verified: true` in the token. Both are audited (`user.relink_allowed`,
+`user.relinked`) in every org the person belongs to. People who have never signed in need
+nothing: they are created on first sign-in.
+
+**Authentik** (tested with 2026.8): create an OAuth2/OpenID provider of client type *public*
+with grant types `authorization_code` and `refresh_token` (they start empty), a redirect URI
+of the web UI's origin with a trailing `/`, and a signing key (otherwise tokens are HS256,
+which Warden refuses). Its default `email` scope mapping sends `email_verified: false`, which
+Warden rejects; add a mapping that returns `true` only if your enrollment really verifies
+addresses. The issuer is `https://<host>/application/o/<slug>/` with the trailing slash, the
+audience is the client ID, and the web UI needs `VITE_OIDC_SCOPE="openid profile email
+offline_access"` for refresh tokens. Upstream logins (Google, Okta, …) are *Sources* in
+Authentik, shown on its sign-in page once added to the identification stage.
+
 ## API
 
 REST under `/api/v1`, authenticated with OIDC bearer tokens (Keycloak access tokens, RS256)
@@ -203,9 +247,14 @@ How it behaves:
 - **Audit.** Every write appends an audit entry in the same transaction. Entries are
   hash-chained per organization and the application role can't update or delete them.
 - **Two-factor sign-in.** Roles listed in `WARDEN_OIDC__REQUIRE_MFA_ROLES` (by default
-  `org_admin` and `security_lead`) get `403 MFA_REQUIRED` under `/orgs/{org_id}` unless their
-  access token shows a second factor. `GET /me` lists those orgs in `mfa_required_orgs`, so the
-  UI can explain before calling.
+  `org_admin` and `security_lead`), plus roles an org adds in its sign-in policy, get
+  `403 MFA_REQUIRED` under `/orgs/{org_id}` unless their access token shows a second factor.
+  `GET /me` lists those orgs in `mfa_required_orgs`, so the UI can explain before calling.
+- **Sign-in settings.** `GET /orgs/{org_id}/sign-in` (org admins, security leads) returns the
+  server's provider settings, the signing-key cache (`ok` / `error` with a category only /
+  `not_loaded`; it never triggers a fetch) and the org's policy. `PUT /orgs/{org_id}/sign-in-policy`
+  (org admins) sets `mfa_roles` and `allowed_email_domains`; audited as
+  `org.sign_in_policy_changed`. API tokens can call neither.
 - **API tokens** (`wdn_<prefix>_<secret>`) are machine credentials for CI. A project owner or a
   security lead creates one for one project, with scopes `scan:write` and/or `issues:read` and
   an expiry of 1 to 365 days; the creator also needs `run_scan` there, because a token acts as
@@ -224,7 +273,7 @@ How it behaves:
   `blocking` issues at or above `fail_on`. `false_positive` and `risk_accepted` issues never
   block; a scan that hasn't finished, failed or was cancelled never passes.
 - **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `MFA_REQUIRED`,
-  `TOKEN_SCOPE`, `NOT_FOUND`, `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`,
+  `MFA_NOT_ENABLED`, `TOKEN_SCOPE`, `NOT_FOUND`, `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`,
   `VERSION_CONFLICT`, `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`,
   `RATE_LIMITED`, `PROJECT_ARCHIVED`. Unknown JSON fields are rejected; internal errors are logged and returned as
   a generic `500`.
@@ -432,6 +481,9 @@ Changes that weaken one of these need an explicit discussion in the pull request
 - Permissions are checked in the service layer (`internal/domain/rbac`); RLS is the second
   line of defence.
 - Authentication errors are generic; the reason is logged, never returned.
+- The identity provider (issuer, audience, keys) is server configuration only; no API or
+  org setting can change it. An org's sign-in policy can only add requirements. Accounts are
+  never linked by email: only `warden-admin user relink` moves one to a new subject.
 - API tokens: only a SHA-256 of the secret is stored and the secret is shown once. Tokens
   are looked up across orgs only through the `warden_lookup_token` SECURITY DEFINER function
   (exact prefix, one row); everything after that runs under the token's org. What a token may

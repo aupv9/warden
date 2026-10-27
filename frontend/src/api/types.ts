@@ -102,6 +102,52 @@ export interface AddOrgMemberBody {
   role: OrgRole;
 }
 
+// ---- Sign-in settings (GET /orgs/{org_id}/sign-in, PUT /orgs/{org_id}/sign-in-policy) ----
+
+export type SignInKeyStatus = "ok" | "error" | "not_loaded";
+/** `keys.error` when status is "error". The field itself is typed `string` so a category the
+ *  server adds later still fits; lib/signIn.ts words these and falls back for anything else. */
+export type SignInKeyError = "unreachable" | "http_status" | "invalid_document" | "issuer_mismatch" | "no_usable_keys";
+
+/** How Warden trusts the identity provider, and the org's sign-in policy. Read-only except
+ *  `policy`. Org admins and security leads only. */
+export interface SignInSettings {
+  provider: {
+    issuer: string;
+    audience: string;
+    algorithms: string[];
+    /** Pinned by `oidc.jwks_url`; null = discovered from the issuer. */
+    keys_url: string | null;
+    /** Operator-provided link to the IdP's admin console (`oidc.console_url`). Checked before it becomes a link. */
+    console_url: string | null;
+  };
+  keys: {
+    status: SignInKeyStatus;
+    count: number;
+    /** Last successful fetch. */
+    fetched_at: Timestamp | null;
+    error: string | null;
+  };
+  mfa: {
+    amr: string[];
+    acr: string[];
+    /** Required by the server config; the org can't remove these. */
+    instance_roles: OrgRole[];
+    /** Added by this org (= policy.mfa_roles). */
+    org_roles: OrgRole[];
+    /** instance_roles ∪ org_roles, in the order org_admin, security_lead, member. */
+    effective_roles: OrgRole[];
+  };
+  policy: SignInPolicyInput;
+}
+
+/** PUT /orgs/{org_id}/sign-in-policy (org admins only). Both fields are required. */
+export interface SignInPolicyInput {
+  mfa_roles: OrgRole[];
+  /** Lowercase DNS names, at most 20; empty = any domain. */
+  allowed_email_domains: string[];
+}
+
 // ---- Projects ----
 
 export interface Project {
@@ -332,6 +378,9 @@ export const AUDIT_ACTIONS = [
   "issue.assigned",
   "exception.requested",
   "exception.decided",
+  "org.sign_in_policy_changed",
+  "user.relinked",
+  "user.relink_allowed",
 ] as const;
 
 // ---- v0.2: API tokens and the scan gate ----
@@ -479,6 +528,30 @@ export interface IssueCounts {
   past_sla: number;
   secrets: number;
 }
+
+// ---- Errors ----
+
+/** `error.code` values the API can answer (openapi schema Error). */
+export type ApiErrorCode =
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "VALIDATION_FAILED"
+  | "CONFLICT"
+  | "VERSION_CONFLICT"
+  | "INVALID_TRANSITION"
+  | "USER_NOT_FOUND"
+  | "UPLOAD_MISMATCH"
+  | "RATE_LIMITED"
+  | "MFA_REQUIRED"
+  | "TOKEN_SCOPE"
+  | "PROJECT_ARCHIVED"
+  // 409 from PUT …/sign-in-policy: the change would require two-factor for the caller's own
+  // role, and the caller's current sign-in has no second factor.
+  | "MFA_NOT_ENABLED"
+  | "PAYLOAD_TOO_LARGE"
+  | "METHOD_NOT_ALLOWED"
+  | "INTERNAL";
 
 // ---- Enumerations used by the UI ----
 

@@ -12,8 +12,10 @@ import { PageHeader } from "../components/PageHeader";
 import { ActionError, ErrorState, SkeletonBlock } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { can, ORG_ROLE_LABELS } from "../lib/permissions";
+import { canViewSignIn } from "../lib/signIn";
 import { showToast } from "../lib/toast";
 import { usePageTitle } from "../lib/usePageTitle";
+import { SignInSection } from "./settings/SignIn";
 
 export const SLA_KEYS = ["critical", "high", "medium", "low"] as const;
 export const SLA_MIN = 1;
@@ -52,6 +54,7 @@ export function OrgSettingsPage() {
         ) : (
           <SlaReadOnly org={org.data} role={ORG_ROLE_LABELS[meOrg.role]} />
         )}
+        {canViewSignIn(meOrg.role) && <SignInSection />}
       </div>
     </div>
   );

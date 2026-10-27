@@ -23,6 +23,8 @@ export const MESSAGES: Record<string, string> = {
   MFA_REQUIRED: "Your role requires two-factor sign-in. Sign out, then sign in again with your second factor.",
   TOKEN_SCOPE: "This API token isn't allowed to do that.",
   PROJECT_ARCHIVED: "This project is archived, so it doesn't take new scans. Unarchive it first.",
+  MFA_NOT_ENABLED:
+    "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role.",
   [NETWORK_ERROR]: "Warden didn't answer. Check your connection and try again.",
   // Client-side codes from the upload (lib/upload.ts).
   UPLOAD_FAILED: "The connection dropped. Your file is fine; try again.",

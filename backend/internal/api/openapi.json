@@ -1615,6 +1615,7 @@
               "UPLOAD_MISMATCH",
               "RATE_LIMITED",
               "MFA_REQUIRED",
+              "MFA_NOT_ENABLED",
               "TOKEN_SCOPE",
               "PROJECT_ARCHIVED",
               "PAYLOAD_TOO_LARGE",
@@ -2187,6 +2188,195 @@
         ],
         "additionalProperties": false,
         "description": "counts: active issues (open, assigned, in_progress, reopened) seen in this scan. false_positive and risk_accepted issues never block."
+      },
+      "SignInPolicy": {
+        "type": "object",
+        "properties": {
+          "mfa_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgRole"
+            }
+          },
+          "allowed_email_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "mfa_roles",
+          "allowed_email_domains"
+        ],
+        "additionalProperties": false
+      },
+      "SignInPolicyRequest": {
+        "type": "object",
+        "properties": {
+          "mfa_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgRole"
+            },
+            "description": "Roles that must sign in with a second factor, in addition to the server's oidc.require_mfa_roles."
+          },
+          "allowed_email_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "description": "Only addresses at these domains can be added as members (exact match, case-insensitive). Empty: any domain."
+          }
+        },
+        "required": [
+          "mfa_roles",
+          "allowed_email_domains"
+        ],
+        "additionalProperties": false
+      },
+      "SignInSettings": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "object",
+            "properties": {
+              "issuer": {
+                "type": "string"
+              },
+              "audience": {
+                "type": "string"
+              },
+              "algorithms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "keys_url": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Pinned JWKS URL (oidc.jwks_url); null when discovered from the issuer."
+              },
+              "console_url": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Link to the identity provider's admin console (oidc.console_url)."
+              }
+            },
+            "required": [
+              "issuer",
+              "audience",
+              "algorithms",
+              "keys_url",
+              "console_url"
+            ],
+            "additionalProperties": false
+          },
+          "keys": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "error",
+                  "not_loaded"
+                ]
+              },
+              "count": {
+                "type": "integer"
+              },
+              "fetched_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "unreachable",
+                  "http_status",
+                  "invalid_document",
+                  "issuer_mismatch",
+                  "no_usable_keys",
+                  null
+                ],
+                "description": "Category of the last failed fetch (no error text: it can name internal hosts)."
+              }
+            },
+            "required": [
+              "status",
+              "count",
+              "fetched_at",
+              "error"
+            ],
+            "additionalProperties": false
+          },
+          "mfa": {
+            "type": "object",
+            "properties": {
+              "amr": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "acr": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "instance_roles": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OrgRole"
+                }
+              },
+              "org_roles": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OrgRole"
+                }
+              },
+              "effective_roles": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OrgRole"
+                }
+              }
+            },
+            "required": [
+              "amr",
+              "acr",
+              "instance_roles",
+              "org_roles",
+              "effective_roles"
+            ],
+            "additionalProperties": false
+          },
+          "policy": {
+            "$ref": "#/components/schemas/SignInPolicy"
+          }
+        },
+        "required": [
+          "provider",
+          "keys",
+          "mfa",
+          "policy"
+        ],
+        "additionalProperties": false
       }
     }
   },
@@ -3297,7 +3487,7 @@
             }
           }
         },
-        "description": "404 USER_NOT_FOUND if no user with this email has signed in; 409 if already a member.",
+        "description": "404 USER_NOT_FOUND if no user with this email has signed in; 409 if already a member. An address outside the org's allowed_email_domains is a 422 field error on email.",
         "requestBody": {
           "required": true,
           "content": {
@@ -7142,6 +7332,216 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorEnvelope"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/sign-in": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "signInSettings",
+        "summary": "How sign-in works for the org (org_admin, security_lead)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SignInSettings"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read-only view of the server's identity-provider settings and signing-key cache, plus the org's sign-in policy. Never fetches keys."
+      }
+    },
+    "/orgs/{org_id}/sign-in-policy": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "put": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "setSignInPolicy",
+        "summary": "Change the org's sign-in policy (org_admin)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SignInSettings"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Can only tighten the server's rules. 409 MFA_NOT_ENABLED when the new policy would require a second factor for the caller's own role and their sign-in had none. Audited as org.sign_in_policy_changed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignInPolicyRequest"
               }
             }
           }

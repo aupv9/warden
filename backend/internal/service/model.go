@@ -38,6 +38,9 @@ type User struct {
 	DisplayName string
 	IsActive    bool
 	MFA         *bool
+	// RelinkUntil: until then, the next sign-in with this verified email and
+	// an unknown subject takes over the account (warden-admin user relink).
+	RelinkUntil *time.Time
 }
 
 type UserRef struct {
@@ -72,6 +75,8 @@ type OrgRef struct {
 	ID   uuid.UUID `json:"id"`
 	Name string    `json:"name"`
 	Role rbac.Role `json:"role"`
+	// MFARoles: the org's added two-factor roles (SignInPolicy), for /me.
+	MFARoles []rbac.Role `json:"-"`
 }
 
 type SLADays struct {
