@@ -160,13 +160,20 @@ func validateList(field string, ids, other []string) []FieldError {
 		switch {
 		case !ID.MatchString(id):
 			errs = append(errs, FieldError{f, "must be an SPDX license id such as GPL-3.0-only, or LicenseRef-..."})
-		case slices.Contains(ids[:i], id):
+		case listed(ids[:i], id):
 			errs = append(errs, FieldError{f, "is listed twice"})
-		case slices.Contains(other, id):
+		case listed(other, id):
 			errs = append(errs, FieldError{f, "is also in deny"})
 		}
 	}
 	return errs
+}
+
+// listed reports whether id is in ids. SPDX ids are case-insensitive ("MIT"
+// and "mit" are one license), so the lists are compared and matched without
+// case; they are stored as given.
+func listed(ids []string, id string) bool {
+	return slices.ContainsFunc(ids, func(s string) bool { return strings.EqualFold(s, id) })
 }
 
 // Rule names what decided a license's action.
@@ -193,13 +200,13 @@ type Decision struct {
 // category's action.
 func (p Policy) Evaluate(terms [][]string, category Category) Decision {
 	for _, alt := range terms {
-		if len(alt) > 0 && !slices.ContainsFunc(alt, func(id string) bool { return !slices.Contains(p.Allow, id) }) {
+		if len(alt) > 0 && !slices.ContainsFunc(alt, func(id string) bool { return !listed(p.Allow, id) }) {
 			return Decision{Action: Allow, Rule: RuleAllowList}
 		}
 	}
 	denied := ""
 	for i, alt := range terms {
-		j := slices.IndexFunc(alt, func(id string) bool { return slices.Contains(p.Deny, id) })
+		j := slices.IndexFunc(alt, func(id string) bool { return listed(p.Deny, id) })
 		if j < 0 {
 			denied = ""
 			break
