@@ -16,7 +16,7 @@ func TestRepoTokens(t *testing.T) {
 	tokRow := []any{tok, "CI", "abcdefgh", []string{"scan:write"}, user, "a@b.c", "A", now, now, nil, nil}
 	r, tx := repoWith(on(map[string][][]any{
 		"FROM warden_lookup_token":        {{tok, org, proj, user, hash, []string{"scan:write"}, now, nil}},
-		"FROM app_user WHERE id":          {{user, "sub", "a@b.c", "A", true, nil}},
+		"FROM app_user WHERE id":          {{user, "sub", "a@b.c", "A", true, nil, nil}},
 		"FROM api_token t JOIN app_user":  {tokRow},
 		"SELECT i.severity::text, count(": {{"critical", 2}, {"low", 1}},
 		"JOIN occurrence o":               {issueRow(iss, proj, scan, false)},

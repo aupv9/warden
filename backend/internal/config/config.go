@@ -72,6 +72,9 @@ type OIDCSection struct {
 	// one of MFAAMR, or its "acr" claim equals one of MFAACR (providers differ).
 	MFAAMR List `koanf:"mfa_amr"`
 	MFAACR List `koanf:"mfa_acr"`
+	// ConsoleURL: optional link to the identity provider's admin console, shown
+	// to org admins on the Sign-in settings page. Display only; never fetched.
+	ConsoleURL string `koanf:"console_url" validate:"omitempty,url"`
 }
 
 // TokenAlgorithms are the signing algorithms Warden can verify; anything else
@@ -225,6 +228,9 @@ func Load() (*Config, error) {
 		if !slices.Contains(TokenAlgorithms, a) {
 			return nil, fmt.Errorf("config: oidc.algorithms: unsupported algorithm %q (want RS256 or ES256)", a)
 		}
+	}
+	if u := c.OIDC.ConsoleURL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		return nil, errors.New("config: oidc.console_url must be an http or https URL")
 	}
 	for _, r := range c.OIDC.RequireMFARoles {
 		if !slices.Contains(orgRoles, r) {

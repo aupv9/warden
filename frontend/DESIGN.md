@@ -39,7 +39,7 @@ enforces them anyway.
 | 7 | Audit log | org admin, security lead | Filters for action, actor and date range; one row per entry (time, actor, action, target, IP) that expands to show the entry's `data`; a note that the log is append-only and hash-chained |
 | 8 | Overview (v0.2) | everyone (`view_dashboard`) | First item in the navigation. Range 30 / 90 / 180 days and a project filter; open now, new, fixed, open past SLA; open issues per severity over time; new vs fixed; time to fix per severity; SLA compliance. Every chart has its data as a table |
 | 9 | Project settings (v0.2) | everyone reads; project owner, security lead edit | General details; API tokens (create with a show-once token, revoke); CI setup snippets; auto-assign rules; archive / unarchive |
-| 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates |
+| 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates. Sign-in (org admin edits, security lead reads, hidden from members): the identity provider and the org's sign-in policy, see "Sign-in settings" |
 | 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation.
@@ -239,6 +239,55 @@ does. "Save policy" is enabled once something changed; the toast says whether op
 were recalculated. Without `configure_policy` the values are shown as text with "Only security
 leads can change the SLA policy."
 
+### Sign-in settings
+
+Two more cards below the SLA policy on `/orgs/:org/settings`, from `GET /orgs/{org}/sign-in`.
+Org admins and security leads see them; members don't (the API answers them 403), so the page
+never requests the endpoint for a member. Not tabs: the page is short, and one scroll keeps
+every setting in view.
+
+- **Identity provider** (read-only for everyone): a short line that sign-in methods (single
+  sign-on, social login, passkeys) are set up at the identity provider, not in Warden, and that
+  changing the provider is a server setting for the operator (README "Sign-in and identity
+  providers"). Then a key/value list: issuer, audience and algorithms (mono); signing keys
+  "Discovered from the issuer" or "Pinned to <keys URL>"; key status as a dot and a sentence:
+  OK (green) "2 signing keys loaded, last refreshed 7 min ago" (absolute time in the tooltip),
+  Error (red) with one plain sentence per category (`unreachable`, `http_status`,
+  `invalid_document`, `issuer_mismatch`, `no_usable_keys`, anything else generic) and either
+  "Warden keeps using the n keys it already has" or "Until this is fixed, nobody can sign in.
+  Tell your operator.", Not loaded yet (grey); and the `amr`/`acr` values that count as a second
+  factor. "Open identity provider console" (new tab, `rel="noopener noreferrer"`) appears only
+  when `console_url` parses as an absolute http(s) URL; anything else is not linked.
+- **Sign-in policy:** one form, one "Save sign-in policy" (enabled once something changed,
+  with "Discard changes"; success toast "Sign-in policy saved."). Two sections split by a
+  divider:
+  - *Require two-factor sign-in for:* a fieldset with a checkbox per org role. Roles in
+    `instance_roles` are checked and disabled, with "Required by the server" (linked with
+    `aria-describedby`). Under it, from the members list (`OrgMember.mfa`), for the roles
+    currently ticked: either a check line "All org admins and security leads have signed in
+    with two-factor." or a warning block "n members in roles that require two-factor haven't
+    signed in with it: Huy Do, An Nguyen and 3 more." (first 5 names, by role then name;
+    deactivated members are left out; `mfa: null` counts as no second factor), and that they
+    see "Two-factor sign-in required" until they sign in again. While the ticked roles differ
+    from the saved ones the text starts "With these changes, …".
+  - *Allowed email domains:* one row per domain (mono text input, visually hidden label
+    "Domain n", remove icon button named "Remove example.com"), "Add domain" and "n of 20".
+    No rows reads "Any domain". The text says it only limits who can be added as a member,
+    existing members stay, and subdomains count only if listed. Checked in the browser on
+    save, then live: lowercase after trimming, letters/digits/hyphens/dots, at least one dot,
+    no empty label or label starting or ending with a hyphen, at most 253 characters (63 per
+    label), no wildcard, no `@`, no duplicates, at most 20. Server field errors
+    `allowed_email_domains[i]` go under row i, `allowed_email_domains` and `mfa_roles` under
+    their section, anything else in a banner. Focus moves to the first invalid row; adding a
+    row focuses it, removing one focuses its neighbour (or "Add domain") and is announced.
+  - `MFA_NOT_ENABLED` (409) shows as a banner above the Save button: "Your current sign-in
+    didn't use a second factor. Sign in with a second factor first, then require it for your
+    own role."
+- **Security leads** see the same cards with the policy as text (each role "required" or "not
+  required", "Required by the server" where it applies, the overview, the domains as tags or
+  "Any domain") and "Only org admins can change the sign-in policy."
+- Saving refreshes `/me`, because the effective roles decide `mfa_required_orgs`.
+
 ### Notifications
 
 - **Bell:** next to the org switcher in the sidebar header (in the phone top bar, next to the
@@ -277,7 +326,11 @@ oidc-client-ts are vendor chunks preloaded next to the entry, cached across Ward
 plainly fake `wdn_<prefix>_mocksecret…`), auto-assign rules on WEB, notifications, preferences,
 deterministic metrics per project, an archived project (LEG), a read-only org (Acme Labs, where
 the user is a member) and an org that requires MFA (Acme Security). `?mock_bulk=1` adds 240
-tokens and 300 notifications to check long lists.
+tokens and 300 notifications to check long lists. Sign-in settings: `?mock_role=org_admin` (or
+`member`) changes the user's role in Acme Engineering, so the policy form can be edited;
+`?mock_keys=error` / `?mock_keys=not_loaded` show the other key states; Acme Engineering
+allows only `acme.example`, so adding anyone else shows the domain error;
+`?mock_error=MFA_NOT_ENABLED` makes saves fail with the 409.
 
 ## Audit log
 
@@ -391,6 +444,7 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 | `MFA_REQUIRED` (403, v0.2) | Whole org: the "Two-factor sign-in required" page | Never a 403 page or a toast. |
 | `PROJECT_ARCHIVED` (409, v0.2) | Upload card | "This project is archived, so it doesn't take new scans. Unarchive it first." (The UI hides uploads for archived projects, so this only shows after a race.) |
 | `TOKEN_SCOPE` (403, v0.2) | CLI only | "This API token isn't allowed to do that." The UI never uses tokens. |
+| `MFA_NOT_ENABLED` (409) | Banner in the sign-in policy form | "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role." |
 
 ## Upload flow
 
@@ -446,7 +500,8 @@ is disabled and shows a spinner; errors appear in the dialog, which stays open.
   page shows "Exception requested" and hides the button (`pending_exception_id`).
 - **Add org member** (Members page; org admin): email, and the org role as radio cards with one
   line each on what the role can do (Member, Security lead, Org admin). `USER_NOT_FOUND` shows
-  under the email field. Warden sends no invitations.
+  under the email field, and so does a `VALIDATION_FAILED` field error on `email` (an address
+  outside the org's allowed email domains). Warden sends no invitations.
 
 ## Phone layout
 

@@ -111,6 +111,24 @@ export function auditTargetSummary(e: Pick<AuditEntry, "action" | "target_type" 
       const days = (["critical", "high", "medium", "low"] as const).map((k) => str(to, k) ?? "?");
       return `SLA days ${days.join(" / ")}${d.recompute_open === true ? ", open issues recomputed" : ""}`;
     }
+    case "org.sign_in_policy_changed": {
+      const to = d.to && typeof d.to === "object" ? (d.to as Data) : undefined;
+      if (!to) return fallback;
+      const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null);
+      const roles = strings(to.mfa_roles);
+      const domains = strings(to.allowed_email_domains);
+      if (!roles || !domains) return fallback;
+      const roleText = roles.length ? roles.map((r) => label(ORG_ROLE_LABELS, r)).join(", ") : "no extra roles";
+      return `Two-factor for ${roleText}; domains ${domains.length ? domains.join(", ") : "any"}`;
+    }
+    case "user.relinked": {
+      const how = str(d, "via") === "sign-in" ? "at sign-in" : "by the operator";
+      return `${fallback} moved to a new sign-in identity ${how}`;
+    }
+    case "user.relink_allowed": {
+      const until = str(d, "until");
+      return until ? `${fallback} may move to a new sign-in identity until ${until}` : fallback;
+    }
     default:
       return fallback;
   }

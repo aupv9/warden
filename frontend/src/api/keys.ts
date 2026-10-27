@@ -8,6 +8,7 @@ export const qk = {
   orgDetail: (orgId: string) => ["org", orgId, "detail"] as const,
   summary: (orgId: string) => ["org", orgId, "summary"] as const,
   members: (orgId: string) => ["org", orgId, "members"] as const,
+  signIn: (orgId: string) => ["org", orgId, "sign-in"] as const,
   projects: (orgId: string) => ["org", orgId, "projects"] as const,
   project: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId] as const,
   projectMembers: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId, "members"] as const,

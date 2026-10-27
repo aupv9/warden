@@ -24,8 +24,9 @@ import (
 )
 
 type orgRow struct {
-	Name string
-	SLA  service.SLADays
+	Name   string
+	SLA    service.SLADays
+	SignIn service.SignInPolicy
 }
 
 type projectRow struct {
@@ -339,7 +340,8 @@ func (f *Fake) UserOrgs(_ context.Context, userID uuid.UUID) ([]service.OrgRef, 
 	var out []service.OrgRef
 	for k, role := range f.st.Members {
 		if k[1] == userID {
-			out = append(out, service.OrgRef{ID: k[0], Name: f.st.Orgs[k[0]].Name, Role: role})
+			o := f.st.Orgs[k[0]]
+			out = append(out, service.OrgRef{ID: k[0], Name: o.Name, Role: role, MFARoles: slices.Clone(o.SignIn.MFARoles)})
 		}
 	}
 	slices.SortFunc(out, func(a, b service.OrgRef) int { return cmp.Compare(a.Name, b.Name) })

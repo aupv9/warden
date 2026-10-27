@@ -2,11 +2,19 @@
 //
 //	warden-admin org create --name "Acme" --admin you@example.com
 //	warden-admin org set-role --org <org id> --email them@example.com --role org_admin
+//	warden-admin org add-member --org <org id> --email them@example.com --role member
+//	warden-admin user relink --email them@example.com --sub <new subject>
+//	warden-admin user relink --email them@example.com --next-sign-in [--within 24h]
 //	warden-admin audit verify --org <org id>
 //
-// org set-role is the break-glass path when nobody who can manage members can
-// sign in (for example, an admin lost their second factor). It is audited as
-// member.role_changed with no actor and data.via = "warden-admin".
+// org set-role and org add-member are the break-glass paths when nobody who can
+// manage members can sign in (for example, an admin lost their second factor,
+// or the org just moved to another identity provider). They are audited with no
+// actor and data.via = "warden-admin".
+//
+// user relink moves an account to a new identity-provider subject: either a
+// subject the operator knows (the refused sign-in logs it), or the next sign-in
+// with the same verified email within a window (default 24h, at most 7 days).
 //
 // It connects with the runtime DSN (WARDEN_DATABASE__DSN, role warden_app), not
 // the schema owner's: organization, org_member and app_user have no RLS and the
@@ -35,6 +43,9 @@ import (
 const usage = `usage:
   warden-admin org create --name NAME --admin EMAIL
   warden-admin org set-role --org ORG_ID --email EMAIL --role org_admin|security_lead|member
+  warden-admin org add-member --org ORG_ID --email EMAIL --role org_admin|security_lead|member
+  warden-admin user relink --email EMAIL --sub NEW_SUBJECT
+  warden-admin user relink --email EMAIL --next-sign-in [--within 24h]
   warden-admin audit verify --org ORG_ID`
 
 func main() {
@@ -106,6 +117,69 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		fmt.Fprintf(stdout, "%s: %s -> %s in %s (audited)\n", *email, from, *role, id)
+		return 0
+	case "org add-member":
+		fs := flag.NewFlagSet("org add-member", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		org := fs.String("org", "", "organization id")
+		email := fs.String("email", "", "user's email (must have signed in once)")
+		role := fs.String("role", "", "org_admin, security_lead or member")
+		if err := fs.Parse(args[2:]); err != nil || *email == "" || !validRole(*role) {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		id, err := uuid.Parse(*org)
+		if err != nil {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		d, closeDB, err := open(ctx)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer closeDB()
+		if err := store.AddOrgMember(ctx, d, id, *email, rbac.Role(*role)); errors.Is(err, store.ErrAdminNotFound) {
+			fmt.Fprintf(stderr, "%s: %v (ask them to sign in to the web UI first)\n", *email, err)
+			return 1
+		} else if err != nil {
+			fmt.Fprintf(stderr, "add %s to %s: %v\n", *email, id, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "added %s to %s as %s (audited)\n", *email, id, *role)
+		return 0
+	case "user relink":
+		fs := flag.NewFlagSet("user relink", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		email := fs.String("email", "", "account's email")
+		sub := fs.String("sub", "", "the account's subject at the new identity provider")
+		next := fs.Bool("next-sign-in", false, "let the next sign-in with this verified email take over the account")
+		within := fs.Duration("within", 24*time.Hour, "with --next-sign-in: how long the window stays open (max 168h)")
+		if err := fs.Parse(args[2:]); err != nil || *email == "" || (*sub == "") == !*next {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		d, closeDB, err := open(ctx)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer closeDB()
+		if *next {
+			until, err := store.AllowRelink(ctx, d, *email, *within)
+			if err != nil {
+				fmt.Fprintf(stderr, "relink %s: %v\n", *email, err)
+				return 1
+			}
+			fmt.Fprintf(stdout, "%s: the next sign-in with this verified email takes over the account, until %s (audited)\n",
+				*email, until.Format(time.RFC3339))
+			return 0
+		}
+		if err := store.RelinkUser(ctx, d, *email, *sub); err != nil {
+			fmt.Fprintf(stderr, "relink %s: %v\n", *email, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "%s now signs in with the new subject (audited)\n", *email)
 		return 0
 	case "audit verify":
 		fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)

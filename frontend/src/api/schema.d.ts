@@ -181,7 +181,7 @@ export interface paths {
         put?: never;
         /**
          * Add a user who has signed in once (manage_users)
-         * @description 404 USER_NOT_FOUND if no user with this email has signed in; 409 if already a member.
+         * @description 404 USER_NOT_FOUND if no user with this email has signed in; 409 if already a member. An address outside the org's allowed_email_domains is a 422 field error on email.
          */
         post: operations["addOrgMember"];
         delete?: never;
@@ -784,6 +784,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * How sign-in works for the org (org_admin, security_lead)
+         * @description Read-only view of the server's identity-provider settings and signing-key cache, plus the org's sign-in policy. Never fetches keys.
+         */
+        get: operations["signInSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/sign-in-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change the org's sign-in policy (org_admin)
+         * @description Can only tighten the server's rules. 409 MFA_NOT_ENABLED when the new policy would require a second factor for the caller's own role and their sign-in had none. Audited as org.sign_in_policy_changed.
+         */
+        put: operations["setSignInPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1162,7 +1208,7 @@ export interface components {
         };
         Error: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "MFA_NOT_ENABLED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL";
             message: string;
             /** @description VALIDATION_FAILED: {fields: {field: message}}. RATE_LIMITED: {retry_after: seconds}. */
             metadata?: {
@@ -1320,6 +1366,47 @@ export interface components {
             counts: components["schemas"]["SeverityCounts"];
             /** @description Active issues seen in this scan at or above fail_on, most severe first (at most 100). */
             blocking: components["schemas"]["IssueSummary"][];
+        };
+        SignInPolicy: {
+            mfa_roles: components["schemas"]["OrgRole"][];
+            allowed_email_domains: string[];
+        };
+        SignInPolicyRequest: {
+            /** @description Roles that must sign in with a second factor, in addition to the server's oidc.require_mfa_roles. */
+            mfa_roles: components["schemas"]["OrgRole"][];
+            /** @description Only addresses at these domains can be added as members (exact match, case-insensitive). Empty: any domain. */
+            allowed_email_domains: string[];
+        };
+        SignInSettings: {
+            provider: {
+                issuer: string;
+                audience: string;
+                algorithms: string[];
+                /** @description Pinned JWKS URL (oidc.jwks_url); null when discovered from the issuer. */
+                keys_url: string | null;
+                /** @description Link to the identity provider's admin console (oidc.console_url). */
+                console_url: string | null;
+            };
+            keys: {
+                /** @enum {string} */
+                status: "ok" | "error" | "not_loaded";
+                count: number;
+                /** Format: date-time */
+                fetched_at: string | null;
+                /**
+                 * @description Category of the last failed fetch (no error text: it can name internal hosts).
+                 * @enum {string|null}
+                 */
+                error: "unreachable" | "http_status" | "invalid_document" | "issuer_mismatch" | "no_usable_keys" | null;
+            };
+            mfa: {
+                amr: string[];
+                acr: string[];
+                instance_roles: components["schemas"]["OrgRole"][];
+                org_roles: components["schemas"]["OrgRole"][];
+                effective_roles: components["schemas"]["OrgRole"][];
+            };
+            policy: components["schemas"]["SignInPolicy"];
         };
     };
     responses: never;
@@ -4549,6 +4636,154 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    signInSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SignInSettings"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setSignInPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignInPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SignInSettings"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

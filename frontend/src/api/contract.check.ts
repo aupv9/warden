@@ -28,6 +28,10 @@ export type C20 = Fits<T.NotificationPref, S["NotificationPref"]>;
 export type C21 = Fits<T.AssignRule, S["AssignRule"]>;
 export type C22 = Fits<T.Metrics, S["Metrics"]>;
 export type C23 = Fits<T.IssueCounts, S["IssueCounts"]>;
+export type C24 = Fits<T.SignInSettings, S["SignInSettings"]>;
+// Every error code the server sends is one the UI knows, and the server's list has the newest.
+export type E1 = Fits<T.ApiErrorCode, S["Error"]["code"]>;
+export type E2 = Fits<S["Error"]["code"], "MFA_NOT_ENABLED">;
 // UI request bodies must fit what the server accepts.
 export type R1 = Fits<S["AddMemberRequest"], T.AddOrgMemberBody>;
 export type R2 = Fits<S["CreateProjectRequest"], T.CreateProjectBody>;
@@ -39,3 +43,4 @@ export type R7 = Fits<S["DecisionRequest"], T.DecisionBody>;
 export type R8 = Fits<S["CreateTokenRequest"], T.CreateTokenBody>;
 export type R9 = Fits<S["MarkReadRequest"], T.MarkReadBody>;
 export type R10 = Fits<S["OrgPolicyRequest"], T.UpdatePolicyBody>;
+export type R11 = Fits<S["SignInPolicyRequest"], T.SignInPolicyInput>;

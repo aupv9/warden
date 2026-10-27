@@ -207,7 +207,7 @@ func TestRLSIsolatesOrgsAndNonMembersGet404(t *testing.T) {
 	if _, err := w.svc.Org(ctx, leadA); code(err) != "NOT_FOUND" {
 		t.Fatal(err)
 	}
-	if _, err := w.svc.OrgRole(ctx, w.users["AAAlead"].ID, b.id); code(err) != "NOT_FOUND" {
+	if _, _, err := w.svc.OrgAccess(ctx, w.users["AAAlead"].ID, b.id); code(err) != "NOT_FOUND" {
 		t.Fatal(err)
 	}
 	// Even inside A's org scope, B's objects don't exist (RLS).
