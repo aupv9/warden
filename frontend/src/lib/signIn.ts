@@ -142,19 +142,8 @@ export function rolesText(roles: readonly OrgRole[]): string {
 // ---- Identity provider ----
 
 /** The operator's console link, only if it is an absolute http(s) URL; anything else
- *  (javascript:, data:, relative paths, junk) is not rendered as a link. */
-export function safeExternalUrl(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-  if (!url.hostname) return null;
-  return url.href;
-}
+ *  (javascript:, data:, relative paths, junk) is not rendered as a link. Shared: lib/url.ts. */
+export { safeExternalUrl } from "./url";
 
 const KEY_ERRORS: Record<SignInKeyError, string> = {
   unreachable: "Warden couldn't reach the identity provider to fetch its signing keys.",

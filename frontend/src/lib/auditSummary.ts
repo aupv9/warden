@@ -1,5 +1,6 @@
-import type { AuditEntry } from "../api/types";
+import type { AuditEntry, LicensePolicy } from "../api/types";
 import { EXCEPTION_TYPE_LABELS, formatBytes, formatDate, STATUS_LABELS } from "./format";
+import { licensePolicySummary } from "./licensePolicy";
 import { ORG_ROLE_LABELS, PROJECT_ROLE_LABELS } from "./permissions";
 
 // A one-line summary of an audit entry's target, built from target_type, target_id and data
@@ -120,6 +121,11 @@ export function auditTargetSummary(e: Pick<AuditEntry, "action" | "target_type" 
       if (!roles || !domains) return fallback;
       const roleText = roles.length ? roles.map((r) => label(ORG_ROLE_LABELS, r)).join(", ") : "no extra roles";
       return `Two-factor for ${roleText}; domains ${domains.length ? domains.join(", ") : "any"}`;
+    }
+    case "org.license_policy_changed": {
+      const to = d.to && typeof d.to === "object" ? (d.to as Partial<LicensePolicy>) : undefined;
+      const text = licensePolicySummary(to);
+      return text ? `License policy: ${text}` : fallback;
     }
     case "user.relinked": {
       const how = str(d, "via") === "sign-in" ? "at sign-in" : "by the operator";
