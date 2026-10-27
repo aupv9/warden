@@ -135,6 +135,28 @@ func TestTrivyParse(t *testing.T) {
 	}
 }
 
+// Trivy's license results (rule "pkg:SPDX", tag "license") are dropped: the
+// vulnerability findings, and so their fingerprints, are what they were
+// before licenses were scanned.
+func TestTrivyDropsLicenseResults(t *testing.T) {
+	msg := "Package: lodash\nInstalled Version: 4.17.20\nVulnerability CVE-2021-23337\nSeverity: HIGH\nFixed Version: 4.17.21"
+	vuln := st.M{"ruleId": "CVE-2021-23337", "message": st.M{"text": msg}, "locations": []any{st.Loc("app/package-lock.json", 1)}}
+	vulnRule := st.M{"id": "CVE-2021-23337", "properties": st.M{"tags": []any{"vulnerability", "security", "HIGH"}}}
+	license := st.M{"ruleId": "gpl-thing:GPL-3.0-only", "message": st.M{"text": "Artifact: app/package-lock.json\nLicense GPL-3.0-only\nPkgName: gpl-thing"},
+		"locations": []any{st.Loc("app/package-lock.json", 1)}}
+	licenseRule := st.M{"id": "gpl-thing:GPL-3.0-only", "properties": st.M{"tags": []any{"license", "security", "HIGH"}}}
+
+	before := parse(t, st.Doc([]any{vuln}, vulnRule), "trivy", sarif.Options{RootDir: "app"})
+	after := parse(t, st.Doc([]any{license, vuln, license}, licenseRule, vulnRule), "trivy", sarif.Options{RootDir: "app"})
+	if len(after) != 1 || after[0].Key() != before[0].Key() || after[0].Severity != before[0].Severity {
+		t.Fatalf("before %+v\nafter %+v", before, after)
+	}
+	// Other tools keep results whatever their tags.
+	if fs := parse(t, st.Doc([]any{license}, licenseRule), "checkov", sarif.Options{}); len(fs) != 1 {
+		t.Fatal(fs)
+	}
+}
+
 func TestResultCap(t *testing.T) {
 	results := make([]any, sarif.MaxResultsPerTool+1)
 	for i := range results {
