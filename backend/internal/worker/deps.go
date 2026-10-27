@@ -30,6 +30,8 @@ var _ orchestrator.Deps = (*liveDeps)(nil)
 
 func (d *liveDeps) ScratchRoot() string { return d.env.ScratchDir }
 
+func (d *liveDeps) Limits() orchestrator.Limits { return d.env.Limits }
+
 func (d *liveDeps) Download(ctx context.Context, key, dest string) error {
 	return d.env.Store.Download(ctx, key, dest)
 }

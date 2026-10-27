@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +27,7 @@ type fakeS3 struct {
 	status  int // forced status for every request when non-zero
 	lie     int // Content-Length to claim on GET when non-zero
 	reqs    []string
+	puts    map[string]http.Header // request headers of each PUT, by key
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +69,14 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			_, _ = w.Write([]byte(body))
 		}
+	case http.MethodPut:
+		b, _ := io.ReadAll(r.Body)
+		f.objects[key] = string(b)
+		if f.puts == nil {
+			f.puts = map[string]http.Header{}
+		}
+		f.puts[key] = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
 	case http.MethodDelete:
 		delete(f.objects, key)
 		w.WriteHeader(http.StatusNoContent)
@@ -290,5 +300,54 @@ func TestFromSection(t *testing.T) {
 	c := FromSection(config.StorageSection{Endpoint: "http://s3:8333", Bucket: "b", AccessKey: "ak", SecretKey: "sk"})
 	if c.Endpoint != "http://s3:8333" || c.Bucket != "b" || c.AccessKey != "ak" || c.SecretKey != "sk" || !c.ChecksumHeader {
 		t.Fatalf("%+v", c)
+	}
+}
+
+func TestPut(t *testing.T) {
+	f, c := newFake(t, map[string]string{})
+	ctx := context.Background()
+	if err := c.Put(ctx, "sboms/o/s.cdx.json", []byte("hello"), okSum, "application/vnd.cyclonedx+json"); err != nil {
+		t.Fatal(err)
+	}
+	h := f.puts["sboms/o/s.cdx.json"]
+	if f.objects["sboms/o/s.cdx.json"] != "hello" || h.Get("Content-Type") != "application/vnd.cyclonedx+json" ||
+		h.Get("X-Amz-Checksum-Sha256") != "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=" {
+		t.Fatalf("%v %v", f.objects, h)
+	}
+	if err := c.Put(ctx, "a", []byte("x"), "nothex", "text/plain"); err == nil {
+		t.Fatal("bad checksum accepted")
+	}
+	if err := c.Put(ctx, "../a", []byte("x"), okSum, "text/plain"); err == nil {
+		t.Fatal("bad key accepted")
+	}
+	f.status = http.StatusForbidden
+	if err := c.Put(ctx, "b", []byte("hello"), okSum, "text/plain"); err == nil {
+		t.Fatal("error swallowed")
+	}
+}
+
+func TestPresignGetIsAnAttachment(t *testing.T) {
+	_, c := newFake(t, nil)
+	ctx := context.Background()
+	raw, err := c.PresignGet(ctx, "sboms/o/s.cdx.json", 5*time.Minute, "WEB-0192f0c4.cdx.json", "application/vnd.cyclonedx+json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(raw)
+	q := u.Query()
+	if u.Path != "/bucket/sboms/o/s.cdx.json" || q.Get("response-content-disposition") != `attachment; filename="WEB-0192f0c4.cdx.json"` ||
+		q.Get("response-content-type") != "application/vnd.cyclonedx+json" || q.Get("X-Amz-Expires") != "300" {
+		t.Fatal(raw)
+	}
+	for _, name := range []string{"", `a"; filename="x.html`, "a\r\nX: y", "../x", strings.Repeat("a", 129)} {
+		if _, err := c.PresignGet(ctx, "k", time.Minute, name, "text/plain"); err == nil {
+			t.Errorf("name %q accepted", name)
+		}
+	}
+	if _, err := c.PresignGet(ctx, "k", 2*time.Hour, "a", "text/plain"); err == nil {
+		t.Fatal("long ttl accepted")
+	}
+	if _, err := c.PresignGet(ctx, "/k", time.Minute, "a", "text/plain"); err == nil {
+		t.Fatal("bad key accepted")
 	}
 }

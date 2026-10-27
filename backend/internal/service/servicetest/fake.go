@@ -24,9 +24,10 @@ import (
 )
 
 type orgRow struct {
-	Name   string
-	SLA    service.SLADays
-	SignIn service.SignInPolicy
+	Name          string
+	SLA           service.SLADays
+	SignIn        service.SignInPolicy
+	LicensePolicy []byte // JSON; nil reads as {}
 }
 
 type projectRow struct {
@@ -218,7 +219,7 @@ func (f *Fake) AddScan(project, by uuid.UUID, status string, size int64) uuid.UU
 	id := ids.New()
 	org := f.st.Projects[project].OrgID
 	f.st.Scans[id] = scanRow{CreatedByID: by, Scan: service.Scan{ID: id, OrgID: org, ProjectID: project, Status: status,
-		FileName: "src.zip", FileSize: size, Tools: []string{"gitleaks"}, CreatedAt: service.Time(f.tick()),
+		FileName: "src.zip", FileSize: size, Tools: []string{"gitleaks"}, CreatedAt: service.Time(f.tick()), Kind: "source",
 		ObjectKey: service.ObjectKey(org, id), SHA256: strings.Repeat("a", 64)}}
 	return id
 }
@@ -677,7 +678,7 @@ func (f *Fake) InsertScan(_ context.Context, s service.NewScan) error {
 	}
 	f.st.Scans[s.ID] = scanRow{CreatedByID: s.CreatedBy, Scan: service.Scan{ID: s.ID, OrgID: s.OrgID, ProjectID: s.ProjectID,
 		Status: "pending_upload", FileName: s.FileName, FileSize: s.FileSize, Tools: s.Tools, CreatedAt: service.Time(f.Now),
-		ObjectKey: s.ObjectKey, SHA256: s.SHA256}, ViaToken: s.ViaToken}
+		ObjectKey: s.ObjectKey, SHA256: s.SHA256, Kind: "source"}, ViaToken: s.ViaToken}
 	return nil
 }
 

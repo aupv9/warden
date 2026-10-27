@@ -260,6 +260,7 @@ type Repo interface {
 	TokenRepo
 	GateRepo
 	SignInRepo
+	LicensePolicyRepo // licenses.go
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }
@@ -273,6 +274,9 @@ type ObjectStore interface {
 	PresignPut(ctx context.Context, key string, size int64, sha256Hex string, ttl time.Duration) (url string, headers map[string]string, err error)
 	// Head returns the stored object's size, or ErrObjectNotFound.
 	Head(ctx context.Context, key string) (size int64, err error)
+	// PresignGet returns a URL valid for ttl that downloads key as an
+	// attachment named filename, with the given content type.
+	PresignGet(ctx context.Context, key string, ttl time.Duration, filename, contentType string) (url string, err error)
 }
 
 // ErrObjectNotFound is returned by ObjectStore.Head for a missing object.

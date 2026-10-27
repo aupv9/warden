@@ -34,7 +34,7 @@ func TestDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.App.Name != "warden" || c.Server.Port != 8010 || c.Scan.Timeout != 30*time.Minute ||
-		c.OIDC.Audience != "warden-api" || c.Scan.SandboxRuntime != "runsc" {
+		c.OIDC.Audience != "warden-api" || c.Scan.SandboxRuntime != "runsc" || c.Scan.SBOMRetention != 8760*time.Hour {
 		t.Fatalf("%+v", c)
 	}
 }

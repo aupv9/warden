@@ -75,6 +75,10 @@ func (o *objects) PresignPut(_ context.Context, key string, size int64, _ string
 	return "https://s3.test/" + key, map[string]string{"Content-Length": fmt.Sprint(size)}, nil
 }
 
+func (o *objects) PresignGet(_ context.Context, key string, _ time.Duration, filename, _ string) (string, error) {
+	return "https://s3.test/" + key + "?name=" + filename, nil
+}
+
 func (o *objects) Head(_ context.Context, key string) (int64, error) {
 	if n, ok := o.sizes[key]; ok {
 		return n, nil

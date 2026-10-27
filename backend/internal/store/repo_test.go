@@ -260,7 +260,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	desc := "d"
 	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now, nil}
 	scanRow := []any{scan, org, proj, "queued", "a.zip", int64(10), []string{"trivy"}, nil, service.ScanStats{Total: 2},
-		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil}
+		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil, "source", "", nil, "sboms/k", int64(9), "abc", 4}
 	r, _ := repoWith(on(map[string][][]any{
 		"LEFT JOIN LATERAL":                           {projRow},
 		"SELECT (SELECT pm.role":                      {{"developer"}},
@@ -293,7 +293,8 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	if n, oldest, err := r.ScansSince(ctx, user, now); err != nil || n != 2 || !oldest.Equal(now) {
 		t.Fatal(n, oldest, err)
 	}
-	if s, err := r.Scan(ctx, scan, true); err != nil || s.Stats.Total != 2 || s.CreatedBy.ID != user || s.QueuedAt == nil {
+	if s, err := r.Scan(ctx, scan, true); err != nil || s.Stats.Total != 2 || s.CreatedBy.ID != user || s.QueuedAt == nil ||
+		s.Kind != "source" || s.SBOM == nil || s.SBOM.Components != 4 || s.SBOM.Key != "sboms/k" {
 		t.Fatal(s, err)
 	}
 	if s, err := r.Scans(ctx, proj, &service.ScanCursor{CreatedAt: now, ID: scan}, 10); err != nil || len(s) != 1 {
