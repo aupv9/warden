@@ -205,6 +205,93 @@ describe("every screen renders with mock data", () => {
     expect(member).not.toContain("Save policy");
   });
 
+  it("org settings, sign-in: security leads read, members don't see it", async () => {
+    const html = await render(`${org()}/settings`);
+    const t = text(html);
+    expect(t).toContain("Identity provider");
+    expect(t).toContain("https://id.acme.example/realms/warden");
+    expect(t).toContain("Discovered from the issuer");
+    expect(t).toContain("2 signing keys loaded, last refreshed");
+    expect(t).toContain("set up at the identity provider, not in Warden");
+    expect(html).toMatch(/<a href="https:\/\/id\.acme\.example\/admin\/warden\/console\/" target="_blank" rel="noopener noreferrer">Open identity provider console/);
+    expect(t).toMatch(/Org admin : required · Required by the server/);
+    expect(t).toMatch(/Member : not required/);
+    expect(t).toContain("All org admins and security leads have signed in with two-factor.");
+    expect(t).toContain("acme.example");
+    expect(t).toContain("Only org admins can change the sign-in policy");
+    expect(t).not.toContain("Save sign-in policy");
+    expect(html).not.toContain('id="mfa-role-member"');
+
+    const member = text(await render(`/orgs/${db.ORG2_ID}/settings`));
+    expect(member).not.toContain("Identity provider");
+    expect(member).not.toContain("Sign-in policy");
+  });
+
+  it("mock API follows the sign-in contract: roles, 422 field errors, 409 MFA_NOT_ENABLED, the domain rule", async () => {
+    const { mockFetch } = await import("../api/mock/server");
+    const call = async (method: string, path: string, body?: unknown) => {
+      const r = await mockFetch(`/api/v1${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { status: r.status, json: (await r.json()) as { data: { policy?: unknown } | null; error: { code: string; metadata?: { fields?: Record<string, string> } } | null } };
+    };
+    const signIn = `/orgs/${db.ORG_ID}/sign-in`;
+    const put = `/orgs/${db.ORG_ID}/sign-in-policy`;
+    expect((await call("GET", signIn)).status).toBe(200);
+    expect((await call("GET", `/orgs/${db.ORG2_ID}/sign-in`)).status).toBe(403);
+    expect((await call("PUT", put, { mfa_roles: [], allowed_email_domains: [] })).status).toBe(403);
+
+    const eng = db.me.orgs.find((o) => o.id === db.ORG_ID)!;
+    const before = { role: eng.role, settings: db.signIn[db.ORG_ID]! };
+    eng.role = "org_admin";
+    try {
+      const bad = await call("PUT", put, { mfa_roles: ["member", "member"], allowed_email_domains: ["ok.example", "*.example.com", "OK.example"] });
+      expect(bad.status).toBe(422);
+      expect(bad.json.error?.metadata?.fields).toEqual({
+        mfa_roles: expect.any(String),
+        "allowed_email_domains[1]": expect.any(String),
+        "allowed_email_domains[2]": "duplicate domain",
+      });
+      // Requiring a role for the caller's own role, newly, without a second factor.
+      db.signIn[db.ORG_ID] = { ...before.settings, mfa: { ...before.settings.mfa, instance_roles: [], effective_roles: [] } };
+      const locked = await call("PUT", put, { mfa_roles: ["org_admin"], allowed_email_domains: [] });
+      expect(locked.status).toBe(409);
+      expect(locked.json.error?.code).toBe("MFA_NOT_ENABLED");
+      db.signIn[db.ORG_ID] = before.settings;
+      const ok = await call("PUT", put, { mfa_roles: ["member"], allowed_email_domains: ["acme.example", "corp.acme.example"] });
+      expect(ok.status).toBe(200);
+      expect(ok.json.data?.policy).toEqual({ mfa_roles: ["member"], allowed_email_domains: ["acme.example", "corp.acme.example"] });
+      const add = await call("POST", `/orgs/${db.ORG_ID}/members`, { email: "someone@elsewhere.example", role: "member" });
+      expect(add.status).toBe(422);
+      expect(add.json.error?.metadata?.fields?.email).toBe("must be an address at one of: acme.example, corp.acme.example");
+    } finally {
+      eng.role = before.role;
+      db.signIn[db.ORG_ID] = before.settings;
+    }
+  });
+
+  it("org settings, sign-in: org admins edit; server-required roles are fixed", async () => {
+    const asAdmin = { ...db.me, orgs: db.me.orgs.map((o) => (o.id === db.ORG_ID ? { ...o, role: "org_admin" as const } : o)) };
+    const html = await render(`${org()}/settings`, (qc) => qc.setQueryData(qk.me, asAdmin));
+    const t = text(html);
+    expect(t).toContain("Save sign-in policy");
+    expect(html).toMatch(/<button type="submit"[^>]*disabled=""[^>]*>Save sign-in policy/);
+    expect(html).toMatch(/<legend[^>]*>Require two-factor sign-in for<\/legend>/);
+    const checkbox = (role: string) => html.match(new RegExp(`<input id="mfa-role-${role}"[^>]*>`))?.[0] ?? "";
+    for (const fixed of ["org_admin", "security_lead"]) {
+      expect(checkbox(fixed)).toContain('checked=""');
+      expect(checkbox(fixed)).toContain('disabled=""');
+      expect(checkbox(fixed)).toContain(`aria-describedby="mfa-role-${fixed}-h"`);
+    }
+    expect(checkbox("member")).toContain('type="checkbox"');
+    expect(checkbox("member")).not.toContain("checked");
+    expect(checkbox("member")).not.toContain("disabled");
+    expect(t).toContain("Required by the server");
+    expect(html).toContain('value="acme.example"');
+    expect(html).toContain('aria-label="Remove acme.example"');
+    expect(t).toContain("1 of 20");
+    expect(t).toContain("Existing members stay");
+    expect(t).not.toContain("Only org admins can change the sign-in policy");
+  });
+
   it("notification preferences and the bell", async () => {
     const html = await render(`${org()}/preferences`);
     const t = text(html);

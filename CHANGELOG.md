@@ -22,6 +22,15 @@ All notable changes to Warden are listed here. The format follows
 - Overview page with metrics: open issues by severity over time, new vs fixed, time to fix,
   SLA compliance; counts on every saved view.
 - Route-level code splitting in the web UI (entry chunk 586 kB → 70 kB).
+- Sign-in settings for org admins and security leads: a read-only view of how Warden trusts
+  the identity provider (issuer, audience, algorithms, signing-key status, second-factor
+  claims, optional console link from `WARDEN_OIDC__CONSOLE_URL`), and an org sign-in policy
+  that can only tighten the server's rules: require a second factor for more roles, and limit
+  new members to allowed email domains. An admin can't require a second factor for their own
+  role without having one (`409 MFA_NOT_ENABLED`).
+- `warden-admin org add-member` and `warden-admin user relink` (`--sub`, or `--next-sign-in`
+  within a window of up to 7 days) for moving accounts to another identity provider. Accounts
+  are still never linked by email automatically.
 
 ### Changed
 

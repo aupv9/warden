@@ -11,11 +11,11 @@ import (
 	"github.com/aupv9/warden/backend/internal/service"
 )
 
-const userCols = `id, keycloak_sub, email::text, display_name, is_active, last_mfa`
+const userCols = `id, keycloak_sub, email::text, display_name, is_active, last_mfa, relink_until`
 
 func scanUser(row pgx.Row) (service.User, error) {
 	var u service.User
-	err := row.Scan(&u.ID, &u.Sub, &u.Email, &u.DisplayName, &u.IsActive, &u.MFA)
+	err := row.Scan(&u.ID, &u.Sub, &u.Email, &u.DisplayName, &u.IsActive, &u.MFA, &u.RelinkUntil)
 	return u, mapErr(err)
 }
 
@@ -40,11 +40,15 @@ func (r *Repo) UpdateUser(ctx context.Context, u service.User) error {
 }
 
 func (r *Repo) UserOrgs(ctx context.Context, userID uuid.UUID) ([]service.OrgRef, error) {
-	rows, _ := r.tx.Query(ctx, `SELECT o.id, o.name, m.role::text FROM org_member m
+	rows, _ := r.tx.Query(ctx, `SELECT o.id, o.name, m.role::text, o.mfa_roles::text[] FROM org_member m
 		JOIN organization o ON o.id = m.org_id WHERE m.user_id = $1 ORDER BY o.name, o.id`, userID)
 	return collect(rows, func(row pgx.CollectableRow) (service.OrgRef, error) {
-		var o service.OrgRef
-		err := row.Scan(&o.ID, &o.Name, (*string)(&o.Role))
+		var (
+			o     service.OrgRef
+			roles []string
+		)
+		err := row.Scan(&o.ID, &o.Name, (*string)(&o.Role), &roles)
+		o.MFARoles = toRoles(roles)
 		return o, err
 	})
 }

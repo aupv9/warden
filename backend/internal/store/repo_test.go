@@ -158,8 +158,8 @@ func TestRepoUsers(t *testing.T) {
 	id, org := uuid.New(), uuid.New()
 	mfa := true
 	r, _ := repoWith(on(map[string][][]any{
-		"FROM app_user WHERE":    {{id, "sub", "a@b.c", "A", true, &mfa}},
-		"FROM org_member m\n":    {{org, "Acme", "org_admin"}},
+		"FROM app_user WHERE":    {{id, "sub", "a@b.c", "A", true, &mfa, nil}},
+		"FROM org_member m\n":    {{org, "Acme", "org_admin", []string{"member"}}},
 		"SELECT role::text":      {{"member"}},
 		"FROM organization":      {{org, "Acme", service.SLADays{Critical: 7}}},
 		"SELECT id, email::text": {{id, "a@b.c", "A"}},
@@ -176,7 +176,7 @@ func TestRepoUsers(t *testing.T) {
 	if err := r.UpdateUser(ctx, service.User{ID: id}); err != nil {
 		t.Fatal(err)
 	}
-	if o, err := r.UserOrgs(ctx, id); err != nil || len(o) != 1 || o[0].Role != rbac.OrgAdmin {
+	if o, err := r.UserOrgs(ctx, id); err != nil || len(o) != 1 || o[0].Role != rbac.OrgAdmin || len(o[0].MFARoles) != 1 {
 		t.Fatal(o, err)
 	}
 	if role, err := r.MemberRole(ctx, org, id); err != nil || role != rbac.Member {

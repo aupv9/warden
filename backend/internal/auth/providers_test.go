@@ -208,3 +208,86 @@ func TestMFAPolicy(t *testing.T) {
 		t.Fatal("MFAOf")
 	}
 }
+
+func TestKeyStatus(t *testing.T) {
+	srv, _ := provider(t, oktaDoc, jwkOf("k1", &testKey.PublicKey, "sig"), ecJWK("e1", &ecTestKey.PublicKey))
+	iss := srv.URL + "/oauth2/default"
+	j := NewJWKS(iss, "", time.Minute, []string{"RS256"})
+	if st := j.Status(); st != (KeyStatus{}) {
+		t.Fatalf("before any fetch: %+v", st)
+	}
+	if _, err := j.Key(context.Background(), "k1"); err != nil {
+		t.Fatal(err)
+	}
+	st := j.Status()
+	if st.Count != 1 || st.FetchedAt.IsZero() || st.Err != "" { // the EC key isn't usable for RS256
+		t.Fatalf("after fetch: %+v", st)
+	}
+
+	notJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<html>")) }))
+	t.Cleanup(notJSON.Close)
+	// A failed fetch records only the category.
+	for _, tc := range []struct {
+		name, issuer, pinned, want string
+	}{
+		{"unreachable", "http://127.0.0.1:1/realms/x", "", KeyErrUnreachable},
+		{"no discovery document", srv.URL + "/missing", "", KeyErrHTTPStatus},
+		{"not JSON", notJSON.URL, "", KeyErrInvalidDocument},
+		{"pinned URL is not a key set", iss, srv.URL + "/oauth2/default/.well-known/openid-configuration", KeyErrNoUsableKeys},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := NewJWKS(tc.issuer, tc.pinned, time.Minute, []string{"RS256"})
+			if _, err := j.Key(context.Background(), "k1"); err == nil {
+				t.Fatal("fetch succeeded")
+			}
+			if st := j.Status(); st.Err != tc.want || st.Count != 0 || strings.Contains(st.Err, "127.0.0.1") {
+				t.Fatalf("%+v, want %s", st, tc.want)
+			}
+		})
+	}
+
+	t.Run("issuer named wrongly by discovery", func(t *testing.T) {
+		srv, _ := provider(t, func(base string) map[string]any {
+			return map[string]any{"issuer": "https://evil.example", "jwks_uri": base + "/oauth2/default/v1/keys"}
+		}, jwkOf("k1", &testKey.PublicKey, "sig"))
+		j := NewJWKS(srv.URL+"/oauth2/default", "", time.Minute, []string{"RS256"})
+		_, _ = j.Key(context.Background(), "k1")
+		if st := j.Status(); st.Err != KeyErrIssuerMismatch {
+			t.Fatalf("%+v", st)
+		}
+	})
+
+	t.Run("error clears after a good fetch", func(t *testing.T) {
+		var fail atomic.Bool
+		fail.Store(true)
+		inner, _ := provider(t, oktaDoc, jwkOf("k1", &testKey.PublicKey, "sig"))
+		front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if fail.Load() {
+				http.Error(w, "down", http.StatusBadGateway)
+				return
+			}
+			resp, err := http.Get(inner.URL + r.URL.Path)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer resp.Body.Close()
+			var v any
+			_ = json.NewDecoder(resp.Body).Decode(&v)
+			_ = json.NewEncoder(w).Encode(v)
+		}))
+		t.Cleanup(front.Close)
+		j := NewJWKS(inner.URL+"/oauth2/default", front.URL+"/oauth2/default/v1/keys", time.Minute, []string{"RS256"})
+		_, _ = j.Key(context.Background(), "k1")
+		if j.Status().Err != KeyErrHTTPStatus {
+			t.Fatalf("%+v", j.Status())
+		}
+		fail.Store(false)
+		if _, err := j.Key(context.Background(), "k1"); err != nil {
+			t.Fatal(err)
+		}
+		if st := j.Status(); st.Err != "" || st.Count != 1 {
+			t.Fatalf("%+v", st)
+		}
+	})
+}

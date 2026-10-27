@@ -17,10 +17,12 @@ import type {
   NotificationType,
   Org,
   OrgMember,
+  OrgRole,
   Project,
   ProjectMember,
   Scan,
   Severity,
+  SignInSettings,
   UserRef,
 } from "../types";
 
@@ -42,8 +44,15 @@ export const ORG2_ID = uuid();
 /** An org where the caller is an org admin and two-factor sign-in is required (v0.2 MFA rule). */
 export const ORG3_ID = uuid();
 
+const PARAMS = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
 /** `?mock_bulk=1` adds hundreds of tokens and notifications, to check long lists. */
-const BULK = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("mock_bulk") === "1";
+const BULK = PARAMS.get("mock_bulk") === "1";
+/** `?mock_role=org_admin` (or member) changes the caller's role in Acme Engineering, e.g. to edit
+ *  the sign-in policy, which only org admins may. Default: security lead. */
+const ROLE_PARAM = PARAMS.get("mock_role");
+const ENG_ROLE: OrgRole = ROLE_PARAM === "org_admin" || ROLE_PARAM === "member" ? ROLE_PARAM : "security_lead";
+/** `?mock_keys=error` or `?mock_keys=not_loaded` shows the other identity-provider key states. */
+const KEYS_PARAM = PARAMS.get("mock_keys");
 
 const u = (display_name: string, email: string): UserRef => ({ id: uuid(), display_name, email });
 export const users = {
@@ -64,7 +73,7 @@ export const me: Me = {
   // in without a second factor: blocked in Acme Security (org admin), fine elsewhere.
   mfa: false,
   orgs: [
-    { id: ORG_ID, name: "Acme Engineering", role: "security_lead" },
+    { id: ORG_ID, name: "Acme Engineering", role: ENG_ROLE },
     { id: ORG2_ID, name: "Acme Labs", role: "member" },
     { id: ORG3_ID, name: "Acme Security", role: "org_admin" },
   ],
@@ -76,7 +85,7 @@ export const org: Org = {
   id: ORG_ID,
   name: "Acme Engineering",
   sla_days: { critical: 7, high: 30, medium: 90, low: 180 },
-  my_role: "security_lead",
+  my_role: ENG_ROLE,
 };
 
 /** Acme Labs: the caller is a plain member there, so policy is read-only. */
@@ -132,13 +141,55 @@ export const projectMembers: Record<string, ProjectMember[]> = {
 };
 
 export const orgMembers: OrgMember[] = [
-  { user: { ...users.linh, is_active: true }, role: "security_lead", mfa: true, projects: [] },
+  { user: { ...users.linh, is_active: true }, role: ENG_ROLE, mfa: true, projects: [] },
   { user: { ...users.huy, is_active: true }, role: "org_admin", mfa: true, projects: [] },
   { user: { ...users.minh, is_active: true }, role: "member", mfa: true, projects: [] },
   { user: { ...users.an, is_active: true }, role: "member", mfa: false, projects: [] },
   { user: { ...users.bao, is_active: false }, role: "member", mfa: null, projects: [] },
   { user: { ...users.quynh, is_active: true }, role: "member", mfa: true, projects: [] },
 ];
+
+function signInSettings(policy: SignInSettings["policy"]): SignInSettings {
+  const instance: OrgRole[] = ["org_admin", "security_lead"];
+  const keys: SignInSettings["keys"] =
+    KEYS_PARAM === "error"
+      ? { status: "error", count: 2, fetched_at: ago(3 * H), error: "unreachable" }
+      : KEYS_PARAM === "not_loaded"
+        ? { status: "not_loaded", count: 0, fetched_at: null, error: null }
+        : { status: "ok", count: 2, fetched_at: ago(7 * 60_000), error: null };
+  return {
+    provider: {
+      issuer: "https://id.acme.example/realms/warden",
+      audience: "warden-api",
+      algorithms: ["RS256"],
+      keys_url: null,
+      console_url: "https://id.acme.example/admin/warden/console/",
+    },
+    keys,
+    mfa: {
+      amr: ["otp", "mfa", "hwk", "webauthn"],
+      acr: [],
+      // Like `oidc.require_mfa_roles=["org_admin","security_lead"]`. The mock doesn't apply it to
+      // the caller (me.mfa_required_orgs decides who is blocked), so the screens stay usable.
+      instance_roles: instance,
+      org_roles: policy.mfa_roles,
+      effective_roles: (["org_admin", "security_lead", "member"] as OrgRole[]).filter((r) => instance.includes(r) || policy.mfa_roles.includes(r)),
+    },
+    policy,
+  };
+}
+
+/** GET/PUT …/sign-in(-policy) state per org; the server mock rebuilds it on every save. */
+export const signIn: Record<string, SignInSettings> = {
+  [ORG_ID]: signInSettings({ mfa_roles: [], allowed_email_domains: ["acme.example"] }),
+  [ORG2_ID]: signInSettings({ mfa_roles: [], allowed_email_domains: [] }),
+};
+
+export function rebuildSignIn(orgId: string, policy: SignInSettings["policy"]): SignInSettings {
+  const next = signInSettings(policy);
+  signIn[orgId] = next;
+  return next;
+}
 
 function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
   const created = ago(createdAgo);

@@ -119,7 +119,7 @@ func TestMembershipIsRecheckedInTransaction(t *testing.T) {
 	if _, err := x.s.Org(context.Background(), a); err == nil || status(err) != 0 {
 		t.Fatal(err)
 	}
-	if _, err := x.s.OrgRole(context.Background(), x.u, x.org); err == nil {
+	if _, _, err := x.s.OrgAccess(context.Background(), x.u, x.org); err == nil {
 		t.Fatal("error swallowed")
 	}
 }

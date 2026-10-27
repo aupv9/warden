@@ -49,6 +49,7 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	o.GET("/audit-log", h.auditLog)
 
 	registerTokenRoutes(o, h.svc)
+	h.signInRoutes(o)  // signin.go
 	h.v02Routes(v1, o) // notifications, policy and automation, metrics (notify.go)
 }
 
