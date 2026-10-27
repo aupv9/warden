@@ -331,6 +331,16 @@ export function ArrowDownIcon({ size = 14 }: P) {
   );
 }
 
+export function DownloadIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M12 4v12" />
+      <path d="M7 11l5 5 5-5" />
+      <path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3" />
+    </Svg>
+  );
+}
+
 export function TrashIcon({ size = 14 }: P) {
   return (
     <Svg size={size}>

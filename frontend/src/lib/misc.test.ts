@@ -4,7 +4,8 @@ import { assignResultText, intersectMembers } from "../routes/AssignForm";
 import { auditApiFilters, parseAuditParams } from "../routes/AuditLog";
 import { parseTab } from "../routes/Exceptions";
 import { auditDataText, auditTargetSummary } from "./auditSummary";
-import { dueText, fromDateInput, isRejected, scanErrorMessages } from "./format";
+import { dueText, fromDateInput } from "./format";
+import { isRejected, scanErrorMessages, withDefaults } from "./scanErrors";
 
 const m = (id: string, role: ProjectMember["role"] = "developer"): ProjectMember => ({
   user: { id, email: `${id}@example.com`, display_name: id },
@@ -29,9 +30,21 @@ describe("scan display", () => {
     expect(isRejected({ status: "failed", error_code: "CHECKSUM_MISMATCH" })).toBe(true);
     expect(isRejected({ status: "failed", error_code: "TIMEOUT" })).toBe(false);
     expect(isRejected({ status: "completed", error_code: "ZIP_BOMB" })).toBe(false);
+    // v0.3: a refused image .tar is rejected the same way.
+    for (const code of ["IMAGE_INVALID", "IMAGE_TOO_LARGE", "IMAGE_MULTIPLE"]) {
+      expect(isRejected({ status: "failed", error_code: code })).toBe(true);
+    }
+  });
+  it("words the image scan error codes", () => {
+    expect(scanErrorMessages("IMAGE_INVALID").full).toMatch(/^The file isn't a docker save archive with one image\./);
+    expect(scanErrorMessages("IMAGE_INVALID").short).toBe("not a docker save archive");
+    expect(scanErrorMessages("IMAGE_MULTIPLE").full).toContain("more than one image");
+    expect(scanErrorMessages("IMAGE_TOO_LARGE", { ...withDefaults(null), image_upload_max_mb: 4096 }).full).toContain("4 GB");
+    // An older server without the v0.3 limit still gets a full set.
+    expect(withDefaults({ upload_max_mb: 50 } as never)).toMatchObject({ upload_max_mb: 50, image_upload_max_mb: 2048 });
   });
   it("uses the server limits in messages and falls back for unknown codes", () => {
-    const limits = { upload_max_mb: 50, unzip_max_mb: 2048, unzip_max_files: 5000, scan_timeout_minutes: 45, scans_per_hour: 5 };
+    const limits = { upload_max_mb: 50, unzip_max_mb: 2048, unzip_max_files: 5000, scan_timeout_minutes: 45, scans_per_hour: 5, image_upload_max_mb: 2048 };
     expect(scanErrorMessages("ZIP_TOO_LARGE", limits).short).toBe("archive over 50 MB");
     expect(scanErrorMessages("ZIP_BOMB", limits).full).toMatch(/more than 2 GB/);
     expect(scanErrorMessages("TIMEOUT", limits).short).toBe("took over 45 min");

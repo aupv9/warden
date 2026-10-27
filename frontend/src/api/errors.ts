@@ -30,6 +30,8 @@ export const MESSAGES: Record<string, string> = {
   UPLOAD_FAILED: "The connection dropped. Your file is fine; try again.",
   UPLOAD_ABORTED: "Upload cancelled.",
   HASH_FAILED: "The browser couldn't read this file. Choose it again.",
+  // v0.3: a download link that isn't an absolute http(s) URL is never followed.
+  BAD_DOWNLOAD_URL: "The server sent a download link Warden doesn't follow. Tell your operator.",
 };
 
 const SERVER_ERROR = "Warden didn't answer. Check your connection and try again.";

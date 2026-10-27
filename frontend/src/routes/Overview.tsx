@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { useSearchParams } from "react-router";
-import { useMetrics } from "../api/hooks/metrics";
+import { Link, useSearchParams } from "react-router";
+import { useIssueCounts, useMetrics } from "../api/hooks/metrics";
 import { useProjects } from "../api/hooks/projects";
 import { METRICS_DAYS } from "../api/types";
 import type { Metrics, MetricsDays } from "../api/types";
@@ -13,6 +13,7 @@ import { ErrorState, Skeleton, SkeletonBlock } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { SEVERITY_LABELS } from "../lib/format";
 import { bucketNewFixed, dayLabel, formatHours, openTotal, percent, signed, slaShare, sum, TREND_KEYS } from "../lib/metrics";
+import { DEFAULT_FILTERS, issueListHref } from "../lib/issueFilters";
 import { usePageTitle } from "../lib/usePageTitle";
 
 export function parseDays(v: string | null): MetricsDays {
@@ -28,6 +29,7 @@ export function OverviewPage() {
   const projectId = params.get("project") ?? "";
   const projects = useProjects(orgId);
   const metrics = useMetrics(orgId, days, projectId || undefined);
+  const counts = useIssueCounts(orgId, projectId || undefined);
   const set = (key: string, value: string | null) =>
     setParams(
       (prev) => {
@@ -75,7 +77,20 @@ export function OverviewPage() {
           <OverviewSkeleton />
         ) : (
           <div className={metrics.isPlaceholderData ? "overview is-refetching" : "overview"}>
-            <OverviewBody m={metrics.data} scope={scope} />
+            <OverviewBody
+              m={metrics.data}
+              scope={scope}
+              kev={
+                // v0.3: active issues with a CVE in CISA KEV, now (not over the range); links to that view.
+                <Stat
+                  label="Known exploited"
+                  value={counts.data?.kev}
+                  note="Open, in CISA KEV"
+                  danger
+                  to={issueListHref(orgId, { ...DEFAULT_FILTERS, kev: true, project: projectId })}
+                />
+              }
+            />
           </div>
         )}
       </div>
@@ -89,8 +104,8 @@ function OverviewSkeleton() {
       <span role="status" className="visually-hidden">
         Loading the overview…
       </span>
-      <div className="stat-strip">
-        {[0, 1, 2, 3].map((i) => (
+      <div className="stat-strip stat-strip-5">
+        {[0, 1, 2, 3, 4].map((i) => (
           <div key={i} className="stat">
             <Skeleton width="50%" height={10} />
             <Skeleton width="30%" height={20} style={{ marginTop: 8 }} />
@@ -104,7 +119,7 @@ function OverviewSkeleton() {
   );
 }
 
-function OverviewBody({ m, scope }: { m: Metrics; scope: string }) {
+function OverviewBody({ m, scope, kev }: { m: Metrics; scope: string; kev: ReactNode }) {
   const last = m.open_by_day[m.open_by_day.length - 1];
   const first = m.open_by_day[0];
   const added = sum(m.new_by_day);
@@ -123,11 +138,12 @@ function OverviewBody({ m, scope }: { m: Metrics; scope: string }) {
 
   return (
     <>
-      <div className="stat-strip">
+      <div className="stat-strip stat-strip-5">
         <Stat label="Open now" value={openTotal(last)} note={`${scope}`} />
         <Stat label={`New in ${m.days} days`} value={added} />
         <Stat label={`Fixed in ${m.days} days`} value={fixed} note={added ? `${signed(fixed - added)} vs new` : undefined} />
         <Stat label="Open past SLA" value={m.sla.open_overdue} danger={m.sla.open_overdue > 0} />
+        {kev}
       </div>
 
       <ChartCard
@@ -231,11 +247,17 @@ function OverviewBody({ m, scope }: { m: Metrics; scope: string }) {
   );
 }
 
-function Stat({ label, value, note, danger }: { label: string; value: number; note?: string; danger?: boolean }) {
+function Stat({ label, value, note, danger, to }: { label: string; value: number | undefined; note?: string; danger?: boolean; to?: string }) {
   return (
     <div className="stat">
-      <div className="stat-label">{label}</div>
-      <div className={danger ? "stat-value danger-text" : "stat-value"}>{value.toLocaleString("en-US")}</div>
+      {to ? (
+        <Link to={to} className="stat-label">
+          {label}
+        </Link>
+      ) : (
+        <div className="stat-label">{label}</div>
+      )}
+      <div className={danger && value ? "stat-value danger-text" : "stat-value"}>{value === undefined ? "–" : value.toLocaleString("en-US")}</div>
       {note && <div className="stat-note faint">{note}</div>}
     </div>
   );
