@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/migrations"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
+	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 )
 
 var ownerPool, appPool *pgxpool.Pool
@@ -106,7 +108,8 @@ func newITest(t *testing.T) *itest {
 	it.env = &Env{Tx: PoolTx(appPool), Store: it.store, Sandbox: it.sb, Now: time.Now, Log: quietLog(),
 		Settings: Settings{ScratchDir: scratch, MirrorDir: "/mirror", Runtime: "runc", Images: testImages,
 			HMACMaster: bytes.Repeat([]byte("m"), 32), GuardRatio: 0.5, ScanTimeout: time.Minute,
-			SourceRetention: time.Hour, AbandonUploadAfter: time.Hour, StuckAfter: 24 * time.Hour}}
+			SourceRetention: time.Hour, AbandonUploadAfter: time.Hour, StuckAfter: 24 * time.Hour,
+			Limits: orchestrator.Limits{Zip: zipcheck.DefaultLimits()}, SBOMRetention: 24 * time.Hour}}
 	return it
 }
 
@@ -150,6 +153,43 @@ func TestScanEndToEnd(t *testing.T) {
 	it.one(fmt.Sprintf(`SELECT count(*) FROM issue WHERE project_id = '%s'`, it.project), &issues)
 	if issues != 1 {
 		t.Fatal("retry duplicated issues")
+	}
+}
+
+// A Trivy scan stores its SBOM and opens license issues under the org's
+// policy; the purge job later removes the SBOM, object and columns together.
+func TestSBOMAndLicensesEndToEnd(t *testing.T) {
+	it := newITest(t)
+	it.env.Images = map[string]string{"trivy": "docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64)}
+	it.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"}]}`}
+	owner(t, it.org, fmt.Sprintf(`UPDATE organization SET license_policy = '{"categories":{"restricted":"block"}}' WHERE id = '%s'`, it.org))
+	data, sha := zipBytes()
+	id, key := it.scan("queued", sha, 0, "trivy")
+	it.store.objects[key] = data
+	it.run(id)
+
+	sbomKey := SBOMKey(it.org, id)
+	var status, storedKey, severity string
+	var components int
+	it.one(fmt.Sprintf(`SELECT status, sbom_key, sbom_components FROM scan WHERE id = '%s'`, id), &status, &storedKey, &components)
+	it.one(fmt.Sprintf(`SELECT severity FROM issue WHERE project_id = '%s' AND rule_id = 'license:GPL-3.0-only'`, it.project), &severity)
+	if status != "completed" || storedKey != sbomKey || components != 1 || severity != "high" || it.store.objects[sbomKey] == nil {
+		t.Fatal(status, storedKey, components, severity)
+	}
+
+	// Not expired yet: kept.
+	if err := it.env.PurgeExpiredSources(context.Background()); err != nil || contains(it.store.deleted, sbomKey) {
+		t.Fatal(err, it.store.deleted)
+	}
+	it.env.Now = func() time.Time { return time.Now().Add(it.env.SBOMRetention + time.Minute) }
+	if err := it.env.PurgeExpiredSources(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var cleared bool
+	it.one(fmt.Sprintf(`SELECT sbom_key IS NULL AND sbom_size IS NULL AND sbom_sha256 IS NULL AND sbom_components IS NULL
+		AND sbom_expires_at IS NULL FROM scan WHERE id = '%s'`, id), &cleared)
+	if !cleared || !contains(it.store.deleted, sbomKey) {
+		t.Fatal(cleared, it.store.deleted)
 	}
 }
 

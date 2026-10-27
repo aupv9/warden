@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/results"
+	"github.com/aupv9/warden/backend/internal/scan/sbom"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 	"github.com/aupv9/warden/backend/internal/storage"
 )
@@ -41,13 +43,35 @@ type scanRow struct {
 	SHA256        *string
 	Tools         []string
 	SourceDeleted bool
+	ProjectKey    string
 }
 
 func loadScan(ctx context.Context, db DB, id uuid.UUID) (scanRow, error) {
 	var r scanRow
-	err := db.QueryRow(ctx, `SELECT status, project_id, object_key, sha256, tools, source_deleted_at IS NOT NULL
-		FROM scan WHERE id = $1`, id).Scan(&r.Status, &r.ProjectID, &r.ObjectKey, &r.SHA256, &r.Tools, &r.SourceDeleted)
+	err := db.QueryRow(ctx, `SELECT status, project_id, object_key, sha256, tools, source_deleted_at IS NOT NULL,
+		(SELECT key FROM project WHERE id = scan.project_id)
+		FROM scan WHERE id = $1`, id).Scan(&r.Status, &r.ProjectID, &r.ObjectKey, &r.SHA256, &r.Tools, &r.SourceDeleted, &r.ProjectKey)
 	return r, err
+}
+
+// SBOMKey is where a scan's SBOM lives in object storage.
+func SBOMKey(orgID, scanID uuid.UUID) string {
+	return fmt.Sprintf("sboms/%s/%s.cdx.json", orgID, scanID)
+}
+
+// storeSBOM uploads the scan's SBOM. A failure is logged and costs only the
+// SBOM (nil): the scan's results don't depend on it.
+func (e *Env) storeSBOM(ctx context.Context, org, scanID uuid.UUID, s *sbom.Stamped, log *slog.Logger) *results.SBOM {
+	if s == nil {
+		return nil
+	}
+	key := SBOMKey(org, scanID)
+	if err := e.Store.Put(ctx, key, s.Data, s.SHA256, sbom.MediaType); err != nil {
+		log.Warn("SBOM not stored; the scan has none", "err", err)
+		return nil
+	}
+	return &results.SBOM{Key: key, Size: int64(len(s.Data)), SHA256: s.SHA256, Components: s.Components,
+		ExpiresAt: e.Now().UTC().Add(e.SBOMRetention)}
 }
 
 // RunScan executes one run_scan job. It returns an error only when River should
@@ -89,6 +113,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 
 	// The database is the source of truth; the job only points at the scan.
 	job.ProjectID, job.ObjectKey, job.SHA256, job.Tools, job.Attempt = sc.ProjectID.String(), *sc.ObjectKey, *sc.SHA256, sc.Tools, attempt
+	job.ProjectKey = sc.ProjectKey
 	// A crashed attempt may have left its scratch directory behind.
 	if err := zipcheck.RemoveAll(filepath.Join(e.ScratchDir, scanID.String())); err != nil {
 		return err
@@ -116,18 +141,27 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		return e.finishFailed(fin, org, scanID, sc.Tools, code)
 	}
 
+	// The SBOM columns are set with the results, so they are never half set;
+	// if the results aren't recorded, the stored object goes too.
+	stored := e.storeSBOM(fin, org, scanID, out.SBOM, log)
 	var plan results.Plan
 	err = e.Tx(fin, org, func(db DB) error {
 		var err error
 		plan, err = results.Process(fin, db, results.Input{
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status),
-			Runs: out.Runs, Findings: out.Findings, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
+			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
+			SBOM: stored,
 		})
 		if err != nil {
 			return err
 		}
 		return skipUnfinishedTools(fin, db, org, scanID, sc.Tools, e.Images)
 	})
+	if err != nil && stored != nil {
+		if derr := e.Store.Delete(fin, stored.Key); derr != nil {
+			log.Error("failed to delete the SBOM of an unrecorded scan", "object_key", stored.Key, "err", derr)
+		}
+	}
 	if errors.Is(err, results.ErrScanNotRunning) {
 		return e.finishCancelled(fin, org, scanID, sc)
 	}

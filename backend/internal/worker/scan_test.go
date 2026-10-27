@@ -25,6 +25,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
+	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/worker/dbtest"
 )
@@ -42,6 +43,28 @@ type fakeStore struct {
 	deleted []string
 	dlErr   error
 	delErr  error
+	putErr  error
+	types   map[string]string // content type of each Put
+}
+
+func (s *fakeStore) Put(_ context.Context, key string, body []byte, sum, contentType string) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.objects == nil {
+		s.objects = map[string][]byte{}
+	}
+	if s.types == nil {
+		s.types = map[string]string{}
+	}
+	h := sha256.Sum256(body)
+	if hex.EncodeToString(h[:]) != sum {
+		return errors.New("checksum mismatch")
+	}
+	s.objects[key], s.types[key] = body, contentType
+	return nil
 }
 
 func (s *fakeStore) Download(_ context.Context, key, dest string) error {
@@ -71,6 +94,8 @@ type fakeSandbox struct {
 	killCh  chan struct{}
 	killed  []string
 	configs []sandbox.RunConfig
+	// files tools write besides their SARIF (file name -> content), reported as artifacts
+	files map[string]string
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.RunConfig) sandbox.ToolRun {
@@ -94,7 +119,17 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.
 	b, _ := json.Marshal(doc)
 	p := filepath.Join(out, "result.sarif")
 	_ = os.WriteFile(p, b, 0o600)
-	return sandbox.ToolRun{Tool: spec.Name, Status: sandbox.Succeeded, DurationMS: 3, Sarif: p}
+	run := sandbox.ToolRun{Tool: spec.Name, Status: sandbox.Succeeded, DurationMS: 3, Sarif: p}
+	for name, a := range spec.Artifacts {
+		if body, ok := f.files[a.File]; ok {
+			if run.Artifacts == nil {
+				run.Artifacts = map[string]string{}
+			}
+			run.Artifacts[name] = filepath.Join(out, a.File)
+			_ = os.WriteFile(run.Artifacts[name], []byte(body), 0o600)
+		}
+	}
+	return run
 }
 
 func (f *fakeSandbox) Kill(_, tool string) {
@@ -142,14 +177,14 @@ func row(vals ...any) [][]any { return [][]any{vals} }
 // with the same prefix.
 func (h *harness) scanSteps(status string, overrides ...dbtest.Step) []dbtest.Step {
 	steps := []dbtest.Step{
-		{Prefix: "SELECT status, project_id", Rows: row(status, h.project, objectKey, h.sha, []string{"opengrep"}, false)},
+		{Prefix: "SELECT status, project_id", Rows: row(status, h.project, objectKey, h.sha, []string{"opengrep"}, false, "WEB")},
 		{Prefix: "UPDATE scan SET status = 'running'", Affected: 1},
 		{Prefix: "INSERT INTO scan_tool_run", Affected: 1},
 		{Prefix: "SELECT status FROM scan WHERE id = $1", Rows: row("running")},
 		{Prefix: "UPDATE scan SET source_deleted_at", Affected: 1},
 		{Prefix: "SELECT status FROM scan WHERE id = $1 AND project_id", Rows: row("running")},
 		{Prefix: "SELECT issue_seq FROM project", Rows: row(0)},
-		{Prefix: "SELECT sla_days FROM organization", Rows: row([]byte(`{"high":30}`))},
+		{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{"high":30}`), []byte(`{}`))},
 		{Prefix: "SELECT id, fingerprint"},
 		{Prefix: "SELECT assign_rules FROM project", Rows: row([]byte(`[]`))},
 		{Prefix: "INSERT INTO outbox_event", Affected: 1},
@@ -193,7 +228,8 @@ func newHarness(t *testing.T, status string, overrides ...dbtest.Step) *harness 
 		Store: h.store, Sandbox: h.sb, Now: time.Now, Log: quietLog(),
 		Settings: Settings{ScratchDir: scratch, MirrorDir: "/mirror", Runtime: "runsc", Images: testImages,
 			HMACMaster: bytes.Repeat([]byte("m"), 32), GuardRatio: 0.5, ScanTimeout: time.Minute,
-			SourceRetention: time.Hour, AbandonUploadAfter: time.Hour, StuckAfter: 24 * time.Hour},
+			SourceRetention: time.Hour, AbandonUploadAfter: time.Hour, StuckAfter: 24 * time.Hour,
+			Limits: orchestrator.Limits{Zip: zipcheck.DefaultLimits()}, SBOMRetention: 24 * time.Hour},
 	}
 	return h
 }
@@ -391,7 +427,7 @@ func TestRunScanCancelledBeforeProcessing(t *testing.T) {
 
 func TestRunScanFailures(t *testing.T) {
 	t.Run("source already deleted", func(t *testing.T) {
-		h := newHarness(t, "running", dbtest.Step{Prefix: "SELECT status, project_id", Rows: row("running", uuid.New(), objectKey, "x", []string{"opengrep"}, true)})
+		h := newHarness(t, "running", dbtest.Step{Prefix: "SELECT status, project_id", Rows: row("running", uuid.New(), objectKey, "x", []string{"opengrep"}, true, "WEB")})
 		if err := h.run(2); err != nil {
 			t.Fatal(err)
 		}
@@ -470,6 +506,83 @@ func TestRunScanFailures(t *testing.T) {
 		}
 		h.failedWith(CodeInternal)
 	})
+}
+
+const trivyReport = `{"Results":[{"Target":"app/package-lock.json","Class":"lang-pkgs","Packages":[
+  {"Name":"gpl-thing","Version":"1.0.0","Licenses":["GPL-3.0-only"]}]},
+  {"Class":"license","Licenses":[{"Category":"restricted","Name":"GPL-3.0-only"}]}]}`
+
+// trivyHarness runs a trivy scan whose tool writes a JSON report and an SBOM,
+// in an org whose license policy reviews restricted licenses.
+func trivyHarness(t *testing.T, overrides ...dbtest.Step) *harness {
+	h := newHarness(t, "queued")
+	h.db = dbtest.Loose(t, h.scanSteps("queued", append([]dbtest.Step{
+		{Prefix: "SELECT status, project_id", Rows: row("queued", h.project, objectKey, h.sha, []string{"trivy"}, false, "WEB")},
+		{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{}`), []byte(`{"categories":{"restricted":"review"}}`))},
+		{Prefix: "UPDATE project SET issue_seq", Rows: row(2)},
+		{Prefix: "UPDATE scan SET sbom_key", Affected: 1},
+	}, overrides...)...)...)
+	h.env.Images = map[string]string{"trivy": "docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64)}
+	h.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"},{"name":"y"}]}`}
+	return h
+}
+
+func TestRunScanStoresSBOMAndLicenseIssues(t *testing.T) {
+	h := trivyHarness(t)
+	if err := h.run(1); err != nil {
+		t.Fatal(err)
+	}
+	key := "sboms/" + h.org.String() + "/" + h.scan.String() + ".cdx.json"
+	if h.store.types[key] != "application/vnd.cyclonedx+json" || !strings.Contains(string(h.store.objects[key]), `"name":"WEB"`) {
+		t.Fatalf("%v", h.store.types)
+	}
+	c := h.db.Calls("UPDATE scan SET sbom_key")
+	if len(c) != 1 || c[0].Args[1] != key || c[0].Args[2] != int64(len(h.store.objects[key])) || c[0].Args[4] != 2 {
+		t.Fatalf("%v", c)
+	}
+	if exp := c[0].Args[5].(time.Time); exp.Before(time.Now().Add(23*time.Hour)) || exp.After(time.Now().Add(25*time.Hour)) {
+		t.Fatalf("expires %v", exp)
+	}
+	var rules []any
+	for _, c := range h.db.Calls("INSERT INTO issue (") {
+		rules = append(rules, c.Args[6])
+	}
+	if !slices.Contains(rules, any("license:GPL-3.0-only")) || !slices.Contains(rules, any("r1")) {
+		t.Fatalf("issues %v", rules)
+	}
+	if slices.Contains(h.store.deleted, key) {
+		t.Fatal("SBOM deleted")
+	}
+}
+
+// Storing the SBOM is best effort: the scan completes without one.
+func TestRunScanWithoutSBOMWhenStoreFails(t *testing.T) {
+	h := trivyHarness(t)
+	h.store.putErr = errors.New("bucket full")
+	if err := h.run(1); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.db.Calls("UPDATE scan SET sbom_key")) != 0 {
+		t.Fatal("columns set without an object")
+	}
+	if fin := h.db.Calls("UPDATE scan SET status = $2, error_code = NULL"); len(fin) != 1 || fin[0].Args[1] != "completed" {
+		t.Fatalf("%v", fin)
+	}
+}
+
+// Results that aren't recorded take their SBOM with them.
+func TestRunScanDeletesSBOMOfUnrecordedResults(t *testing.T) {
+	h := trivyHarness(t, dbtest.Step{Prefix: "INSERT INTO issue (", Err: errors.New("disk full")})
+	if err := h.run(1); err != nil {
+		t.Fatal(err)
+	}
+	key := "sboms/" + h.org.String() + "/" + h.scan.String() + ".cdx.json"
+	if !slices.Contains(h.store.deleted, key) {
+		t.Fatalf("deleted %v", h.store.deleted)
+	}
+	if c := h.db.Calls("UPDATE scan SET status = 'failed'"); len(c) != 1 || c[0].Args[1] != CodeInternal {
+		t.Fatalf("%v", c)
+	}
 }
 
 func TestRunScanJobErrors(t *testing.T) {

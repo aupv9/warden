@@ -22,7 +22,8 @@ import (
 // sweepEnv: two orgs; every transaction records which org it was scoped to.
 func sweepEnv(t *testing.T, steps ...dbtest.Step) (*Env, *dbtest.DB, *fakeStore, *[]uuid.UUID, []uuid.UUID) {
 	orgs := []uuid.UUID{uuid.New(), uuid.New()}
-	all := append([]dbtest.Step{{Prefix: "SELECT id FROM organization", Rows: [][]any{{orgs[0]}, {orgs[1]}}}}, steps...)
+	all := append([]dbtest.Step{{Prefix: "SELECT id FROM organization", Rows: [][]any{{orgs[0]}, {orgs[1]}}},
+		{Prefix: "SELECT id, sbom_key FROM scan"}}, steps...)
 	db := dbtest.Loose(t, all...)
 	store := &fakeStore{objects: map[string][]byte{}}
 	var scoped []uuid.UUID
@@ -82,6 +83,53 @@ func TestPurgeKeepsGoingAfterFailures(t *testing.T) {
 	}
 	if len(store.deleted) != 2 || len(db.Calls("UPDATE scan SET source_deleted_at")) != 0 {
 		t.Fatal("a failed delete must leave source_deleted_at NULL for the next run")
+	}
+}
+
+// Expired SBOMs: object deleted, then every sbom_* column cleared together.
+// A failed delete keeps the columns for the next run.
+func TestPurgeExpiredSBOMs(t *testing.T) {
+	a, b := uuid.New(), uuid.New()
+	env, db, store, _, _ := sweepEnv(t,
+		dbtest.Step{Prefix: "UPDATE scan SET status = 'cancelled'"},
+		dbtest.Step{Prefix: "SELECT id, object_key, tools FROM scan"},
+		dbtest.Step{Prefix: "SELECT id, sbom_key FROM scan", Rows: [][]any{{a, "sboms/o/a.cdx.json"}, {b, "sboms/o/b.cdx.json"}},
+			Args: func(args []any) error {
+				if !args[0].(time.Time).Equal(time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)) {
+					t.Errorf("cutoff %v", args[0])
+				}
+				return nil
+			}},
+		dbtest.Step{Prefix: "UPDATE scan SET sbom_key = NULL", Affected: 1},
+	)
+	if err := env.PurgeExpiredSources(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.deleted) != 4 || store.deleted[0] != "sboms/o/a.cdx.json" {
+		t.Fatalf("%v", store.deleted)
+	}
+	c := db.Calls("UPDATE scan SET sbom_key = NULL")
+	if len(c) != 4 || c[0].Args[0] != a || c[0].Args[1] != "sboms/o/a.cdx.json" ||
+		!strings.Contains(c[0].SQL, "sbom_size = NULL, sbom_sha256 = NULL, sbom_components = NULL, sbom_expires_at = NULL") {
+		t.Fatalf("%v", c)
+	}
+
+	env, db, store, _, _ = sweepEnv(t,
+		dbtest.Step{Prefix: "UPDATE scan SET status = 'cancelled'"},
+		dbtest.Step{Prefix: "SELECT id, object_key, tools FROM scan"},
+		dbtest.Step{Prefix: "SELECT id, sbom_key FROM scan", Rows: [][]any{{a, "sboms/o/a.cdx.json"}}},
+	)
+	store.delErr = errors.New("s3 down")
+	if err := env.PurgeExpiredSources(context.Background()); err == nil || len(db.Calls("UPDATE scan SET sbom_key")) != 0 {
+		t.Fatal("a failed delete must keep the columns", err)
+	}
+	env, _, _, _, _ = sweepEnv(t,
+		dbtest.Step{Prefix: "UPDATE scan SET status = 'cancelled'"},
+		dbtest.Step{Prefix: "SELECT id, object_key, tools FROM scan"},
+		dbtest.Step{Prefix: "SELECT id, sbom_key FROM scan", Err: errors.New("down")},
+	)
+	if err := env.PurgeExpiredSources(context.Background()); err == nil {
+		t.Fatal("error swallowed")
 	}
 }
 
@@ -349,9 +397,14 @@ func TestNewEnv(t *testing.T) {
 		t.Fatal("bad from address accepted")
 	}
 	cfg.SMTP.From, cfg.SMTP.DigestHour = "warden@example.com", 6
+	cfg.Scan.UploadMaxMB, cfg.Scan.UnzipMaxMB, cfg.Scan.UnzipMaxFiles, cfg.Scan.SBOMRetention = 300, 2048, 5000, 48*time.Hour
 	env, err := NewEnv(cfg, nil, &fakeStore{}, quietLog())
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The configured archive limits reach the checks (they used to be hard-coded).
+	if z := env.Limits.Zip; z.MaxZipBytes != 300<<20 || z.MaxTotalBytes != 2048<<20 || z.MaxEntries != 5000 || env.SBOMRetention != 48*time.Hour {
+		t.Fatalf("%+v", env.Limits)
 	}
 	if env.PublicBaseURL != "https://warden.example" || env.DigestHour != 6 || env.Mailer == nil {
 		t.Fatalf("%+v", env.Settings)

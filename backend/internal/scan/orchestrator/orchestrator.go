@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,8 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
+	"github.com/aupv9/warden/backend/internal/scan/sbom"
+	"github.com/aupv9/warden/backend/internal/scan/trivyjson"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 )
 
@@ -42,6 +46,8 @@ type Job struct {
 	SHA256    string   `json:"sha256"`
 	Tools     []string `json:"tools"`
 	Attempt   int      `json:"attempt"`
+	// ProjectKey names the SBOM's root component (set by the worker from the database).
+	ProjectKey string `json:"-"`
 }
 
 type Outcome struct {
@@ -49,11 +55,22 @@ type Outcome struct {
 	ErrorCode string
 	Runs      []sandbox.ToolRun
 	Findings  map[string][]sarif.Finding
-	Warnings  []string
+	// Licenses: every package license Trivy reported, when Trivy succeeded
+	// (FilePath set). Which become issues is the org's policy, applied later.
+	Licenses []trivyjson.License
+	// SBOM: Trivy's CycloneDX SBOM, stamped; nil when there is none.
+	SBOM     *sbom.Stamped
+	Warnings []string
+}
+
+// Limits come from the configuration (scan.*).
+type Limits struct {
+	Zip zipcheck.Limits
 }
 
 // Deps is everything the orchestrator needs from storage, the database and Docker.
 type Deps interface {
+	Limits() Limits
 	ScratchRoot() string
 	Download(ctx context.Context, objectKey, dest string) error
 	DeleteObject(ctx context.Context, objectKey string) error
@@ -110,7 +127,7 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		return nil, err
 	}
 	srcDir := filepath.Join(scanDir, "src")
-	extracted, err := verifyAndExtract(zipPath, job.SHA256, srcDir)
+	extracted, err := verifyAndExtract(zipPath, job.SHA256, srcDir, deps.Limits().Zip)
 	var rej *zipcheck.Rejected
 	if errors.As(err, &rej) {
 		slog.Info("scan rejected", "scan_id", job.ScanID, "code", rej.Code, "detail", rej.Detail)
@@ -145,6 +162,14 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 			continue
 		}
 		fs, err := parseRun(run.Sarif, run.Tool, extracted.RootDir, srcDir)
+		var licenses []trivyjson.License
+		if err == nil && run.Tool == "trivy" {
+			// The SARIF is converted from this report: without it (or with a
+			// report that fails the checks) Trivy's results are incomplete.
+			if licenses, err = trivyLicenses(run.Artifacts[sandbox.ArtifactTrivyJSON], extracted.RootDir); err != nil {
+				slog.Warn("trivy report rejected", "scan_id", job.ScanID, "err", err)
+			}
+		}
 		if err != nil {
 			run.Status, run.Error = sandbox.Failed, err.Error()
 			if err := deps.SetToolStatus(ctx, job.ScanID, *run); err != nil {
@@ -153,6 +178,10 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 			continue
 		}
 		out.Findings[run.Tool] = fs
+		if run.Tool == "trivy" {
+			out.Licenses = licenses
+			out.SBOM = stampSBOM(job, run.Artifacts[sandbox.ArtifactSBOM])
+		}
 	}
 	out.Status = FinalStatus(runs)
 	if out.Status == Failed {
@@ -161,11 +190,11 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 	return out, nil
 }
 
-func verifyAndExtract(zipPath, sha, dest string) (*zipcheck.Result, error) {
+func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipcheck.Result, error) {
 	if err := zipcheck.VerifyChecksum(zipPath, sha); err != nil {
 		return nil, err
 	}
-	return zipcheck.Extract(zipPath, dest, zipcheck.DefaultLimits())
+	return zipcheck.Extract(zipPath, dest, limits)
 }
 
 func parseRun(path, tool, rootDir, srcDir string) ([]sarif.Finding, error) {
@@ -174,6 +203,47 @@ func parseRun(path, tool, rootDir, srcDir string) ([]sarif.Finding, error) {
 		return nil, err
 	}
 	return sarif.Parse(doc, tool, sarif.Options{RootDir: rootDir, SourceRoot: srcDir})
+}
+
+// trivyLicenses reads the licenses out of Trivy's JSON report and gives each
+// the file path its vulnerability findings get (sarif.Parse).
+func trivyLicenses(path, rootDir string) ([]trivyjson.License, error) {
+	if path == "" {
+		return nil, errors.New("trivy wrote no JSON report (or one over the size cap)")
+	}
+	rep, err := trivyjson.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rep.Licenses {
+		l := &rep.Licenses[i]
+		l.FilePath = fingerprint.NormPath(l.Target, rootDir, false)
+	}
+	return rep.Licenses, nil
+}
+
+// stampSBOM returns the scan's SBOM ready to store, or nil. A missing or
+// invalid SBOM costs only the SBOM: the scan's results don't depend on it.
+func stampSBOM(job Job, path string) *sbom.Stamped {
+	if path == "" {
+		slog.Warn("trivy wrote no SBOM (or one over the size cap)", "scan_id", job.ScanID)
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		slog.Warn("read SBOM", "scan_id", job.ScanID, "err", err)
+		return nil
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, sbom.MaxBytes+1))
+	if err == nil {
+		var s *sbom.Stamped
+		if s, err = sbom.Stamp(raw, job.ProjectKey, job.ScanID); err == nil {
+			return s
+		}
+	}
+	slog.Warn("SBOM rejected", "scan_id", job.ScanID, "err", err)
+	return nil
 }
 
 // WriteKey writes the HMAC key file mounted read-only into the Gitleaks sandbox.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
+	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 )
 
 type fakeDeps struct {
@@ -31,6 +32,16 @@ type fakeDeps struct {
 	statuses []ScanStatus
 	killed   []string
 	sawKey   bool
+	limits   *Limits
+	// artifacts trivy writes besides its SARIF (file name -> content)
+	trivyOut map[string]string
+}
+
+func (d *fakeDeps) Limits() Limits {
+	if d.limits != nil {
+		return *d.limits
+	}
+	return Limits{Zip: zipcheck.DefaultLimits()}
 }
 
 func (d *fakeDeps) ScratchRoot() string { return d.root }
@@ -82,7 +93,17 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 	}
 	b, _ := json.Marshal(doc)
 	_ = os.WriteFile(filepath.Join(out, "result.sarif"), b, 0o600)
-	return sandbox.ToolRun{Tool: tool, Status: status, DurationMS: 1, Sarif: filepath.Join(out, "result.sarif")}
+	run := sandbox.ToolRun{Tool: tool, Status: status, DurationMS: 1, Sarif: filepath.Join(out, "result.sarif")}
+	if tool == "trivy" {
+		run.Artifacts = map[string]string{}
+		for name, a := range sandbox.Tools["trivy"].Artifacts {
+			if body, ok := d.trivyOut[a.File]; ok {
+				run.Artifacts[name] = filepath.Join(out, a.File)
+				_ = os.WriteFile(run.Artifacts[name], []byte(body), 0o600)
+			}
+		}
+	}
+	return run
 }
 
 func zipBytes(t *testing.T) ([]byte, string) {
@@ -234,5 +255,68 @@ func TestNewHMACKey(t *testing.T) {
 	k, err := NewHMACKey()
 	if err != nil || len(k) != 64 {
 		t.Fatal(k, err)
+	}
+}
+
+// The configured archive limits apply, not zipcheck's defaults.
+func TestConfiguredZipLimits(t *testing.T) {
+	data, sha := zipBytes(t)
+	for _, c := range []struct {
+		limits zipcheck.Limits
+		code   string
+	}{
+		{zipcheck.Limits{MaxZipBytes: int64(len(data)) - 1, MaxTotalBytes: 1 << 20, MaxEntries: 10}, "ZIP_TOO_LARGE"},
+		{zipcheck.Limits{MaxZipBytes: 1 << 20, MaxTotalBytes: 3, MaxEntries: 10}, "ZIP_BOMB"},
+		{zipcheck.Limits{MaxZipBytes: 1 << 20, MaxTotalBytes: 1 << 20, MaxEntries: 0}, "ZIP_TOO_MANY_FILES"},
+		{zipcheck.Limits{MaxZipBytes: int64(len(data)), MaxTotalBytes: 6, MaxEntries: 1}, ""},
+	} {
+		d := newDeps(t, data, map[string]sandbox.ToolStatus{"opengrep": sandbox.Succeeded})
+		d.limits = &Limits{Zip: c.limits}
+		out, err := Execute(context.Background(), newJob(sha, "opengrep"), d)
+		if err != nil || out.ErrorCode != c.code {
+			t.Fatalf("%+v: %+v %v", c.limits, out, err)
+		}
+	}
+}
+
+const trivyReport = `{"Results":[{"Target":"app/package-lock.json","Class":"lang-pkgs","Packages":[
+  {"Name":"gpl-thing","Version":"1.0.0","Licenses":["GPL-3.0-only"]}]},
+  {"Target":"app/package-lock.json","Class":"license","Licenses":[{"Category":"restricted","Name":"GPL-3.0-only"}]}]}`
+
+// Trivy's JSON report gives the licenses (with the same paths as its
+// vulnerabilities) and its SBOM is stamped for the project.
+func TestTrivyArtifacts(t *testing.T) {
+	data, sha := zipBytes(t)
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
+	d.trivyOut = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"a"}]}`}
+	j := newJob(sha, "trivy")
+	j.ProjectKey = "WEB"
+	out, err := Execute(context.Background(), j, d)
+	if err != nil || out.Status != Completed {
+		t.Fatal(out, err)
+	}
+	if len(out.Licenses) != 1 || out.Licenses[0].FilePath != "package-lock.json" || out.Licenses[0].License != "GPL-3.0-only" {
+		t.Fatalf("%+v", out.Licenses)
+	}
+	if out.SBOM == nil || out.SBOM.Components != 1 || !strings.Contains(string(out.SBOM.Data), `"name":"WEB"`) ||
+		!strings.Contains(string(out.SBOM.Data), j.ScanID) {
+		t.Fatalf("%+v", out.SBOM)
+	}
+	assertCleaned(t, d, j)
+
+	// A bad SBOM costs only the SBOM.
+	d = newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
+	d.trivyOut = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"SPDX"}`}
+	if out, err := Execute(context.Background(), newJob(sha, "trivy"), d); err != nil || out.Status != Completed || out.SBOM != nil || len(out.Licenses) != 1 {
+		t.Fatal(out, err)
+	}
+	// Without a valid JSON report Trivy's results are incomplete: the tool fails.
+	for _, files := range []map[string]string{{}, {"trivy.json": `{"Results":"x"}`}} {
+		d = newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
+		d.trivyOut = files
+		out, err := Execute(context.Background(), newJob(sha, "trivy"), d)
+		if err != nil || out.Status != Failed || out.Runs[0].Status != sandbox.Failed || out.Licenses != nil || out.SBOM != nil {
+			t.Fatal(out, err)
+		}
 	}
 }

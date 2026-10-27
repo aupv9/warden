@@ -137,6 +137,8 @@ type ScanSection struct {
 	SourceRetention     time.Duration     `koanf:"source_retention"`
 	RateLimitPerHour    int               `koanf:"rate_limit_per_hour"`
 	AutocloseGuardRatio float64           `koanf:"autoclose_guard_ratio" validate:"min=0,max=1"`
+	// SBOMRetention: how long a scan's SBOM is kept (then deleted by the purge job).
+	SBOMRetention time.Duration `koanf:"sbom_retention" validate:"min=1h"`
 }
 
 func appDefaults() *cgconfig.AppConfig {
@@ -186,6 +188,7 @@ func settingsDefaults() *Settings {
 			SourceRetention:     time.Hour,
 			RateLimitPerHour:    10,
 			AutocloseGuardRatio: 0.5,
+			SBOMRetention:       365 * 24 * time.Hour,
 		},
 	}
 }
