@@ -204,6 +204,28 @@ type Options struct {
 	RootDir      string // single top-level dir of the upload, stripped from paths
 	SourceRoot   string // extracted upload, used to read the flagged lines
 	CheckovTable map[string]severity.Severity
+	// ImageTarget is set for image scans (the image repository): Trivy paths
+	// become "<target>::<path in the image>", and OSLabel names the OS packages.
+	ImageTarget string
+	OSLabel     string
+}
+
+// ImageArtifact is where an image scan's tarball is mounted (sandbox.ImageTools);
+// Trivy reports OS package findings against it.
+const ImageArtifact = "src/image.tar"
+
+// ImagePath is the file path of a Trivy finding in an image scan: the image
+// target, then the OS ("alpine") for OS packages or the path in the image
+// (usr/local/bin/app) for language packages. The OS version is left out so
+// that a base image update keeps the issues of the packages it didn't fix.
+func ImagePath(target, osLabel, p string) string {
+	if p == ImageArtifact || p == "" {
+		p = osLabel
+		if p == "" {
+			p = "os"
+		}
+	}
+	return target + "::" + p
 }
 
 func Parse(doc map[string]any, tool string, opts Options) ([]Finding, error) {
@@ -275,6 +297,9 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		end = start
 	}
 	filePath := fingerprint.NormPath(uri, opts.RootDir, !slices.Contains(targetRelativeTools, tool))
+	if tool == "trivy" && opts.ImageTarget != "" {
+		filePath = ImagePath(opts.ImageTarget, opts.OSLabel, filePath)
+	}
 	snippet := str(at(region, "snippet", "text"), MaxSnippet)
 	if snippet == "requires login" {
 		snippet = ""

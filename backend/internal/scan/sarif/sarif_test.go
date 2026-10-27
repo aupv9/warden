@@ -157,6 +157,28 @@ func TestTrivyDropsLicenseResults(t *testing.T) {
 	}
 }
 
+// Image scans: Trivy reports OS packages against the tarball (/src/image.tar)
+// and language packages at their path in the image (real Trivy 0.75 output).
+func TestTrivyImagePaths(t *testing.T) {
+	msg := "Package: busybox\nInstalled Version: 1.36.0-r9\nSeverity: HIGH\nFixed Version: 1.36.1-r1"
+	rule := st.M{"id": "CVE-2023-42363", "properties": st.M{"tags": []any{"vulnerability", "HIGH"}}}
+	doc := st.Doc([]any{
+		st.M{"ruleId": "CVE-2023-42363", "message": st.M{"text": msg}, "locations": []any{st.Loc("/src/image.tar", 1)}},
+		st.M{"ruleId": "CVE-2023-42363", "message": st.M{"text": msg}, "locations": []any{st.Loc("usr/local/bin/trivy", 1)}},
+	}, rule)
+	fs := parse(t, doc, "trivy", sarif.Options{ImageTarget: "ghcr.io/acme/api", OSLabel: "alpine"})
+	if len(fs) != 2 || fs[0].FilePath != "ghcr.io/acme/api::alpine" || fs[1].FilePath != "ghcr.io/acme/api::usr/local/bin/trivy" {
+		t.Fatalf("%+v", fs)
+	}
+	if sarif.ImagePath("x", "", "src/image.tar") != "x::os" {
+		t.Fatal("no OS label")
+	}
+	// Source scans are untouched.
+	if f := parse(t, doc, "trivy", sarif.Options{}); f[1].FilePath != "usr/local/bin/trivy" {
+		t.Fatal(f[1].FilePath)
+	}
+}
+
 func TestResultCap(t *testing.T) {
 	results := make([]any, sarif.MaxResultsPerTool+1)
 	for i := range results {

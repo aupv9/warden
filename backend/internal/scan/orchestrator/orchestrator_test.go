@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
 	"context"
@@ -32,6 +33,7 @@ type fakeDeps struct {
 	statuses []ScanStatus
 	killed   []string
 	sawKey   bool
+	sawImage bool // src/image.tar, read-only, when a tool ran
 	limits   *Limits
 	// artifacts trivy writes besides its SARIF (file name -> content)
 	trivyOut map[string]string
@@ -41,7 +43,7 @@ func (d *fakeDeps) Limits() Limits {
 	if d.limits != nil {
 		return *d.limits
 	}
-	return Limits{Zip: zipcheck.DefaultLimits()}
+	return Limits{Zip: zipcheck.DefaultLimits(), ImageMaxBytes: 64 << 20}
 }
 
 func (d *fakeDeps) ScratchRoot() string { return d.root }
@@ -75,6 +77,11 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 	}
 	if fi, err := os.Stat(filepath.Join(scanDir, "src")); err != nil || !fi.IsDir() {
 		panic("src not extracted")
+	}
+	if st, err := os.Stat(filepath.Join(scanDir, "src", "image.tar")); err == nil && st.Mode().Perm() == 0o444 {
+		d.mu.Lock()
+		d.sawImage = true
+		d.mu.Unlock()
 	}
 	if _, err := os.Stat(filepath.Join(scanDir, "secrets", "hmac")); err == nil {
 		d.mu.Lock()
@@ -318,5 +325,90 @@ func TestTrivyArtifacts(t *testing.T) {
 		if err != nil || out.Status != Failed || out.Runs[0].Status != sandbox.Failed || out.Licenses != nil || out.SBOM != nil {
 			t.Fatal(out, err)
 		}
+	}
+}
+
+// imageTar is a minimal docker save tarball.
+func imageTar(t *testing.T, manifest string) ([]byte, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, body := range map[string]string{"manifest.json": manifest, "c.json": "{}", "l/layer.tar": "layer"} {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))})
+		_, _ = tw.Write([]byte(body))
+	}
+	_ = tw.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	return buf.Bytes(), hex.EncodeToString(sum[:])
+}
+
+const imageReport = `{"Metadata":{"OS":{"Family":"alpine"}},"Results":[
+  {"Target":"/src/image.tar (alpine 3.18.0)","Class":"os-pkgs","Packages":[{"Name":"busybox","Version":"1.36.0-r9","Licenses":["GPL-2.0-only"]}]},
+  {"Target":"usr/local/bin/app","Class":"lang-pkgs","Packages":[{"Name":"golang.org/x/net","Version":"v0.1.0","Licenses":["BSD-3-Clause"]}]}]}`
+
+func imageJob(sha string, tools ...string) Job {
+	j := newJob(sha, tools...)
+	j.ObjectKey, j.Kind, j.Target = "uploads/x.zip", KindImage, "ghcr.io/acme/api"
+	return j
+}
+
+// Image scans: the verified tarball is mounted read-only (never extracted),
+// only Trivy runs, paths carry the target, and the upload and scratch copy
+// are removed like a zip's.
+func TestImageScan(t *testing.T) {
+	data, sha := imageTar(t, `[{"Config":"c.json","Layers":["l/layer.tar"]}]`)
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
+	d.trivyOut = map[string]string{"trivy.json": imageReport}
+	j := imageJob(sha, "trivy")
+	out, err := Execute(context.Background(), j, d)
+	if err != nil || out.Status != Completed || !d.sawImage {
+		t.Fatal(out, err, d.sawImage)
+	}
+	if len(out.Licenses) != 2 || out.Licenses[0].FilePath != "ghcr.io/acme/api::alpine" || out.Licenses[1].FilePath != "ghcr.io/acme/api::usr/local/bin/app" {
+		t.Fatalf("%+v", out.Licenses)
+	}
+	// The fake SARIF finding is at /src/app/a.py: prefixed with the target.
+	if fs := out.Findings["trivy"]; len(fs) != 1 || fs[0].FilePath != "ghcr.io/acme/api::src/app/a.py" {
+		t.Fatalf("%+v", fs)
+	}
+	assertCleaned(t, d, j)
+
+	// Other tools are refused for images (the API never queues them).
+	d = newDeps(t, data, nil)
+	if _, err := Execute(context.Background(), imageJob(sha, "trivy", "gitleaks"), d); err == nil {
+		t.Fatal("gitleaks ran on an image")
+	}
+	if !slices.Equal(d.deleted, []string{"uploads/x.zip"}) {
+		t.Fatal("upload not deleted")
+	}
+}
+
+func TestImageRejections(t *testing.T) {
+	two := `[{"Config":"c.json","Layers":["l/layer.tar"]},{"Config":"c.json","Layers":["l/layer.tar"]}]`
+	for _, c := range []struct {
+		manifest string
+		sha      bool // correct checksum
+		limit    int64
+		code     string
+	}{
+		{`[{"Config":"c.json","Layers":["missing.tar"]}]`, true, 0, "IMAGE_INVALID"},
+		{two, true, 0, "IMAGE_MULTIPLE"},
+		{`[{"Config":"c.json","Layers":["l/layer.tar"]}]`, true, 100, "IMAGE_TOO_LARGE"},
+		{`[{"Config":"c.json","Layers":["l/layer.tar"]}]`, false, 0, "CHECKSUM_MISMATCH"},
+	} {
+		data, sha := imageTar(t, c.manifest)
+		if !c.sha {
+			sha = strings.Repeat("0", 64)
+		}
+		d := newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
+		if c.limit != 0 {
+			d.limits = &Limits{Zip: zipcheck.DefaultLimits(), ImageMaxBytes: c.limit}
+		}
+		j := imageJob(sha, "trivy")
+		out, err := Execute(context.Background(), j, d)
+		if err != nil || out.Status != Failed || out.ErrorCode != c.code {
+			t.Fatalf("%s: %+v %v", c.code, out, err)
+		}
+		assertCleaned(t, d, j)
 	}
 }

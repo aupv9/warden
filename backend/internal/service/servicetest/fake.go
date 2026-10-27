@@ -678,7 +678,7 @@ func (f *Fake) InsertScan(_ context.Context, s service.NewScan) error {
 	}
 	f.st.Scans[s.ID] = scanRow{CreatedByID: s.CreatedBy, Scan: service.Scan{ID: s.ID, OrgID: s.OrgID, ProjectID: s.ProjectID,
 		Status: "pending_upload", FileName: s.FileName, FileSize: s.FileSize, Tools: s.Tools, CreatedAt: service.Time(f.Now),
-		ObjectKey: s.ObjectKey, SHA256: s.SHA256, Kind: "source"}, ViaToken: s.ViaToken}
+		ObjectKey: s.ObjectKey, SHA256: s.SHA256, Kind: cmp.Or(s.Kind, "source"), Target: s.Target, ImageRef: s.ImageRef}, ViaToken: s.ViaToken}
 	return nil
 }
 

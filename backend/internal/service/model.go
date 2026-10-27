@@ -69,6 +69,7 @@ type Limits struct {
 	UnzipMaxFiles      int `json:"unzip_max_files"`
 	ScanTimeoutMinutes int `json:"scan_timeout_minutes"`
 	ScansPerHour       int `json:"scans_per_hour"`
+	ImageUploadMaxMB   int `json:"image_upload_max_mb"`
 }
 
 type OrgRef struct {

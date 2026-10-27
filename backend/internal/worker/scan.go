@@ -44,13 +44,15 @@ type scanRow struct {
 	Tools         []string
 	SourceDeleted bool
 	ProjectKey    string
+	Kind, Target  string
 }
 
 func loadScan(ctx context.Context, db DB, id uuid.UUID) (scanRow, error) {
 	var r scanRow
 	err := db.QueryRow(ctx, `SELECT status, project_id, object_key, sha256, tools, source_deleted_at IS NOT NULL,
-		(SELECT key FROM project WHERE id = scan.project_id)
-		FROM scan WHERE id = $1`, id).Scan(&r.Status, &r.ProjectID, &r.ObjectKey, &r.SHA256, &r.Tools, &r.SourceDeleted, &r.ProjectKey)
+		(SELECT key FROM project WHERE id = scan.project_id), kind, target
+		FROM scan WHERE id = $1`, id).Scan(&r.Status, &r.ProjectID, &r.ObjectKey, &r.SHA256, &r.Tools, &r.SourceDeleted, &r.ProjectKey,
+		&r.Kind, &r.Target)
 	return r, err
 }
 
@@ -113,14 +115,14 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 
 	// The database is the source of truth; the job only points at the scan.
 	job.ProjectID, job.ObjectKey, job.SHA256, job.Tools, job.Attempt = sc.ProjectID.String(), *sc.ObjectKey, *sc.SHA256, sc.Tools, attempt
-	job.ProjectKey = sc.ProjectKey
+	job.ProjectKey, job.Kind, job.Target = sc.ProjectKey, sc.Kind, sc.Target
 	// A crashed attempt may have left its scratch directory behind.
 	if err := zipcheck.RemoveAll(filepath.Join(e.ScratchDir, scanID.String())); err != nil {
 		return err
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, e.ScanTimeout)
-	out, err := orchestrator.Execute(execCtx, job, &liveDeps{env: e, org: org, scan: scanID, attempt: attempt})
+	out, err := orchestrator.Execute(execCtx, job, &liveDeps{env: e, org: org, scan: scanID, attempt: attempt, kind: sc.Kind})
 	timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
@@ -148,7 +150,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	err = e.Tx(fin, org, func(db DB) error {
 		var err error
 		plan, err = results.Process(fin, db, results.Input{
-			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status),
+			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
 			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
 			SBOM: stored,
 		})
