@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -16,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +49,51 @@ type JWKS struct {
 	keys      map[string]crypto.PublicKey
 	fetchedAt time.Time
 	now       func() time.Time
+	// status is what Status reports. It is kept apart from mu, which is held
+	// during a fetch, so reading it never waits on the network.
+	status atomic.Pointer[KeyStatus]
+}
+
+// KeyStatus describes the key cache for the Sign-in settings page.
+type KeyStatus struct {
+	// Count is the number of usable signing keys in the cache.
+	Count int
+	// FetchedAt is the last successful fetch (zero if none yet).
+	FetchedAt time.Time
+	// Err is the category of the last failed fetch, cleared by a successful one:
+	// one of the KeyErr* values. Only the category is kept, not the error text,
+	// which can name internal hosts and addresses.
+	Err string
+}
+
+// Categories of a failed key fetch.
+const (
+	KeyErrUnreachable     = "unreachable"
+	KeyErrHTTPStatus      = "http_status"
+	KeyErrInvalidDocument = "invalid_document"
+	KeyErrIssuerMismatch  = "issuer_mismatch"
+	KeyErrNoUsableKeys    = "no_usable_keys"
+)
+
+// keyError is a failed fetch with its category.
+type keyError struct {
+	kind string
+	err  error
+}
+
+func (e *keyError) Error() string { return e.err.Error() }
+func (e *keyError) Unwrap() error { return e.err }
+
+func keyErr(kind string, format string, a ...any) error {
+	return &keyError{kind: kind, err: fmt.Errorf(format, a...)}
+}
+
+// Status reports the key cache without fetching anything.
+func (j *JWKS) Status() KeyStatus {
+	if st := j.status.Load(); st != nil {
+		return *st
+	}
+	return KeyStatus{}
 }
 
 // NewJWKS discovers the key URL from issuer unless jwksURL is set.
@@ -91,23 +138,43 @@ func (j *JWKS) Key(ctx context.Context, kid string) (crypto.PublicKey, error) {
 }
 
 func (j *JWKS) refresh(ctx context.Context) error {
+	keys, err := j.fetch(ctx)
+	st := j.Status()
+	if err != nil {
+		st.Err = KeyErrUnreachable
+		var ke *keyError
+		if errors.As(err, &ke) {
+			st.Err = ke.kind
+		}
+		j.status.Store(&st)
+		return err
+	}
+	j.keys, j.fetchedAt = keys, j.clock()
+	j.status.Store(&KeyStatus{Count: len(keys), FetchedAt: j.fetchedAt})
+	return nil
+}
+
+func (j *JWKS) fetch(ctx context.Context) (map[string]crypto.PublicKey, error) {
 	keysURL := j.URL
 	if keysURL == "" {
 		var err error
 		if keysURL, err = j.discover(ctx); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	body, err := j.get(ctx, keysURL, "JWKS")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	keys, err := ParseJWKS(body, j.Algs)
 	if err != nil {
-		return err
+		var noKeys *noUsableKeysError
+		if errors.As(err, &noKeys) {
+			return nil, &keyError{kind: KeyErrNoUsableKeys, err: err}
+		}
+		return nil, &keyError{kind: KeyErrInvalidDocument, err: err}
 	}
-	j.keys, j.fetchedAt = keys, j.clock()
-	return nil
+	return keys, nil
 }
 
 // discover reads jwks_uri from the issuer's OpenID configuration.
@@ -121,13 +188,13 @@ func (j *JWKS) discover(ctx context.Context) (string, error) {
 		JWKSURI string `json:"jwks_uri"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return "", fmt.Errorf("parse OIDC discovery: %w", err)
+		return "", keyErr(KeyErrInvalidDocument, "parse OIDC discovery: %w", err)
 	}
 	if strings.TrimRight(doc.Issuer, "/") != j.Issuer {
-		return "", fmt.Errorf("OIDC discovery names issuer %q, want %q", doc.Issuer, j.Issuer)
+		return "", keyErr(KeyErrIssuerMismatch, "OIDC discovery names issuer %q, want %q", doc.Issuer, j.Issuer)
 	}
 	if err := checkKeysURL(j.Issuer, doc.JWKSURI); err != nil {
-		return "", err
+		return "", &keyError{kind: KeyErrInvalidDocument, err: err}
 	}
 	return doc.JWKSURI, nil
 }
@@ -157,18 +224,18 @@ func (j *JWKS) get(ctx context.Context, rawURL, what string) ([]byte, error) {
 	req.Header.Set("Accept", "application/json")
 	resp, err := j.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", what, err)
+		return nil, keyErr(KeyErrUnreachable, "fetch %s: %w", what, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch %s: HTTP %d", what, resp.StatusCode)
+		return nil, keyErr(KeyErrHTTPStatus, "fetch %s: HTTP %d", what, resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", what, err)
+		return nil, keyErr(KeyErrUnreachable, "fetch %s: %w", what, err)
 	}
 	if len(body) > maxJWKSBytes {
-		return nil, fmt.Errorf("fetch %s: response too large", what)
+		return nil, keyErr(KeyErrInvalidDocument, "fetch %s: response too large", what)
 	}
 	return body, nil
 }
@@ -213,9 +280,15 @@ func ParseJWKS(body []byte, algs []string) (map[string]crypto.PublicKey, error) 
 		}
 	}
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("parse JWKS: no usable signing keys for %s", strings.Join(algs, ", "))
+		return nil, &noUsableKeysError{algs: algs}
 	}
 	return keys, nil
+}
+
+type noUsableKeysError struct{ algs []string }
+
+func (e *noUsableKeysError) Error() string {
+	return "parse JWKS: no usable signing keys for " + strings.Join(e.algs, ", ")
 }
 
 func rsaKey(k jwk) *rsa.PublicKey {

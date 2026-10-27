@@ -107,8 +107,8 @@ func currentUser(c *gin.Context) service.User {
 // used outside its own org. The service re-checks membership inside each
 // transaction and sets app.org_id for RLS.
 //
-// Roles listed in oidc.require_mfa_roles must have signed in with a second
-// factor (403 MFA_REQUIRED otherwise). API tokens are exempt: an admin or
+// Roles listed in oidc.require_mfa_roles, or added by the org's sign-in policy,
+// must have signed in with a second factor (403 MFA_REQUIRED otherwise). API tokens are exempt: an admin or
 // security lead needed that second factor to create one.
 func orgScope(svc *service.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -123,19 +123,22 @@ func orgScope(svc *service.Service) gin.HandlerFunc {
 			return
 		}
 		u := currentUser(c)
-		role, err := svc.OrgRole(c.Request.Context(), u.ID, orgID)
+		role, mfaRequired, err := svc.OrgAccess(c.Request.Context(), u.ID, orgID)
 		if err != nil {
 			fail(c, err)
 			return
 		}
-		if tok == nil && svc.MFARequired(role) {
-			if id, _ := c.Get(identityKey); !id.(service.Identity).MFA {
+		mfa := false
+		if tok == nil {
+			id, _ := c.Get(identityKey)
+			mfa = id.(service.Identity).MFA
+			if mfaRequired && !mfa {
 				fail(c, errMFARequired())
 				return
 			}
 		}
 		c.Set(actorKey, &service.Actor{
-			UserID: u.ID, OrgID: orgID, OrgRole: role, Token: tok,
+			UserID: u.ID, OrgID: orgID, OrgRole: role, Token: tok, MFA: mfa,
 			// RemoteIP, not ClientIP: X-Forwarded-For is client-controlled
 			// unless a trusted proxy is configured, and this goes in the audit log.
 			IP: c.RemoteIP(), UserAgent: c.Request.UserAgent(),

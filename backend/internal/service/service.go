@@ -30,8 +30,11 @@ type Config struct {
 	// Limits is reported by GET /me.
 	Limits Limits
 	// RequireMFARoles are the org roles that must sign in with a second factor
-	// to use an org (oidc.require_mfa_roles); API tokens are exempt.
+	// to use an org (oidc.require_mfa_roles); API tokens are exempt. Orgs can
+	// add roles (SignInPolicy.MFARoles), not remove these.
 	RequireMFARoles []rbac.Role
+	// SignIn is shown on the Sign-in settings page.
+	SignIn SignInConfig
 }
 
 type Service struct {
@@ -66,12 +69,8 @@ type Actor struct {
 	// Token is set when the request authenticated with an API token: the actor
 	// is the token's creator, limited to the token's project.
 	Token *TokenAuth
-}
-
-// MFARequired reports whether members with this org role must have signed in
-// with a second factor.
-func (s *Service) MFARequired(role rbac.Role) bool {
-	return slices.Contains(s.cfg.RequireMFARoles, role)
+	// MFA: this sign-in had a second factor (false for API tokens).
+	MFA bool
 }
 
 func (a *Actor) seesAllProjects() bool {

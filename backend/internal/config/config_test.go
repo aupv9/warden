@@ -201,3 +201,19 @@ func TestOIDCProviderSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestOIDCConsoleURL(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("WARDEN_OIDC__CONSOLE_URL", "https://idp.example.com/admin/")
+	c, err := Load()
+	if err != nil || c.OIDC.ConsoleURL != "https://idp.example.com/admin/" {
+		t.Fatal(c, err)
+	}
+	// Shown as a link in the UI: only web URLs.
+	for _, bad := range []string{"javascript:alert(1)", "file:///etc/passwd", "idp.example.com"} {
+		t.Setenv("WARDEN_OIDC__CONSOLE_URL", bad)
+		if _, err := Load(); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}

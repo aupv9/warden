@@ -53,9 +53,11 @@ func appOptions(cfg *config.Config) fx.Option {
 		app.Core(cfg),
 		db.Module,
 		httpserver.Module(api.ServerOptions()...),
-		fx.Provide(func(c *config.Config) cgauth.Verifier {
-			v := auth.NewVerifier(c.OIDC.Issuer, c.OIDC.Audience,
-				auth.NewJWKS(c.OIDC.Issuer, c.OIDC.JWKSURL, c.OIDC.JWKSCache, c.OIDC.Algorithms))
+		fx.Provide(func(c *config.Config) *auth.JWKS {
+			return auth.NewJWKS(c.OIDC.Issuer, c.OIDC.JWKSURL, c.OIDC.JWKSCache, c.OIDC.Algorithms)
+		}),
+		fx.Provide(func(c *config.Config, keys *auth.JWKS) cgauth.Verifier {
+			v := auth.NewVerifier(c.OIDC.Issuer, c.OIDC.Audience, keys)
 			v.Algs = c.OIDC.Algorithms
 			v.MFA = auth.MFAPolicy{AMR: c.OIDC.MFAAMR, ACR: c.OIDC.MFAACR}
 			return v
@@ -71,8 +73,13 @@ func appOptions(cfg *config.Config) fx.Option {
 			}
 			return objectStore{client}, nil
 		}),
-		fx.Provide(func(c *config.Config, pool *pgxpool.Pool, jobs *river.Client[pgx.Tx], objects api.ObjectStore, log *slog.Logger) *service.Service {
-			return service.New(store.New(pool, jobs), objects, ServiceConfig(c), log)
+		fx.Provide(func(c *config.Config, pool *pgxpool.Pool, jobs *river.Client[pgx.Tx], objects api.ObjectStore, keys *auth.JWKS, log *slog.Logger) *service.Service {
+			sc := ServiceConfig(c)
+			sc.SignIn.KeyStatus = func() service.KeyStatus {
+				st := keys.Status()
+				return service.KeyStatus{Count: st.Count, FetchedAt: st.FetchedAt, Err: st.Err}
+			}
+			return service.New(store.New(pool, jobs), objects, sc, log)
 		}),
 		fx.Invoke(api.Register),
 	)
@@ -85,6 +92,10 @@ func ServiceConfig(c *config.Config) service.Config {
 		RateLimitPerHour: c.Scan.RateLimitPerHour,
 		UploadURLTTL:     15 * time.Minute,
 		RequireMFARoles:  roles(c.OIDC.RequireMFARoles),
+		SignIn: service.SignInConfig{
+			Issuer: c.OIDC.Issuer, Audience: c.OIDC.Audience, Algorithms: c.OIDC.Algorithms,
+			KeysURL: c.OIDC.JWKSURL, ConsoleURL: c.OIDC.ConsoleURL, MFAAMR: c.OIDC.MFAAMR, MFAACR: c.OIDC.MFAACR,
+		},
 		Limits: service.Limits{
 			UploadMaxMB: c.Scan.UploadMaxMB, UnzipMaxMB: c.Scan.UnzipMaxMB, UnzipMaxFiles: c.Scan.UnzipMaxFiles,
 			ScanTimeoutMinutes: int(c.Scan.Timeout / time.Minute), ScansPerHour: c.Scan.RateLimitPerHour,

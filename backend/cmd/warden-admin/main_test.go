@@ -17,6 +17,12 @@ func TestUsageErrors(t *testing.T) {
 		{"org", "set-role", "--org", "8b3c2f8e-7b0e-4d3c-9a51-0c6f1f0b2a11", "--email", "a@b.c", "--role", "root"},
 		{"org", "set-role", "--org", "8b3c2f8e-7b0e-4d3c-9a51-0c6f1f0b2a11", "--role", "member"},
 		{"audit", "verify", "--org", "x"},
+		{"org", "add-member", "--org", "x", "--email", "a@b.c", "--role", "member"},
+		{"org", "add-member", "--org", "8b3c2f8e-7b0e-4d3c-9a51-0c6f1f0b2a11", "--email", "a@b.c", "--role", "owner"},
+		{"user", "relink", "--email", "a@b.c"},                                 // neither --sub nor --next-sign-in
+		{"user", "relink", "--email", "a@b.c", "--sub", "s", "--next-sign-in"}, // both
+		{"user", "relink", "--sub", "s"},
+		{"user", "relink", "--email", "a@b.c", "--next-sign-in", "--within", "soon"},
 	} {
 		var out, errOut bytes.Buffer
 		if code := run(args, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "usage:") {

@@ -3110,6 +3110,89 @@ a.notif-link:hover .notif-title {
   font-weight: 600;
   color: var(--ink);
 }
+/* Sign-in settings: identity provider details and the sign-in policy form. */
+.idp-kv {
+  max-width: 760px;
+}
+.policy-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.policy-section + .policy-section {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.policy-head {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.policy-desc {
+  max-width: 760px;
+  margin-bottom: 12px;
+}
+.policy-overview {
+  max-width: 760px;
+  margin-top: 14px;
+}
+.check-row:has(.check:disabled) {
+  cursor: default;
+}
+.check-row .check:disabled + span strong {
+  color: var(--text-2);
+}
+.role-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ok-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-2);
+}
+.ok-line .yes {
+  margin-top: 1px;
+}
+.domain-tags {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.domain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+.domain-item {
+  display: flex;
+  flex-direction: column;
+}
+.domain-item .field-error {
+  margin-top: 6px;
+}
+.domain-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.domain-row .input {
+  flex: 1;
+  min-width: 0;
+}
+.domain-any {
+  color: var(--text-2);
+}
 .input-suffix {
   position: relative;
   display: flex;
