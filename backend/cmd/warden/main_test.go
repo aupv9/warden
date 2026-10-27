@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -50,7 +53,13 @@ type fakeServer struct {
 	started   bool
 	cancelled bool
 	failOn    string
+	failKEV   string
 	sawAuth   []string
+	// SBOM: served at /sbom-download; sbomSum overrides the recorded SHA-256.
+	sbom     []byte
+	sbomSum  string
+	sbomAuth string
+	created  map[string]any // the last create request
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -76,6 +85,11 @@ func (f *fakeServer) reply(w http.ResponseWriter, status int, data any, code str
 func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if r.URL.Path == "/sbom-download" {
+		f.sbomAuth = r.Header.Get("Authorization")
+		_, _ = w.Write(f.sbom)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/upload/") {
 		if r.Method != http.MethodPut || r.Header.Get("Authorization") != "" || r.URL.Query().Get("X-Amz-Signature") == "" {
 			w.WriteHeader(http.StatusForbidden)
@@ -104,10 +118,11 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || in["file_name"] != "repo.zip" {
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || (in["file_name"] != "repo.zip" && in["kind"] != "image") {
 			f.reply(w, 422, nil, "VALIDATION_FAILED")
 			return
 		}
+		f.created = in
 		up := f.uploadURL
 		if up == "" {
 			up = f.srv.URL + "/upload/" + f.scanID + "?X-Amz-Signature=presigned-signature"
@@ -137,7 +152,16 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.reply(w, 200, map[string]any{"id": f.scanID, "status": st, "error_code": f.errorCode}, "")
 	case r.Method == "GET" && r.URL.Path == scan+"/gate":
 		f.failOn = r.URL.Query().Get("fail_on")
+		f.failKEV = r.URL.Query().Get("fail_on_kev")
 		f.reply(w, 200, f.gate, "")
+	case r.Method == "GET" && r.URL.Path == scan+"/sbom" && f.sbom != nil:
+		sum := f.sbomSum
+		if sum == "" {
+			h := sha256.Sum256(f.sbom)
+			sum = hex.EncodeToString(h[:])
+		}
+		f.reply(w, 200, map[string]any{"url": f.srv.URL + "/sbom-download?X-Amz-Signature=presigned-signature", "size": len(f.sbom),
+			"sha256": sum, "components": 2, "format": "cyclonedx-json", "expires_at": "2026-10-28T00:00:00Z"}, "")
 	default:
 		f.reply(w, 404, nil, "NOT_FOUND")
 	}
@@ -193,6 +217,54 @@ func TestScanPasses(t *testing.T) {
 	// The upload carries the server's headers, never a credential.
 	if f.uploadHdr.Get("x-amz-checksum-sha256") != "abc" || f.uploadHdr.Get("Authorization") != "" {
 		t.Fatal(f.uploadHdr)
+	}
+}
+
+func TestSBOMOut(t *testing.T) {
+	f := newFakeServer(t)
+	f.sbom = []byte(`{"bomFormat":"CycloneDX","components":[{"name":"a"},{"name":"b"}]}`)
+	dest := filepath.Join(t.TempDir(), "bom.cdx.json")
+	_ = os.WriteFile(dest, []byte("old"), 0o600) // replaced
+	r := f.run(t, f.token, testDeps(), "--sbom-out", dest)
+	if r.code != exitPass || !strings.Contains(r.stdout, "SBOM (CycloneDX, 2 components) saved to "+dest) {
+		t.Fatalf("%+v", r)
+	}
+	got, _ := os.ReadFile(dest)
+	st, _ := os.Stat(dest)
+	if !bytes.Equal(got, f.sbom) || st.Mode().Perm() != 0o644 {
+		t.Fatalf("%q %v", got, st.Mode())
+	}
+	// The presigned download never carries the API token.
+	if f.sbomAuth != "" {
+		t.Fatal("token sent to object storage")
+	}
+
+	// A file that doesn't match what the server recorded is not written.
+	f.sbomSum = strings.Repeat("0", 64)
+	other := filepath.Join(t.TempDir(), "bom.json")
+	if r := f.run(t, f.token, testDeps(), "--sbom-out", other); r.code != exitError || !strings.Contains(r.stderr, "doesn't match") {
+		t.Fatalf("%+v", r)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(other)); len(entries) != 0 {
+		t.Fatalf("left %v", entries)
+	}
+	// No SBOM (Trivy didn't run): an error, not a silent pass.
+	f.sbom = nil
+	if r := f.run(t, f.token, testDeps(), "--sbom-out", other); r.code != exitError || !strings.Contains(r.stderr, "has no SBOM") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestFailOnKEV(t *testing.T) {
+	f := newFakeServer(t)
+	if r := f.run(t, f.token, testDeps()); r.code != exitPass || f.failKEV != "" {
+		t.Fatalf("%+v %q", r, f.failKEV)
+	}
+	f.gate = map[string]any{"status": "completed", "finished": true, "pass": false, "fail_on": "critical",
+		"counts": map[string]int{"medium": 1}, "blocking": []map[string]any{{"id": "i-1", "key": "WEB-1", "title": "log4shell", "severity": "medium", "kev": true}}}
+	r := f.run(t, f.token, testDeps(), "--fail-on", "critical", "--fail-on-kev")
+	if r.code != exitGateFailed || f.failKEV != "true" || !strings.Contains(r.stdout, "1 blocking issue(s) at or above critical or known exploited (KEV)") {
+		t.Fatalf("%+v %q", r, f.failKEV)
 	}
 }
 

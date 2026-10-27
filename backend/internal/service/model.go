@@ -69,6 +69,7 @@ type Limits struct {
 	UnzipMaxFiles      int `json:"unzip_max_files"`
 	ScanTimeoutMinutes int `json:"scan_timeout_minutes"`
 	ScansPerHour       int `json:"scans_per_hour"`
+	ImageUploadMaxMB   int `json:"image_upload_max_mb"`
 }
 
 type OrgRef struct {
@@ -200,10 +201,24 @@ type Scan struct {
 	FinishedAt *Time      `json:"finished_at"`
 	ViaToken   *TokenRef  `json:"via_token"`
 	ToolRuns   *[]ToolRun `json:"tool_runs,omitempty"`
+	// Kind is source (a zip of code) or image (a docker save tarball);
+	// Target is the image repository ("" for source scans).
+	Kind     string  `json:"kind"`
+	Target   string  `json:"target"`
+	ImageRef *string `json:"image_ref"`
+	// SBOM is set while the scan's SBOM is stored and not expired.
+	SBOM *ScanSBOM `json:"sbom"`
 
 	OrgID     uuid.UUID `json:"-"`
 	ObjectKey string    `json:"-"`
 	SHA256    string    `json:"-"`
+}
+
+type ScanSBOM struct {
+	Components int    `json:"components"`
+	Size       int64  `json:"size"`
+	Key        string `json:"-"`
+	SHA256     string `json:"-"`
 }
 
 type Upload struct {

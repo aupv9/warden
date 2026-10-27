@@ -111,8 +111,53 @@ func (e *Env) PurgeExpiredSources(ctx context.Context) error {
 		if n := len(abandoned) + len(expired); n > 0 {
 			e.Log.Info("purged uploaded sources", "org_id", org, "abandoned", len(abandoned), "expired", len(expired), "errors", len(errs))
 		}
-		return errors.Join(errs...)
+		return errors.Join(append(errs, e.purgeSBOMs(ctx, org, now))...)
 	})
+}
+
+type sbomRow struct {
+	ID  uuid.UUID
+	Key string
+}
+
+// purgeSBOMs deletes SBOMs past scan.sbom_retention: the object first, then
+// all the scan's sbom_* columns at once (a failed delete is retried on the
+// next run, and the API already treats the SBOM as gone).
+func (e *Env) purgeSBOMs(ctx context.Context, org uuid.UUID, now time.Time) error {
+	var expired []sbomRow
+	err := e.Tx(ctx, org, func(db DB) error {
+		rows, err := db.Query(ctx, `SELECT id, sbom_key FROM scan WHERE sbom_key IS NOT NULL AND sbom_expires_at <= $1
+			ORDER BY sbom_expires_at LIMIT $2`, now, sweepBatch)
+		if err != nil {
+			return err
+		}
+		expired, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (sbomRow, error) {
+			var s sbomRow
+			return s, r.Scan(&s.ID, &s.Key)
+		})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, s := range expired {
+		if err := e.Store.Delete(ctx, s.Key); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := e.Tx(ctx, org, func(db DB) error {
+			_, err := db.Exec(ctx, `UPDATE scan SET sbom_key = NULL, sbom_size = NULL, sbom_sha256 = NULL, sbom_components = NULL,
+				sbom_expires_at = NULL WHERE id = $1 AND sbom_key = $2`, s.ID, s.Key)
+			return err
+		}); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(expired) > 0 {
+		e.Log.Info("purged expired SBOMs", "org_id", org, "expired", len(expired), "errors", len(errs))
+	}
+	return errors.Join(errs...)
 }
 
 type expiredException struct {

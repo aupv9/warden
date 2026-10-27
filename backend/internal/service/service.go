@@ -21,8 +21,10 @@ import (
 )
 
 type Config struct {
-	// UploadMaxBytes caps file_size on scan creation.
+	// UploadMaxBytes caps file_size on scan creation (source scans).
 	UploadMaxBytes int64
+	// ImageUploadMaxBytes caps file_size of image scans.
+	ImageUploadMaxBytes int64
 	// RateLimitPerHour caps scans created per user per hour (≤ 0: unlimited).
 	RateLimitPerHour int
 	// UploadURLTTL is how long a presigned upload URL is valid.

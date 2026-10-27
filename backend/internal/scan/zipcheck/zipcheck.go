@@ -21,12 +21,12 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding/charmap"
+
+	"github.com/aupv9/warden/backend/internal/scan/archpath"
 )
 
 const (
 	chunk          = 64 * 1024
-	MaxPathLen     = 1024
-	MaxPathDepth   = 50
 	MaxRatio       = 100
 	RatioFloor     = 1024 * 1024
 	MaxBinaryBytes = 5 * 1024 * 1024
@@ -42,7 +42,6 @@ var zipMagic = []byte("PK\x03\x04")
 var SkipDirs = []string{"node_modules", "vendor", "dist", "build", ".git", ".venv"}
 
 var (
-	windowsDrive    = regexp.MustCompile(`^[A-Za-z]:`)
 	unsafeNameChars = regexp.MustCompile(`[^A-Za-z0-9._\-]`)
 )
 
@@ -141,29 +140,11 @@ func safeRename(name string) string {
 }
 
 // validatePath returns the cleaned relative parts of an entry name, or an empty
-// slice for the archive root itself.
+// slice for the archive root itself (the rules are shared with imagecheck).
 func validatePath(name string) ([]string, error) {
-	if strings.ContainsRune(name, 0) {
-		return nil, reject("ZIP_PATH_TRAVERSAL", "entry name contains NUL")
-	}
-	norm := strings.ReplaceAll(name, `\`, "/")
-	if utf8.RuneCountInString(norm) > MaxPathLen {
-		return nil, reject("ZIP_PATH_TRAVERSAL", "entry path longer than %d", MaxPathLen)
-	}
-	if strings.HasPrefix(norm, "/") || windowsDrive.MatchString(norm) {
-		return nil, reject("ZIP_PATH_TRAVERSAL", "absolute entry path %q", name)
-	}
-	var parts []string
-	for _, p := range strings.Split(norm, "/") {
-		if p != "" && p != "." {
-			parts = append(parts, p)
-		}
-	}
-	if slices.Contains(parts, "..") {
-		return nil, reject("ZIP_PATH_TRAVERSAL", "entry %q escapes the archive root", name)
-	}
-	if len(parts) > MaxPathDepth {
-		return nil, reject("ZIP_PATH_TRAVERSAL", "entry path deeper than %d", MaxPathDepth)
+	parts, err := archpath.Clean(name)
+	if err != nil {
+		return nil, reject("ZIP_PATH_TRAVERSAL", "%v", err)
 	}
 	return parts, nil
 }
