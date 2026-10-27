@@ -165,14 +165,14 @@ func TestParseJWKSFiltersUnsafeKeys(t *testing.T) {
 		map[string]string{"kid": "ec", "kty": "EC"},
 		map[string]string{"kid": "bad", "kty": "RSA", "n": "!!", "e": "AQAB"},
 	}})
-	keys, err := ParseJWKS(body)
+	keys, err := ParseJWKS(body, []string{"RS256"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(keys) != 1 || keys["sig"] == nil {
 		t.Fatalf("%v", keys)
 	}
-	if _, err := ParseJWKS([]byte(`{"keys":[]}`)); err == nil {
+	if _, err := ParseJWKS([]byte(`{"keys":[]}`), []string{"RS256"}); err == nil {
 		t.Fatal("empty JWKS accepted")
 	}
 }
@@ -190,7 +190,7 @@ func TestJWKSFetchCacheAndMissRateLimit(t *testing.T) {
 	defer srv.Close()
 
 	now := time.Now()
-	j := NewJWKS(srv.URL+"/realms/warden/", 10*time.Minute)
+	j := NewJWKS(issuer, srv.URL+"/realms/warden/protocol/openid-connect/certs", 10*time.Minute, []string{"RS256"})
 	j.now = func() time.Time { return now }
 	v := NewVerifier(issuer, audience, j)
 	ctx := context.Background()
@@ -223,7 +223,7 @@ func TestJWKSRejectsOversizedResponse(t *testing.T) {
 		_, _ = w.Write([]byte(`{"keys":[],"pad":"` + strings.Repeat("a", maxJWKSBytes) + `"}`))
 	}))
 	defer srv.Close()
-	if _, err := NewJWKS(srv.URL, time.Minute).Key(context.Background(), "k1"); err == nil {
+	if _, err := NewJWKS(issuer, srv.URL, time.Minute, []string{"RS256"}).Key(context.Background(), "k1"); err == nil {
 		t.Fatal("oversized JWKS accepted")
 	}
 }

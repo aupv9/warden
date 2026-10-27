@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,8 @@ func TestInvalidValuesAreErrors(t *testing.T) {
 		"WARDEN_OIDC__ISSUER":                "not a url",
 		"WARDEN_LOG__LEVEL":                  "loud",
 		"WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO": "2",
+		"WARDEN_OIDC__ALGORITHMS":            "HS256",
+		"WARDEN_OIDC__JWKS_URL":              "not a url",
 	} {
 		t.Run(k, func(t *testing.T) {
 			t.Setenv(k, v)
@@ -169,5 +172,32 @@ func TestRequireMFARolesFromYAML(t *testing.T) {
 	c, err := Load()
 	if err != nil || strings.Join(c.OIDC.RequireMFARoles, ",") != "security_lead" {
 		t.Fatal(c.OIDC.RequireMFARoles, err)
+	}
+}
+
+func TestOIDCProviderSettings(t *testing.T) {
+	t.Chdir(t.TempDir())
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.OIDC.Algorithms, List{"RS256"}) || !slices.Contains(c.OIDC.MFAAMR, "otp") || c.OIDC.JWKSURL != "" || len(c.OIDC.MFAACR) != 0 {
+		t.Fatalf("%+v", c.OIDC)
+	}
+	t.Setenv("WARDEN_OIDC__ALGORITHMS", "RS256, ES256")
+	t.Setenv("WARDEN_OIDC__MFA_ACR", "urn:okta:loa:2fa:any")
+	t.Setenv("WARDEN_OIDC__JWKS_URL", "https://login.example.com/keys")
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.OIDC.Algorithms, List{"RS256", "ES256"}) || !slices.Equal(c.OIDC.MFAACR, List{"urn:okta:loa:2fa:any"}) ||
+		c.OIDC.JWKSURL != "https://login.example.com/keys" {
+		t.Fatalf("%+v", c.OIDC)
+	}
+	for _, bad := range []string{"none", "PS256", ","} {
+		t.Setenv("WARDEN_OIDC__ALGORITHMS", bad)
+		if _, err := Load(); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
 	}
 }

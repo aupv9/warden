@@ -21,6 +21,8 @@ go under `[Unreleased]` in `CHANGELOG.md`.
 - Release: push a tag `vX.Y.Z[-pre]` on main; `.github/workflows/release.yml` reruns ci.yml,
   then publishes binaries, SBOMs, checksums and `ghcr.io/aupv9/warden`, all with provenance attestations.
   Version is stamped via `-X github.com/aupv9/common-go/health.Version` (Makefile, Dockerfile, release.yml).
+- Auth is plain OIDC: keys from the issuer's discovery document (or `oidc.jwks_url`), RS256/ES256,
+  MFA from `amr`/`acr` per `oidc.mfa_*`. Don't add provider-specific paths; Keycloak is only the dev default.
 - Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`).
 
 ## Rules

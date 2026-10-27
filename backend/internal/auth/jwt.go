@@ -1,5 +1,6 @@
-// Package auth verifies Keycloak access tokens: RS256 only, signature checked
-// against the realm's JWKS, and iss/aud/exp/iat/sub required. It implements
+// Package auth verifies OIDC access tokens from any standard provider (Keycloak
+// by default; Okta, Entra ID, Auth0, …): RS256 (optionally ES256) only,
+// signature checked against the provider's JWKS, and iss/aud/exp/iat/sub required. It implements
 // common-go's auth.Verifier, but not with common-go's JWKSVerifier, which leaves
 // exp/iat/sub optional, accepts encryption keys and short RSA keys, and has no
 // response size limit or HTTP timeout.
@@ -7,7 +8,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rsa"
+	"crypto"
 	"errors"
 	"fmt"
 	"slices"
@@ -42,26 +43,58 @@ func AMR(p *cgauth.Principal) []string {
 	return out
 }
 
-// MFA reports whether the token says a second factor was used (admins and
-// security leads must have one).
-func MFA(p *cgauth.Principal) bool {
-	return slices.ContainsFunc(AMR(p), func(m string) bool { return slices.Contains(mfaMethods, m) })
+// MFAPolicy decides whether a token proves a second factor. Providers say it
+// differently: Keycloak, Entra ID and Okta list methods in "amr" (otp, mfa,
+// hwk, webauthn); some use an "acr" level instead.
+type MFAPolicy struct {
+	AMR []string // any of these in the amr claim
+	ACR []string // or the acr claim equal to one of these
 }
 
-// KeySource resolves a token's kid to the realm's RSA signing key.
+// DefaultMFAPolicy accepts the common amr values.
+var DefaultMFAPolicy = MFAPolicy{AMR: mfaMethods}
+
+func (m MFAPolicy) Satisfied(p *cgauth.Principal) bool {
+	if slices.ContainsFunc(AMR(p), func(a string) bool { return slices.Contains(m.AMR, a) }) {
+		return true
+	}
+	acr, _ := p.Claims["acr"].(string)
+	return acr != "" && slices.Contains(m.ACR, acr)
+}
+
+// MFA reports whether the token says a second factor was used, by the default
+// policy (admins and security leads must have one).
+func MFA(p *cgauth.Principal) bool { return DefaultMFAPolicy.Satisfied(p) }
+
+// MFAOf applies v's MFA policy when v is a *Verifier, the default otherwise.
+func MFAOf(v any, p *cgauth.Principal) bool {
+	if vv, ok := v.(*Verifier); ok {
+		return vv.MFA.Satisfied(p)
+	}
+	return MFA(p)
+}
+
+// KeySource resolves a token's kid to the provider's signing key (*rsa.PublicKey
+// or *ecdsa.PublicKey). The JWT library checks the key type against the token's
+// algorithm, so an RS256 token can't be verified with an EC key or vice versa.
 type KeySource interface {
-	Key(ctx context.Context, kid string) (*rsa.PublicKey, error)
+	Key(ctx context.Context, kid string) (crypto.PublicKey, error)
 }
 
 type Verifier struct {
 	Issuer   string
 	Audience string
 	Keys     KeySource
-	now      func() time.Time
+	// Algs are the accepted signing algorithms (default RS256).
+	Algs []string
+	MFA  MFAPolicy
+	now  func() time.Time
 }
 
+// NewVerifier accepts RS256 tokens and the default MFA policy; set Algs and MFA
+// for other providers.
 func NewVerifier(issuer, audience string, keys KeySource) *Verifier {
-	return &Verifier{Issuer: issuer, Audience: audience, Keys: keys}
+	return &Verifier{Issuer: issuer, Audience: audience, Keys: keys, Algs: []string{"RS256"}, MFA: DefaultMFAPolicy}
 }
 
 var _ cgauth.Verifier = (*Verifier)(nil)
@@ -80,7 +113,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (*cgauth.Principal,
 		return nil, &apperrors.AppError{Kind: apperrors.KindUnauthorized, Code: "UNAUTHORIZED", Message: "missing bearer token"}
 	}
 	opts := []jwt.ParserOption{
-		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithValidMethods(v.algs()),
 		jwt.WithIssuer(v.Issuer),
 		jwt.WithAudience(v.Audience),
 		jwt.WithExpirationRequired(),
@@ -113,10 +146,17 @@ func (v *Verifier) Verify(ctx context.Context, token string) (*cgauth.Principal,
 	return &cgauth.Principal{Subject: sub, Issuer: iss, Scopes: strings.Fields(scope), Claims: claims}, nil
 }
 
-// StaticKeys is a KeySource for tests and fixed deployments.
-type StaticKeys map[string]*rsa.PublicKey
+func (v *Verifier) algs() []string {
+	if len(v.Algs) == 0 {
+		return []string{"RS256"}
+	}
+	return v.Algs
+}
 
-func (s StaticKeys) Key(_ context.Context, kid string) (*rsa.PublicKey, error) {
+// StaticKeys is a KeySource for tests and fixed deployments.
+type StaticKeys map[string]crypto.PublicKey
+
+func (s StaticKeys) Key(_ context.Context, kid string) (crypto.PublicKey, error) {
 	if k, ok := s[kid]; ok {
 		return k, nil
 	}

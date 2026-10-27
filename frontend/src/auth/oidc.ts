@@ -2,12 +2,18 @@ import { InMemoryWebStorage, UserManager, WebStorageStateStore } from "oidc-clie
 
 // Tokens live in memory only (not localStorage), so an XSS can't read a stored token and a
 // reload means signing in again (usually silent at the IdP). Nothing here logs a token.
+//
+// Any OIDC provider works (Keycloak by default). VITE_OIDC_SCOPE adds the API scope some
+// providers need for an access token meant for Warden (Entra ID: "api://<app>/access"), and
+// VITE_OIDC_AUDIENCE is sent as `audience` (Auth0 needs it to issue a JWT access token).
+const audience = import.meta.env.VITE_OIDC_AUDIENCE;
 export const userManager = new UserManager({
   authority: import.meta.env.VITE_OIDC_ISSUER ?? "http://localhost:8180/realms/warden",
   client_id: import.meta.env.VITE_OIDC_CLIENT_ID ?? "warden-web",
   redirect_uri: `${window.location.origin}/`,
   response_type: "code",
-  scope: "openid profile email",
+  scope: import.meta.env.VITE_OIDC_SCOPE ?? "openid profile email",
+  ...(audience ? { extraQueryParams: { audience } } : {}),
   userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
   automaticSilentRenew: true,
 });
