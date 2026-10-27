@@ -8,7 +8,7 @@ LDFLAGS := -s -w -X $(HEALTH).Version=$(VERSION) -X $(HEALTH).Commit=$(shell git
 # Colima: testcontainers needs the VM-side socket path for its reaper container.
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE ?= /var/run/docker.sock
 
-.PHONY: help setup env up down migrate api worker web test test-int lint vulncheck build mirror selfscan selfscan-release clean
+.PHONY: help setup env up idp down migrate api worker web test test-int lint vulncheck build mirror selfscan selfscan-release clean
 
 help:  ## Show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -23,6 +23,9 @@ env:  ## Generate .env with random dev secrets
 up: env  ## Start Postgres, Redis, S3, Keycloak, Mailpit
 	docker compose up -d --wait
 	./scripts/dev-s3-init.sh
+
+idp:  ## Add GitHub/Google sign-in to the dev Keycloak (GITHUB_*/GOOGLE_* in .env)
+	./scripts/dev-idp.sh
 
 down:  ## Stop the dev stack
 	docker compose down

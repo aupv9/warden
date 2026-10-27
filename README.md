@@ -98,7 +98,10 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SERVER__HOST` / `WARDEN_SERVER__PORT` | `127.0.0.1` / `8010` | API listen address |
 | `WARDEN_DATABASE__DSN` | | Runtime connection, as `warden_app` |
 | `WARDEN_MIGRATE__DSN` | | Schema owner; used only by `warden-migrate` |
-| `WARDEN_OIDC__ISSUER` / `WARDEN_OIDC__AUDIENCE` | Keycloak realm / `warden-api` | Access tokens: RS256 only, JWKS from the issuer |
+| `WARDEN_OIDC__ISSUER` / `WARDEN_OIDC__AUDIENCE` | Keycloak realm / `warden-api` | Any OIDC provider; the access token's `iss` and `aud` must match exactly. Keys come from the issuer's `/.well-known/openid-configuration` (see "Sign-in and identity providers") |
+| `WARDEN_OIDC__JWKS_URL` | | Pin the signing-key URL instead of discovering it |
+| `WARDEN_OIDC__ALGORITHMS` | `RS256` | Accepted token signatures: `RS256` and/or `ES256` (anything else is refused at startup) |
+| `WARDEN_OIDC__MFA_AMR` / `WARDEN_OIDC__MFA_ACR` | `otp,mfa,hwk,webauthn` / | A token proves a second factor when its `amr` claim holds one of these, or its `acr` equals one of these (for providers that use `acr`) |
 | `WARDEN_OIDC__REQUIRE_MFA_ROLES` | `org_admin,security_lead` | Org roles that must sign in with a second factor (the token's `amr` claim: `otp`, `mfa`, `hwk` or `webauthn`); otherwise every request under the org is `403 MFA_REQUIRED`. Comma-separated (a YAML list in `config.yaml`); empty disables the rule, as `.env.example` does for the dev realm. API tokens are exempt |
 | `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
@@ -121,6 +124,39 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 
 See [`.env.example`](.env.example) for a complete local setup and
 [`backend/internal/config`](backend/internal/config/config.go) for every option.
+
+## Sign-in and identity providers
+
+Warden never handles passwords: the web UI signs people in with OIDC (authorization code +
+PKCE) at an identity provider, and the API accepts that provider's access tokens.
+
+**More sign-in methods (Keycloak).** Everything on the sign-in page is Keycloak
+configuration, not Warden code: social logins and corporate SSO under *Identity providers*
+(OIDC or SAML: Google, GitHub, Microsoft Entra ID, Okta, ADFS…), LDAP / Active Directory under
+*User federation*, passkeys and OTP under *Authentication*. For the dev realm,
+`make idp` adds "Sign in with GitHub / Google" from `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`
+and `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (optionally `GOOGLE_HOSTED_DOMAIN` to allow one
+Workspace domain) in `.env`; register `http://localhost:8180/realms/warden/broker/<github|google>/endpoint`
+as the callback at the provider. Only providers that verify email addresses should be marked
+"trust email": Warden rejects tokens with `email_verified: false` and never merges two
+accounts that share an address.
+
+**Another identity provider instead of Keycloak.** Any provider that issues JWT access tokens
+for an API works:
+
+| Provider | API side (`WARDEN_OIDC__…`) | Web side (build-time `VITE_OIDC_…`) |
+|---|---|---|
+| Okta | `ISSUER=https://<org>.okta.com/oauth2/default`, `AUDIENCE=` the authorization server's audience | `ISSUER` same, `CLIENT_ID` of a SPA app |
+| Microsoft Entra ID | `ISSUER=https://login.microsoftonline.com/<tenant>/v2.0`, `AUDIENCE=` the API's application ID; "Expose an API" with a scope | `SCOPE="openid profile email api://<api-app>/access"` |
+| Auth0 | `ISSUER=https://<tenant>.auth0.com/` (trailing slash), `AUDIENCE=` the API identifier | `AUDIENCE=` the same identifier |
+| Authentik, Zitadel, Keycloak elsewhere | issuer of the application/realm | client ID of a public SPA client |
+
+Google and GitHub can't be used directly: they don't issue JWT access tokens for your own
+API, so put them behind a broker (Keycloak, Auth0, Dex). The token must carry `sub`, `email`,
+`iss`, `aud`, `exp`, `iat` and a `kid`. If the provider signs with ES256, set
+`WARDEN_OIDC__ALGORITHMS=RS256,ES256`. If it reports a second factor in `acr` rather than
+`amr` (for example Okta's `urn:okta:loa:2fa:any`), set `WARDEN_OIDC__MFA_ACR`, or the
+two-factor rule will block org admins and security leads.
 
 ## API
 
