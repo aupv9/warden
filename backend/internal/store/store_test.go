@@ -107,6 +107,14 @@ func TestBuildIssueList(t *testing.T) {
 			[]string{"(i.updated_at, i.id) < (", "ORDER BY i.updated_at DESC"}},
 		{service.IssueQuery{Sort: service.SortDueAt, After: &service.IssueCursor{Sort: service.SortDueAt, ID: uuid.New()}},
 			[]string{"(i.due_at IS NULL AND i.id > "}},
+		{service.IssueQuery{Sort: service.SortEPSS, After: &service.IssueCursor{Sort: service.SortEPSS, EPSS: fptr(0.5), ID: uuid.New()}},
+			[]string{"(vi.epss < $", "OR vi.epss IS NULL OR (vi.epss = $", "ORDER BY vi.epss DESC NULLS LAST, i.id DESC", "LEFT JOIN LATERAL"}},
+		{service.IssueQuery{Sort: service.SortEPSS, After: &service.IssueCursor{Sort: service.SortEPSS, ID: uuid.New()}},
+			[]string{"(vi.epss IS NULL AND i.id < "}},
+		{service.IssueQuery{Kind: service.KindVulnerability, KEV: true, EPSSMin: fptr(0.1), Source: "code"},
+			[]string{"i.tool = 'trivy' AND NOT i.rule_id LIKE 'license:%'", "v.kev_added IS NOT NULL", "v.epss >= $", "::real", "i.target = ''"}},
+		{service.IssueQuery{Kind: service.KindLicense, Source: "image", Target: "ghcr.io/acme/api"},
+			[]string{"i.tool = 'trivy' AND i.rule_id LIKE 'license:%'", "i.target <> ''", "i.target = $"}},
 	} {
 		c.q.Vis, c.q.Now, c.q.Limit = base.Vis, now, 10
 		sql, a := buildIssueList(c.q)
@@ -120,7 +128,15 @@ func TestBuildIssueList(t *testing.T) {
 
 	sql, a = buildIssueCounts(full)
 	checkParams(t, sql, a)
-	if !strings.Contains(sql, "GROUP BY 1") || strings.Contains(sql, "LIMIT") {
+	if !strings.Contains(sql, "GROUP BY 1") || strings.Contains(sql, "LIMIT") || strings.Contains(sql, "LATERAL") {
+		t.Fatal(sql)
+	}
+	// The intel filters work without the lateral join, so the severity
+	// chips stay consistent with the list.
+	intelQ := service.IssueQuery{Vis: base.Vis, Now: now, KEV: true, EPSSMin: fptr(0.5), Kind: service.KindVulnerability, Source: "image"}
+	sql, a = buildIssueCounts(intelQ)
+	checkParams(t, sql, a)
+	if !strings.Contains(sql, "v.kev_added IS NOT NULL") || !strings.Contains(sql, "v.epss >= ") || strings.Contains(sql, "vi.") {
 		t.Fatal(sql)
 	}
 }
@@ -236,3 +252,5 @@ func TestNormalizers(t *testing.T) {
 		t.Fatal(likePattern(`a%b_c\`))
 	}
 }
+
+func fptr(v float64) *float64 { return &v }

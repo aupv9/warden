@@ -170,6 +170,6 @@ func (h tokenHandlers) gate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.Gate(c.Request.Context(), actor(c), scanID, c.Query("fail_on"))
+	out, err := h.svc.Gate(c.Request.Context(), actor(c), scanID, c.Query("fail_on"), c.Query("fail_on_kev"))
 	reply(c, false, out, err)
 }

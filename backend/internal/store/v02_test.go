@@ -145,7 +145,7 @@ func TestRepoMetrics(t *testing.T) {
 		"e.to_value = 'fixed'":                 {{"2026-10-21", 1}},
 		"WITH first_fix":                       {{"critical", 24.0, 1, 0}, {"high", 48.0, 0, 1}, {"medium", 1.0, 0, 0}, {"low", 2.0, 1, 0}, {"info", 3.0, 0, 0}},
 		"SELECT count(*)::int FROM":            {{4}},
-		"count(*) FILTER (WHERE i.assignee_id": {{5, 1, 2, 3}},
+		"count(*) FILTER (WHERE i.assignee_id": {{5, 1, 2, 3, 1, 2}},
 	}))
 	v := service.Visibility{OrgID: org, UserID: user}
 	d, err := r.Metrics(ctx, service.MetricsQuery{Vis: v, ProjectID: &proj, Start: now.AddDate(0, 0, -29), Now: now})
@@ -163,7 +163,7 @@ func TestRepoMetrics(t *testing.T) {
 		}
 	}
 	all := service.Visibility{OrgID: org, UserID: user, All: true}
-	if tot, err := r.IssueTotals(ctx, service.TotalsQuery{Vis: all, Now: now}); err != nil || tot != (service.IssueTotals{Active: 5, Mine: 1, PastSLA: 2, Secrets: 3}) {
+	if tot, err := r.IssueTotals(ctx, service.TotalsQuery{Vis: all, Now: now}); err != nil || tot != (service.IssueTotals{Active: 5, Mine: 1, PastSLA: 2, Secrets: 3, KEV: 1, Licenses: 2}) {
 		t.Fatal(tot, err)
 	}
 	if q := tx.sqls[len(tx.sqls)-1]; !strings.Contains(q, "p.archived_at IS NULL") || strings.Contains(q, "project_member vm") {

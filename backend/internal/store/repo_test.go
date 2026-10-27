@@ -339,9 +339,10 @@ func TestRepoProjectsAndScans(t *testing.T) {
 
 func issueRow(id, proj, scan uuid.UUID, withDetail bool) []any {
 	row := []any{id, "WEB-1", proj, "t", "high", "open", "opengrep", "r", nil, nil, nil, nil, nil,
-		uuid.New(), "a@b.c", "A", now, true, now}
+		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97}
 	if withDetail {
-		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB")
+		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB",
+			0.99, "2024-03-01", true)
 	}
 	return row
 }
@@ -356,13 +357,14 @@ func TestRepoIssues(t *testing.T) {
 		"SELECT id FROM exception": {{iss}},
 	}))
 	q := service.IssueQuery{Vis: service.Visibility{OrgID: org, UserID: user}, Now: now, Limit: 5}
-	if l, err := r.Issues(ctx, q); err != nil || len(l) != 1 || l[0].Assignee == nil || !l[0].PastSLA {
+	if l, err := r.Issues(ctx, q); err != nil || len(l) != 1 || l[0].Assignee == nil || !l[0].PastSLA || !l[0].KEV || *l[0].EPSS != 0.97 {
 		t.Fatal(l, err)
 	}
 	if c, err := r.IssueCounts(ctx, q); err != nil || c.High != 2 || c.Low != 1 {
 		t.Fatal(c, err)
 	}
-	if i, err := r.Issue(ctx, iss, true, now); err != nil || i.Version != 3 || i.CWE[0] != "CWE-79" || i.Occurrences != 2 {
+	if i, err := r.Issue(ctx, iss, true, now); err != nil || i.Version != 3 || i.CWE[0] != "CWE-79" || i.Occurrences != 2 ||
+		*i.EPSSPercentile != 0.99 || *i.KEVAdded != "2024-03-01" || !i.KEVRansomware {
 		t.Fatal(i, err)
 	}
 	if c, err := r.Comments(ctx, iss); err != nil || len(c) != 1 {

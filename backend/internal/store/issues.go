@@ -21,20 +21,42 @@ func (r *Repo) EnqueueScan(ctx context.Context, job worker.ScanArgs) error {
 	return err
 }
 
-// issueSummaryCols needs the past-due timestamp as its first parameter.
+// issueSummaryCols needs the past-due timestamp as its first parameter, and
+// issueFrom (for au and vi).
 func issueSummaryCols(now string) string {
 	return `i.id, p.key || '-' || i.number, i.project_id, i.title, i.severity::text, i.status::text, i.tool, i.rule_id,
 		i.file_path, i.start_line, i.package_name, i.package_version, i.fixed_version,
 		au.id, au.email::text, au.display_name, i.due_at,
-		(i.due_at IS NOT NULL AND i.due_at < ` + now + ` AND i.status IN ` + activeStatuses + `), i.updated_at`
+		(i.due_at IS NOT NULL AND i.due_at < ` + now + ` AND i.status IN ` + activeStatuses + `), i.updated_at,
+		i.target, coalesce(vi.kev, false), vi.epss`
 }
 
-const issueFrom = ` FROM issue i JOIN project p ON p.id = i.project_id LEFT JOIN app_user au ON au.id = i.assignee_id`
+// issueBase is the issue/project join every issue query filters on.
+const issueBase = ` FROM issue i JOIN project p ON p.id = i.project_id`
+
+// intelJoin adds vi: exploit intelligence over the issue's CVEs (any in KEV,
+// the highest EPSS). Scores are real in the table; going through numeric
+// gives the float8 of their shortest decimal (0.04753, not 0.0475300006…), so
+// the value a client sees is exactly the -epss cursor value compared here.
+const intelJoin = ` LEFT JOIN LATERAL (SELECT bool_or(v.kev_added IS NOT NULL) AS kev,
+		max(v.epss)::numeric::float8 AS epss, max(v.epss_percentile)::numeric::float8 AS epss_percentile,
+		min(v.kev_added) AS kev_added, bool_or(v.kev_ransomware) AS kev_ransomware
+	FROM vuln_intel v WHERE v.cve = ANY(i.cve)) vi ON true`
+
+const issueFrom = issueBase + ` LEFT JOIN app_user au ON au.id = i.assignee_id` + intelJoin
+
+// kevExists: one of the issue's CVEs is in KEV.
+const kevExists = `EXISTS (SELECT 1 FROM vuln_intel v WHERE v.cve = ANY(i.cve) AND v.kev_added IS NOT NULL)`
+
+// licenseRule: license-policy issues (results.Process) are Trivy issues with
+// rule license:<SPDX>; every other Trivy issue is a vulnerability.
+const licenseRule = `i.rule_id LIKE 'license:%'`
 
 func summaryDest(s *service.IssueSummary, aID **uuid.UUID, aEmail, aName **string) []any {
 	return []any{&s.ID, &s.Key, &s.ProjectID, &s.Title, &s.Severity, &s.Status, &s.Tool, &s.RuleID,
 		&s.FilePath, &s.StartLine, &s.PackageName, &s.PackageVersion, &s.FixedVersion,
-		aID, aEmail, aName, &s.DueAt, &s.PastSLA, &s.UpdatedAt}
+		aID, aEmail, aName, &s.DueAt, &s.PastSLA, &s.UpdatedAt,
+		&s.Target, &s.KEV, &s.EPSS}
 }
 
 func scanSummary(row pgx.CollectableRow) (service.IssueSummary, error) {
@@ -55,6 +77,8 @@ func likePattern(s string) string {
 }
 
 // issueWhere builds the filter shared by the list and the severity counts.
+// Only the list's keyset condition (q.After) refers to vi, so the counts can
+// do without intelJoin.
 func issueWhere(a *args, q service.IssueQuery) string {
 	w := []string{`p.org_id = ` + a.add(q.Vis.OrgID), visible(a, q.Vis)}
 	if q.ProjectID != nil {
@@ -80,6 +104,29 @@ func issueWhere(a *args, q service.IssueQuery) string {
 	if q.PastSLA {
 		w = append(w, `i.due_at < `+a.add(q.Now)+` AND i.status IN `+activeStatuses)
 	}
+	switch q.Kind {
+	case service.KindVulnerability:
+		w = append(w, `i.tool = 'trivy' AND NOT `+licenseRule)
+	case service.KindLicense:
+		w = append(w, `i.tool = 'trivy' AND `+licenseRule)
+	}
+	if q.KEV {
+		w = append(w, kevExists)
+	}
+	if q.EPSSMin != nil {
+		// Compared as real, the column's type: 0.7 as float8 is above the
+		// stored real 0.7, which would drop an issue scored exactly 0.7.
+		w = append(w, `EXISTS (SELECT 1 FROM vuln_intel v WHERE v.cve = ANY(i.cve) AND v.epss >= `+a.add(*q.EPSSMin)+`::real)`)
+	}
+	switch q.Source {
+	case "code":
+		w = append(w, `i.target = ''`)
+	case "image":
+		w = append(w, `i.target <> ''`)
+	}
+	if q.Target != "" {
+		w = append(w, `i.target = `+a.add(q.Target))
+	}
 	if q.KeyProject != "" {
 		w = append(w, `p.key = `+a.add(q.KeyProject)+` AND i.number = `+a.add(q.KeyNumber))
 	} else if q.Text != "" {
@@ -100,6 +147,13 @@ func issueWhere(a *args, q service.IssueQuery) string {
 			w = append(w, `(i.severity, i.id) > (`+a.add(c.Severity)+`::severity, `+id+`)`)
 		case service.SortUpdatedAt:
 			w = append(w, `(i.updated_at, i.id) < (`+a.add(c.UpdatedAt)+`, `+id+`)`)
+		case service.SortEPSS:
+			if c.EPSS == nil {
+				w = append(w, `(vi.epss IS NULL AND i.id < `+id+`)`)
+			} else {
+				e := a.add(*c.EPSS)
+				w = append(w, `(vi.epss < `+e+` OR vi.epss IS NULL OR (vi.epss = `+e+` AND i.id < `+id+`))`)
+			}
 		}
 	}
 	return " WHERE " + strings.Join(w, " AND ")
@@ -111,6 +165,8 @@ func issueOrder(sort string) string {
 		return ` ORDER BY i.severity ASC, i.id ASC` // enum order: critical first
 	case service.SortUpdatedAt:
 		return ` ORDER BY i.updated_at DESC, i.id DESC`
+	case service.SortEPSS:
+		return ` ORDER BY vi.epss DESC NULLS LAST, i.id DESC`
 	default:
 		return ` ORDER BY i.due_at ASC NULLS LAST, i.id ASC`
 	}
@@ -127,7 +183,7 @@ func buildIssueList(q service.IssueQuery) (string, args) {
 // buildIssueCounts counts q's matches per severity.
 func buildIssueCounts(q service.IssueQuery) (string, args) {
 	var a args
-	return `SELECT i.severity::text, count(*)` + issueFrom + issueWhere(&a, q) + ` GROUP BY 1`, a
+	return `SELECT i.severity::text, count(*)` + issueBase + issueWhere(&a, q) + ` GROUP BY 1`, a
 }
 
 func (r *Repo) Issues(ctx context.Context, q service.IssueQuery) ([]service.IssueSummary, error) {
@@ -154,7 +210,8 @@ func (r *Repo) IssueCounts(ctx context.Context, q service.IssueQuery) (service.S
 func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now time.Time) (service.Issue, error) {
 	q := `SELECT ` + issueSummaryCols("$2") + `, i.description, i.remediation, i.snippet, i.end_line, i.cwe, i.cve,
 			fs.id, fs.created_at, ls.id, ls.created_at,
-			(SELECT count(*) FROM occurrence o WHERE o.issue_id = i.id), i.version, i.assignee_id, i.number, p.key` +
+			(SELECT count(*) FROM occurrence o WHERE o.issue_id = i.id), i.version, i.assignee_id, i.number, p.key,
+			vi.epss_percentile, to_char(vi.kev_added, 'YYYY-MM-DD'), coalesce(vi.kev_ransomware, false)` +
 		issueFrom + ` JOIN scan fs ON fs.id = i.first_seen_scan_id JOIN scan ls ON ls.id = i.last_seen_scan_id
 		WHERE i.id = $1`
 	if forUpdate {
@@ -168,7 +225,8 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 	dest := append(summaryDest(&iss.IssueSummary, &aID, &aEmail, &aName),
 		&iss.Description, &iss.Remediation, &iss.Snippet, &iss.EndLine, &iss.CWE, &iss.CVE,
 		&iss.FirstSeenScan.ID, &iss.FirstSeenScan.CreatedAt, &iss.LastSeenScan.ID, &iss.LastSeenScan.CreatedAt,
-		&iss.Occurrences, &iss.Version, &iss.AssigneeID, &iss.Number, &iss.ProjectKey)
+		&iss.Occurrences, &iss.Version, &iss.AssigneeID, &iss.Number, &iss.ProjectKey,
+		&iss.EPSSPercentile, &iss.KEVAdded, &iss.KEVRansomware)
 	err := r.tx.QueryRow(ctx, q, issueID, now).Scan(dest...)
 	iss.Assignee = userRef(aID, aEmail, aName)
 	return iss, mapErr(err)
@@ -226,6 +284,15 @@ func (r *Repo) InsertComment(ctx context.Context, c service.NewComment) error {
 	_, err := r.tx.Exec(ctx, `INSERT INTO comment (id, org_id, issue_id, author_id, body) VALUES ($1, $2, $3, $4, $5)`,
 		c.ID, c.OrgID, c.IssueID, c.AuthorID, c.Body)
 	return mapErr(err)
+}
+
+// VulnSources reads vuln_intel_source: global public data, no RLS.
+func (r *Repo) VulnSources(ctx context.Context) ([]service.VulnDataSource, error) {
+	rows, _ := r.tx.Query(ctx, `SELECT name, updated_at, loaded_at, records FROM vuln_intel_source ORDER BY name`)
+	return collect(rows, func(row pgx.CollectableRow) (service.VulnDataSource, error) {
+		var s service.VulnDataSource
+		return s, row.Scan(&s.Name, &s.UpdatedAt, &s.LoadedAt, &s.Records)
+	})
 }
 
 func (r *Repo) PendingExceptionID(ctx context.Context, issueID uuid.UUID) (*uuid.UUID, error) {

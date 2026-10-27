@@ -236,6 +236,12 @@ type IssueSummary struct {
 	DueAt          *Time     `json:"due_at"`
 	PastSLA        bool      `json:"past_sla"`
 	UpdatedAt      Time      `json:"updated_at"`
+	// Target is the image repository of issues from image scans, "" for code.
+	Target string `json:"target"`
+	// KEV and EPSS come from vuln_intel over the issue's CVEs (any in KEV, the
+	// highest score). They only rank issues: severity and status never change.
+	KEV  bool     `json:"kev"`
+	EPSS *float64 `json:"epss"`
 }
 
 type ScanRef struct {
@@ -259,6 +265,9 @@ type Issue struct {
 	CanAssign           bool       `json:"can_assign"`
 	CanRequestException bool       `json:"can_request_exception"`
 	PendingExceptionID  *uuid.UUID `json:"pending_exception_id"`
+	EPSSPercentile      *float64   `json:"epss_percentile"`
+	KEVAdded            *string    `json:"kev_added"` // YYYY-MM-DD, the earliest of the CVEs
+	KEVRansomware       bool       `json:"kev_ransomware"`
 	AssigneeID          *uuid.UUID `json:"-"`
 	ProjectKey          string     `json:"-"`
 	Number              int        `json:"-"`
