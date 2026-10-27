@@ -24,6 +24,7 @@ type liveDeps struct {
 	org     uuid.UUID
 	scan    uuid.UUID
 	attempt int
+	kind    string // scan.kind: image scans use sandbox.ImageTools
 }
 
 var _ orchestrator.Deps = (*liveDeps)(nil)
@@ -134,7 +135,11 @@ func (d *liveDeps) RunTool(ctx context.Context, tool, scanID, scanDir string) sa
 		// A crashed attempt may have left its container; names are per scan+tool.
 		d.env.Sandbox.Kill(scanID, tool)
 	}
-	r := d.env.Sandbox.Run(ctx, sandbox.Tools[tool], sandbox.RunConfig{
+	spec := sandbox.Tools[tool]
+	if d.kind == orchestrator.KindImage {
+		spec = sandbox.ImageTools[tool]
+	}
+	r := d.env.Sandbox.Run(ctx, spec, sandbox.RunConfig{
 		ScanID: scanID, ScanDir: scanDir, Image: image, Runtime: d.env.Runtime, MirrorDir: d.env.MirrorDir,
 	})
 	if r.Status != sandbox.Succeeded {

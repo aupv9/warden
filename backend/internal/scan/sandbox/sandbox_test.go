@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const digest = "registry.internal/warden/gitleaks@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -93,6 +94,32 @@ func TestToolNamesMatchTools(t *testing.T) {
 
 // Trivy runs a constant script through sh: one JSON report, from which the
 // SARIF and the SBOM are converted offline.
+// Image scans run Trivy only, on the read-only tarball, with the same
+// isolation and bigger limits.
+func TestImageTrivy(t *testing.T) {
+	if len(ImageTools) != 1 {
+		t.Fatal("image scans run trivy only")
+	}
+	spec := ImageTools["trivy"]
+	a := argv(t, spec, "/scan")
+	for _, want := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "--memory=3g", "/scan/src:/src:ro"} {
+		if !slices.Contains(a, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if tmp := a[slices.Index(a, "--tmpfs")+1]; tmp != "/tmp:rw,noexec,nosuid,size=1g,mode=1777" {
+		t.Fatal(tmp)
+	}
+	if spec.Name != "trivy" || spec.Timeout != 15*time.Minute || len(spec.Artifacts) != 2 ||
+		!strings.Contains(spec.Command[2], "trivy image --input /src/image.tar --scanners vuln,license --list-all-pkgs") ||
+		!strings.Contains(spec.Command[2], "--offline-scan") || strings.Contains(spec.Command[2], "trivy fs") {
+		t.Fatal(spec.Command)
+	}
+	if tmp := argv(t, Tools["trivy"], "/scan")[slices.Index(argv(t, Tools["trivy"], "/scan"), "--tmpfs")+1]; !strings.Contains(tmp, "size=256m") {
+		t.Fatal(tmp)
+	}
+}
+
 func TestTrivyScript(t *testing.T) {
 	c := Tools["trivy"].Command
 	if len(c) != 3 || c[0] != "sh" || c[1] != "-c" {

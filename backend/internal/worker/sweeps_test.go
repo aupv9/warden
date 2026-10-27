@@ -398,12 +398,13 @@ func TestNewEnv(t *testing.T) {
 	}
 	cfg.SMTP.From, cfg.SMTP.DigestHour = "warden@example.com", 6
 	cfg.Scan.UploadMaxMB, cfg.Scan.UnzipMaxMB, cfg.Scan.UnzipMaxFiles, cfg.Scan.SBOMRetention = 300, 2048, 5000, 48*time.Hour
+	cfg.Scan.ImageUploadMaxMB = 3000
 	env, err := NewEnv(cfg, nil, &fakeStore{}, quietLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The configured archive limits reach the checks (they used to be hard-coded).
-	if z := env.Limits.Zip; z.MaxZipBytes != 300<<20 || z.MaxTotalBytes != 2048<<20 || z.MaxEntries != 5000 || env.SBOMRetention != 48*time.Hour {
+	if z := env.Limits.Zip; z.MaxZipBytes != 300<<20 || z.MaxTotalBytes != 2048<<20 || z.MaxEntries != 5000 || env.SBOMRetention != 48*time.Hour || env.Limits.ImageMaxBytes != 3000<<20 {
 		t.Fatalf("%+v", env.Limits)
 	}
 	if env.PublicBaseURL != "https://warden.example" || env.DigestHour != 6 || env.Mailer == nil {

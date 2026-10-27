@@ -94,6 +94,8 @@ type fakeSandbox struct {
 	killCh  chan struct{}
 	killed  []string
 	configs []sandbox.RunConfig
+	specs   []sandbox.ToolSpec
+	empty   bool // tools find nothing
 	// files tools write besides their SARIF (file name -> content), reported as artifacts
 	files map[string]string
 }
@@ -101,6 +103,7 @@ type fakeSandbox struct {
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.RunConfig) sandbox.ToolRun {
 	f.mu.Lock()
 	f.configs = append(f.configs, c)
+	f.specs = append(f.specs, spec)
 	f.mu.Unlock()
 	if f.block {
 		select {
@@ -116,6 +119,9 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.
 	out := filepath.Join(c.ScanDir, "out", spec.Name)
 	_ = os.MkdirAll(out, 0o700)
 	doc := st.Doc([]any{st.M{"ruleId": "r1", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}}})
+	if f.empty {
+		doc = st.Doc([]any{})
+	}
 	b, _ := json.Marshal(doc)
 	p := filepath.Join(out, "result.sarif")
 	_ = os.WriteFile(p, b, 0o600)
@@ -177,7 +183,7 @@ func row(vals ...any) [][]any { return [][]any{vals} }
 // with the same prefix.
 func (h *harness) scanSteps(status string, overrides ...dbtest.Step) []dbtest.Step {
 	steps := []dbtest.Step{
-		{Prefix: "SELECT status, project_id", Rows: row(status, h.project, objectKey, h.sha, []string{"opengrep"}, false, "WEB")},
+		{Prefix: "SELECT status, project_id", Rows: row(status, h.project, objectKey, h.sha, []string{"opengrep"}, false, "WEB", "source", "")},
 		{Prefix: "UPDATE scan SET status = 'running'", Affected: 1},
 		{Prefix: "INSERT INTO scan_tool_run", Affected: 1},
 		{Prefix: "SELECT status FROM scan WHERE id = $1", Rows: row("running")},
@@ -427,7 +433,7 @@ func TestRunScanCancelledBeforeProcessing(t *testing.T) {
 
 func TestRunScanFailures(t *testing.T) {
 	t.Run("source already deleted", func(t *testing.T) {
-		h := newHarness(t, "running", dbtest.Step{Prefix: "SELECT status, project_id", Rows: row("running", uuid.New(), objectKey, "x", []string{"opengrep"}, true, "WEB")})
+		h := newHarness(t, "running", dbtest.Step{Prefix: "SELECT status, project_id", Rows: row("running", uuid.New(), objectKey, "x", []string{"opengrep"}, true, "WEB", "source", "")})
 		if err := h.run(2); err != nil {
 			t.Fatal(err)
 		}
@@ -517,7 +523,7 @@ const trivyReport = `{"Results":[{"Target":"app/package-lock.json","Class":"lang
 func trivyHarness(t *testing.T, overrides ...dbtest.Step) *harness {
 	h := newHarness(t, "queued")
 	h.db = dbtest.Loose(t, h.scanSteps("queued", append([]dbtest.Step{
-		{Prefix: "SELECT status, project_id", Rows: row("queued", h.project, objectKey, h.sha, []string{"trivy"}, false, "WEB")},
+		{Prefix: "SELECT status, project_id", Rows: row("queued", h.project, objectKey, h.sha, []string{"trivy"}, false, "WEB", "source", "")},
 		{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{}`), []byte(`{"categories":{"restricted":"review"}}`))},
 		{Prefix: "UPDATE project SET issue_seq", Rows: row(2)},
 		{Prefix: "UPDATE scan SET sbom_key", Affected: 1},

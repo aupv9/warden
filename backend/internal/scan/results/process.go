@@ -49,8 +49,12 @@ const (
 type Input struct {
 	OrgID, ProjectID, ScanID uuid.UUID
 	Status                   string // final scan status: completed or partial
-	Runs                     []sandbox.ToolRun
-	Findings                 map[string][]sarif.Finding
+	// Target is the scan's target (the image repository; "" for source
+	// scans). Only the project's issues with this target are matched and
+	// auto-fixed, so image and source scans never close each other's issues.
+	Target   string
+	Runs     []sandbox.ToolRun
+	Findings map[string][]sarif.Finding
 	// Licenses: Trivy's package licenses (FilePath set); the org's license
 	// policy, read in the processing transaction, decides which are issues.
 	Licenses   []trivyjson.License
@@ -128,7 +132,7 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 			findings["trivy"] = append(slices.Clone(findings["trivy"]), lic...)
 		}
 	}
-	existing, err := loadIssues(ctx, db, in.ProjectID)
+	existing, err := loadIssues(ctx, db, in.ProjectID, in.Target)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -148,9 +152,9 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	return plan, nil
 }
 
-func loadIssues(ctx context.Context, db DB, projectID uuid.UUID) ([]ExistingIssue, error) {
+func loadIssues(ctx context.Context, db DB, projectID uuid.UUID, target string) ([]ExistingIssue, error) {
 	rows, err := db.Query(ctx, `SELECT id, fingerprint, tool, status, severity, severity_overridden, last_seen_scan_id
-		FROM issue WHERE project_id = $1`, projectID)
+		FROM issue WHERE project_id = $1 AND target = $2`, projectID, target)
 	if err != nil {
 		return nil, fmt.Errorf("load issues: %w", err)
 	}
@@ -311,12 +315,12 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 	}
 	_, err := a.db.Exec(ctx, `INSERT INTO issue (id, org_id, project_id, number, fingerprint, tool, rule_id, title,
 		description, remediation, severity, status, file_path, start_line, end_line, snippet, cwe, cve,
-		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25)`,
+		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id, target)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25, $26)`,
 		id, a.in.OrgID, a.in.ProjectID, number, n.Fingerprint, f.Tool, f.RuleID, f.Title,
 		nullable(f.Description), nullable(f.Remediation), string(f.Severity), nullable(f.FilePath), f.StartLine, f.EndLine,
 		nullable(f.Snippet), f.CWE, f.CVE, nullable(f.PackageName), nullable(f.PackageVersion), nullable(f.FixedVersion),
-		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee)
+		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target)
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}

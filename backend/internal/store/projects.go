@@ -150,9 +150,15 @@ func (r *Repo) ScansSince(ctx context.Context, userID uuid.UUID, since time.Time
 }
 
 func (r *Repo) InsertScan(ctx context.Context, s service.NewScan) error {
-	_, err := r.tx.Exec(ctx, `INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, object_key, file_size, sha256, tools, via_token)
-		VALUES ($1, $2, $3, $4, 'pending_upload', $5, $6, $7, $8, $9, $10)`,
-		s.ID, s.OrgID, s.ProjectID, s.CreatedBy, s.FileName, s.ObjectKey, s.FileSize, s.SHA256, s.Tools, s.ViaToken)
+	kind := s.Kind
+	if kind == "" {
+		kind = service.KindSource
+	}
+	_, err := r.tx.Exec(ctx, `INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, object_key, file_size, sha256, tools, via_token,
+		kind, target, image_ref)
+		VALUES ($1, $2, $3, $4, 'pending_upload', $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		s.ID, s.OrgID, s.ProjectID, s.CreatedBy, s.FileName, s.ObjectKey, s.FileSize, s.SHA256, s.Tools, s.ViaToken,
+		kind, s.Target, s.ImageRef)
 	return mapErr(err)
 }
 

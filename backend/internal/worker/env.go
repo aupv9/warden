@@ -154,7 +154,7 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 func ScanLimits(s config.ScanSection) orchestrator.Limits {
 	return orchestrator.Limits{Zip: zipcheck.Limits{
 		MaxZipBytes: int64(s.UploadMaxMB) << 20, MaxTotalBytes: int64(s.UnzipMaxMB) << 20, MaxEntries: s.UnzipMaxFiles,
-	}}
+	}, ImageMaxBytes: int64(s.ImageUploadMaxMB) << 20}
 }
 
 // OrgKey derives the organization's secret-fingerprint key from the master key:

@@ -32,6 +32,8 @@ type ToolSpec struct {
 	NeedsHMACKey bool
 	TmpExec      bool // Opengrep's binary self-extracts into /tmp and execs
 	OKExitCodes  []int
+	// TmpfsSize sizes /tmp (default 256m); Trivy unpacks image layers there.
+	TmpfsSize string
 	// Artifacts are reports the tool writes to /out besides its SARIF, by name.
 	Artifacts map[string]ArtifactSpec
 }
@@ -109,6 +111,24 @@ var Tools = map[string]ToolSpec{
 // ToolNames is the canonical order.
 var ToolNames = []string{"gitleaks", "opengrep", "trivy", "checkov"}
 
+// ImageTools are the scanners of image scans (kind image): only Trivy, reading
+// the verified `docker save` tarball mounted read-only at /src/image.tar.
+// Images are larger than source trees: more /tmp, memory and time.
+var ImageTools = map[string]ToolSpec{
+	"trivy": {
+		Name: "trivy", Timeout: 15 * time.Minute, CPUs: "1", Memory: "3g", TmpfsSize: "1g",
+		Command:   []string{"sh", "-c", trivyScript("image --input /src/image.tar")},
+		Artifacts: trivyArtifacts,
+	},
+}
+
+func (s ToolSpec) tmpfsSize() string {
+	if s.TmpfsSize == "" {
+		return "256m"
+	}
+	return s.TmpfsSize
+}
+
 func (s ToolSpec) sarifName() string {
 	if s.SarifName == "" {
 		return "result.sarif"
@@ -172,7 +192,7 @@ func DockerArgv(spec ToolSpec, c RunConfig) ([]string, error) {
 		"--runtime=" + c.Runtime,
 		"--network=none",
 		"--read-only",
-		"--tmpfs", "/tmp:rw," + tmpExec + ",nosuid,size=256m,mode=1777",
+		"--tmpfs", "/tmp:rw," + tmpExec + ",nosuid,size=" + spec.tmpfsSize() + ",mode=1777",
 		"--user", SandboxUID,
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",

@@ -58,6 +58,10 @@ type NewScan struct {
 	Tools     []string
 	// ViaToken is the API token that created the scan, if any.
 	ViaToken *uuid.UUID
+	// Kind is source or image; Target and ImageRef are for images only.
+	Kind     string
+	Target   string
+	ImageRef *string
 }
 
 // ScanCursor positions a newest-first scan list.
