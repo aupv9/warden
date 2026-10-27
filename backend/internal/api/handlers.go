@@ -52,6 +52,7 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	registerTokenRoutes(o, h.svc)
 	h.signInRoutes(o)  // signin.go
 	h.v02Routes(v1, o) // notifications, policy and automation, metrics (notify.go)
+	h.v03Routes(o)     // SBOM download, license policy (v03.go)
 }
 
 // reply renders a service result: data with status (200/201), or the error.

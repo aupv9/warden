@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -14,11 +16,13 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/domain/autoassign"
 	"github.com/aupv9/warden/backend/internal/domain/issuestate"
+	"github.com/aupv9/warden/backend/internal/domain/licensepolicy"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/ids"
 	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
+	"github.com/aupv9/warden/backend/internal/scan/trivyjson"
 )
 
 // DB is the subset of pgx.Tx the processor uses. Process must run inside one
@@ -45,10 +49,28 @@ const (
 type Input struct {
 	OrgID, ProjectID, ScanID uuid.UUID
 	Status                   string // final scan status: completed or partial
-	Runs                     []sandbox.ToolRun
-	Findings                 map[string][]sarif.Finding
-	GuardRatio               float64
-	Now                      time.Time
+	// Target is the scan's target (the image repository; "" for source
+	// scans). Only the project's issues with this target are matched and
+	// auto-fixed, so image and source scans never close each other's issues.
+	Target   string
+	Runs     []sandbox.ToolRun
+	Findings map[string][]sarif.Finding
+	// Licenses: Trivy's package licenses (FilePath set); the org's license
+	// policy, read in the processing transaction, decides which are issues.
+	Licenses   []trivyjson.License
+	GuardRatio float64
+	Now        time.Time
+	// SBOM is recorded on the scan with the results, or not at all.
+	SBOM *SBOM
+}
+
+// SBOM is the stored SBOM of a scan (scan.sbom_* columns).
+type SBOM struct {
+	Key        string
+	Size       int64
+	SHA256     string
+	Components int
+	ExpiresAt  time.Time
 }
 
 // SLA is organization.sla_days: days to fix, by severity (info has none).
@@ -90,19 +112,31 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	if err := db.QueryRow(ctx, `SELECT issue_seq FROM project WHERE id = $1 FOR UPDATE`, in.ProjectID).Scan(&seq); err != nil {
 		return Plan{}, fmt.Errorf("lock project: %w", err)
 	}
-	var rawSLA []byte
+	var rawSLA, rawPolicy []byte
 	var sla SLA
-	if err := db.QueryRow(ctx, `SELECT sla_days FROM organization WHERE id = $1`, in.OrgID).Scan(&rawSLA); err != nil {
-		return Plan{}, fmt.Errorf("load sla: %w", err)
+	var policy licensepolicy.Policy
+	if err := db.QueryRow(ctx, `SELECT sla_days, license_policy FROM organization WHERE id = $1`, in.OrgID).Scan(&rawSLA, &rawPolicy); err != nil {
+		return Plan{}, fmt.Errorf("load org policy: %w", err)
 	}
 	if err := json.Unmarshal(rawSLA, &sla); err != nil {
 		return Plan{}, fmt.Errorf("organization.sla_days: %w", err)
 	}
-	existing, err := loadIssues(ctx, db, in.ProjectID)
+	if err := json.Unmarshal(rawPolicy, &policy); err != nil {
+		return Plan{}, fmt.Errorf("organization.license_policy: %w", err)
+	}
+	findings := in.Findings
+	if SucceededTools(in.Runs)["trivy"] {
+		if lic := LicenseFindings(in.Licenses, policy); len(lic) > 0 {
+			findings = map[string][]sarif.Finding{}
+			maps.Copy(findings, in.Findings)
+			findings["trivy"] = append(slices.Clone(findings["trivy"]), lic...)
+		}
+	}
+	existing, err := loadIssues(ctx, db, in.ProjectID, in.Target)
 	if err != nil {
 		return Plan{}, err
 	}
-	plan, err := BuildPlan(PlanInput{ScanID: in.ScanID, Runs: in.Runs, Findings: in.Findings, Existing: existing, GuardRatio: in.GuardRatio})
+	plan, err := BuildPlan(PlanInput{ScanID: in.ScanID, Runs: in.Runs, Findings: findings, Existing: existing, GuardRatio: in.GuardRatio})
 	if err != nil {
 		return Plan{}, err
 	}
@@ -118,9 +152,9 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	return plan, nil
 }
 
-func loadIssues(ctx context.Context, db DB, projectID uuid.UUID) ([]ExistingIssue, error) {
+func loadIssues(ctx context.Context, db DB, projectID uuid.UUID, target string) ([]ExistingIssue, error) {
 	rows, err := db.Query(ctx, `SELECT id, fingerprint, tool, status, severity, severity_overridden, last_seen_scan_id
-		FROM issue WHERE project_id = $1`, projectID)
+		FROM issue WHERE project_id = $1 AND target = $2`, projectID, target)
 	if err != nil {
 		return nil, fmt.Errorf("load issues: %w", err)
 	}
@@ -248,6 +282,12 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 		WHERE id = $1`, a.in.ScanID, a.in.Status, stats, p.NeedsConfirmation, now); err != nil {
 		return fmt.Errorf("finish scan: %w", err)
 	}
+	if s := a.in.SBOM; s != nil {
+		if _, err := a.db.Exec(ctx, `UPDATE scan SET sbom_key = $2, sbom_size = $3, sbom_sha256 = $4, sbom_components = $5,
+			sbom_expires_at = $6 WHERE id = $1`, a.in.ScanID, s.Key, s.Size, s.SHA256, s.Components, s.ExpiresAt); err != nil {
+			return fmt.Errorf("record sbom: %w", err)
+		}
+	}
 	return a.outbox(ctx, notify.ScanFinished, notify.Payload{ScanID: notify.ID(a.in.ScanID)})
 }
 
@@ -275,12 +315,12 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 	}
 	_, err := a.db.Exec(ctx, `INSERT INTO issue (id, org_id, project_id, number, fingerprint, tool, rule_id, title,
 		description, remediation, severity, status, file_path, start_line, end_line, snippet, cwe, cve,
-		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25)`,
+		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id, target)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25, $26)`,
 		id, a.in.OrgID, a.in.ProjectID, number, n.Fingerprint, f.Tool, f.RuleID, f.Title,
 		nullable(f.Description), nullable(f.Remediation), string(f.Severity), nullable(f.FilePath), f.StartLine, f.EndLine,
 		nullable(f.Snippet), f.CWE, f.CVE, nullable(f.PackageName), nullable(f.PackageVersion), nullable(f.FixedVersion),
-		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee)
+		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target)
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}

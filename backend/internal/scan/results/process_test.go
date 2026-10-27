@@ -40,7 +40,7 @@ func newWorld() world {
 		steps: []dbtest.Step{
 			{Prefix: "SELECT status FROM scan WHERE id = $1 AND project_id = $2 FOR UPDATE", Rows: row("running")},
 			{Prefix: "SELECT issue_seq FROM project WHERE id = $1 FOR UPDATE", Rows: row(7)},
-			{Prefix: "SELECT sla_days FROM organization", Rows: row([]byte(`{"critical":7,"high":30,"medium":90,"low":180}`))},
+			{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{"critical":7,"high":30,"medium":90,"low":180}`), []byte(`{}`))},
 			{Prefix: "SELECT id, fingerprint", Rows: [][]any{
 				{uuid.New(), fpOf(a), "opengrep", "open", "low", false, prev},
 				{uuid.New(), fpOf(b), "opengrep", "fixed", "high", false, prev},
@@ -161,7 +161,7 @@ func TestProcessRefusesScanThatIsNotRunning(t *testing.T) {
 
 func TestProcessRejectsCorruptSLA(t *testing.T) {
 	w := newWorld()
-	steps := append(w.steps[:2:2], dbtest.Step{Prefix: "SELECT sla_days", Rows: row([]byte(`[]`))})
+	steps := append(w.steps[:2:2], dbtest.Step{Prefix: "SELECT sla_days", Rows: row([]byte(`[]`), []byte(`{}`))})
 	if _, err := Process(context.Background(), dbtest.New(t, steps...), w.in); err == nil {
 		t.Fatal("corrupt sla_days accepted")
 	}
