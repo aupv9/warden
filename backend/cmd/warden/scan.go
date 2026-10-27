@@ -153,28 +153,37 @@ func (c client) printf(format string, a ...any) { fmt.Fprintf(c.o.stdout, format
 // scan runs the whole flow and returns the exit status.
 func scan(ctx context.Context, o options, d deps) (int, error) {
 	c := client{o: o, d: d}
-	dir, err := filepath.Abs(o.dir)
-	if err != nil {
-		return exitError, err
-	}
 	tmp, err := os.MkdirTemp("", "warden-scan-")
 	if err != nil {
 		return exitError, err
 	}
 	defer os.RemoveAll(tmp)
-	name := archiveName(dir)
-	zipPath := filepath.Join(tmp, name+".zip")
-	files, err := d.pack(dir, zipPath, name+"/")
-	if err != nil {
-		return exitError, fmt.Errorf("package %s: %w", dir, err)
+	var zipPath string
+	var body map[string]any
+	if o.image != "" || o.imageTar != "" {
+		if zipPath, body, err = c.imageArtifact(ctx, tmp); err != nil {
+			return exitError, err
+		}
+	} else {
+		dir, err := filepath.Abs(o.dir)
+		if err != nil {
+			return exitError, err
+		}
+		name := archiveName(dir)
+		zipPath = filepath.Join(tmp, name+".zip")
+		files, err := d.pack(dir, zipPath, name+"/")
+		if err != nil {
+			return exitError, fmt.Errorf("package %s: %w", dir, err)
+		}
+		c.printf("==> packaged %d files from %s\n", files, clean(dir))
+		body = map[string]any{"file_name": name + ".zip"}
 	}
 	size, sum, err := digest(zipPath)
 	if err != nil {
 		return exitError, err
 	}
-	c.printf("==> packaged %d files from %s (%d bytes)\n", files, clean(dir), size)
-
-	body := map[string]any{"file_name": name + ".zip", "file_size": size, "sha256": sum}
+	c.printf("==> %s: %d bytes\n", clean(body["file_name"].(string)), size)
+	body["file_size"], body["sha256"] = size, sum
 	if len(o.tools) > 0 {
 		body["tools"] = o.tools
 	}

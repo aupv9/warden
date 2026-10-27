@@ -59,6 +59,7 @@ type fakeServer struct {
 	sbom     []byte
 	sbomSum  string
 	sbomAuth string
+	created  map[string]any // the last create request
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -117,10 +118,11 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || in["file_name"] != "repo.zip" {
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || (in["file_name"] != "repo.zip" && in["kind"] != "image") {
 			f.reply(w, 422, nil, "VALIDATION_FAILED")
 			return
 		}
+		f.created = in
 		up := f.uploadURL
 		if up == "" {
 			up = f.srv.URL + "/upload/" + f.scanID + "?X-Amz-Signature=presigned-signature"

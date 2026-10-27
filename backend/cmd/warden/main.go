@@ -5,6 +5,8 @@
 //	warden scan --url https://warden.example --org ORG_ID --project PROJECT_ID \
 //	    [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--fail-on-kev] [--timeout 30m] \
 //	    [--sbom-out bom.cdx.json]
+//	warden scan ... --image ghcr.io/acme/api:1.2           # docker save, then an image scan
+//	warden scan ... --image-tar api.tar --target ghcr.io/acme/api [--image-ref ghcr.io/acme/api:1.2]
 //
 // --sbom-out saves the scan's CycloneDX SBOM (Trivy must be among the tools),
 // after checking it against the SHA-256 the server recorded. --fail-on-kev also
@@ -49,6 +51,7 @@ const (
 
 	usage = `usage: warden scan --url URL --org ORG_ID --project PROJECT_ID [--dir DIR] [--tools a,b] [--fail-on high]
                    [--fail-on-kev] [--timeout 30m] [--sbom-out FILE]
+                   [--image REF | --image-tar FILE --target REPO [--image-ref REF]]
 The API token is read from $WARDEN_TOKEN.`
 )
 
@@ -64,6 +67,7 @@ type deps struct {
 	api    *http.Client // API calls: short timeout, no redirects
 	upload *http.Client // object storage: the archive upload, the SBOM download
 	pack   func(dir, dest, prefix string) (int, error)
+	save   func(ctx context.Context, ref, dest string) error // docker save
 	sleep  func(ctx context.Context, d time.Duration) error
 	poll   time.Duration // first polling interval (backs off to maxPoll)
 }
@@ -83,6 +87,7 @@ func defaultDeps() deps {
 		api:    &http.Client{Transport: transport, Timeout: 60 * time.Second, CheckRedirect: noRedirects},
 		upload: &http.Client{Transport: transport, Timeout: 30 * time.Minute, CheckRedirect: noRedirects},
 		pack:   pack.Repo,
+		save:   dockerSave,
 		sleep:  sleep,
 		poll:   2 * time.Second,
 	}
@@ -104,16 +109,19 @@ func sleep(ctx context.Context, d time.Duration) error {
 }
 
 type options struct {
-	server         *url.URL
-	org, project   uuid.UUID
-	dir            string
-	tools          []string
-	failOn         string
-	failOnKEV      bool
-	sbomOut        string
-	timeout        time.Duration
-	token          string
-	stdout, stderr io.Writer
+	server       *url.URL
+	org, project uuid.UUID
+	dir          string
+	tools        []string
+	failOn       string
+	failOnKEV    bool
+	sbomOut      string
+	// Image scans: image (docker save it) or imageTar, with target and imageRef.
+	image, imageTar  string
+	target, imageRef string
+	timeout          time.Duration
+	token            string
+	stdout, stderr   io.Writer
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, d deps) int {
@@ -132,13 +140,21 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	timeout := fs.Duration("timeout", 30*time.Minute, "give up (and cancel the scan) after this long")
 	failOnKEV := fs.Bool("fail-on-kev", false, "also fail on any issue whose CVE is known exploited (CISA KEV)")
 	sbomOut := fs.String("sbom-out", "", "save the scan's CycloneDX SBOM to this file")
+	image := fs.String("image", "", "scan this container image (docker save) instead of --dir")
+	imageTar := fs.String("image-tar", "", "scan this docker save tarball instead of --dir")
+	target := fs.String("target", "", "image repository without tag (required with --image-tar)")
+	imageRef := fs.String("image-ref", "", "image reference shown on the scan (with --image-tar)")
 	if err := fs.Parse(args[1:]); err != nil {
 		fmt.Fprintln(stderr, usage)
 		return exitError
 	}
-	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, timeout: *timeout, stdout: stdout, stderr: stderr}
+	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, timeout: *timeout, stdout: stdout, stderr: stderr,
+		image: *image, imageTar: *imageTar, target: *target, imageRef: *imageRef}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	var problems []string
 	var err error
+	problems = append(problems, o.imageProblems(set)...)
 	if o.server, err = checkURL(*server); err != nil {
 		problems = append(problems, "--url: "+err.Error())
 	}
