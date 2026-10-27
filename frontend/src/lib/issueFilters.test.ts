@@ -34,9 +34,45 @@ describe("issue filters ↔ URL", () => {
       tool: "gitleaks",
       pastSla: true,
       sort: "-severity",
+      kind: "vulnerability",
+      kev: true,
+      epssMin: 0.1,
+      source: "image",
+      target: "ghcr.io/acme/api",
     };
     const sp = issueFiltersToSearch(f);
     expect(parseIssueFilters(new URLSearchParams(sp.toString()))).toEqual(f);
+  });
+
+  it("round-trips the v0.3 filters and the EPSS sort on their own", () => {
+    for (const patch of [
+      { kev: true },
+      { kind: "license" as const },
+      { epssMin: 0.01 },
+      { epssMin: 0.5 },
+      { source: "code" as const },
+      { target: "localhost:5000/team/app" },
+      { sort: "-epss" as const },
+    ]) {
+      const f = { ...DEFAULT_FILTERS, ...patch };
+      expect(parseIssueFilters(new URLSearchParams(issueFiltersToSearch(f).toString()))).toEqual(f);
+    }
+    expect(issueFiltersToSearch({ ...DEFAULT_FILTERS, kev: true, epssMin: 0.1 }).toString()).toBe("kev=true&epss_min=0.1");
+  });
+
+  it("drops malformed v0.3 values (the URL is untrusted)", () => {
+    const f = parseIssueFilters(
+      new URLSearchParams(
+        "kind=secret&kev=1&epss_min=1e-3&source=registry&target=GHCR.IO/Acme&sort=epss",
+      ),
+    );
+    expect(f).toEqual(DEFAULT_FILTERS);
+    for (const bad of ["-0.1", "2", "NaN", "0x1", " 0.1", "0.1abc", "Infinity", "0", ""]) {
+      expect(parseIssueFilters(new URLSearchParams({ epss_min: bad })).epssMin).toBeNull();
+    }
+    for (const bad of ["ghcr.io/acme/api:1.2", "ghcr.io/acme/api@sha256:00", "../etc", "a//b", "x".repeat(256), "ghcr.io/acme/api/"]) {
+      expect(parseIssueFilters(new URLSearchParams({ target: bad })).target).toBe("");
+    }
   });
 
   it("drops unknown or malformed values from the URL", () => {
@@ -79,6 +115,14 @@ describe("issue filters ↔ URL", () => {
       "Past SLA only",
       "Web storefront",
     ]);
+    expect(describeFilters({ ...DEFAULT_FILTERS, kev: true, epssMin: 0.1, kind: "vulnerability", source: "image", target: "ghcr.io/acme/api" })).toEqual([
+      "Active",
+      "Known exploited",
+      "EPSS ≥ 10%",
+      "Vulnerabilities",
+      "Container images",
+      "Image ghcr.io/acme/api",
+    ]);
   });
 });
 
@@ -97,10 +141,20 @@ describe("issue filters → API query", () => {
       tool: "trivy",
       pastSla: true,
       sort: "-updated_at",
+      kind: "license",
+      kev: true,
+      epssMin: 0.5,
+      source: "image",
+      target: "ghcr.io/acme/api",
     });
     expect(buildQuery(q)).toBe(
-      `?project_id=${P1}&status=fixed&severity=critical&severity=high&assignee=me&tool=trivy&past_sla=true&q=aws&sort=-updated_at&limit=50`,
+      `?project_id=${P1}&status=fixed&severity=critical&severity=high&assignee=me&tool=trivy&past_sla=true&kind=license&kev=true&epss_min=0.5&source=image&target=ghcr.io%2Facme%2Fapi&q=aws&sort=-updated_at&limit=50`,
     );
+  });
+
+  it("sends the EPSS sort and leaves the URL and API in step", () => {
+    const f = parseIssueFilters(new URLSearchParams("kev=true&sort=-epss&epss_min=0.1"));
+    expect(buildQuery(issueFiltersToApiQuery(f))).toBe("?kev=true&epss_min=0.1&sort=-epss&limit=50");
   });
 
   it("expands 'all' to every status and lets a route pin the project", () => {
@@ -117,6 +171,10 @@ describe("saved views", () => {
     expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "secrets")).toString()).toBe("tool=gitleaks");
     expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "past_sla")).toString()).toBe("past_sla=true");
     expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "active")).toString()).toBe("");
+    expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "kev")).toString()).toBe("kev=true");
+    expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "licenses")).toString()).toBe("kind=license");
+    // Switching view drops the other view's filters.
+    expect(applyView({ ...DEFAULT_FILTERS, kev: true, epssMin: 0.1, target: "ghcr.io/acme/api" }, "licenses")).toEqual({ ...DEFAULT_FILTERS, kind: "license" });
   });
 
   it("know which view the filters are, or none", () => {
@@ -124,6 +182,9 @@ describe("saved views", () => {
     expect(currentView({ ...DEFAULT_FILTERS, assignee: "me", q: "x" })).toBe("mine");
     expect(currentView({ ...DEFAULT_FILTERS, tool: "gitleaks" })).toBe("secrets");
     expect(currentView({ ...DEFAULT_FILTERS, tool: "gitleaks", pastSla: true })).toBeNull();
+    expect(currentView({ ...DEFAULT_FILTERS, kev: true, sort: "-epss" })).toBe("kev");
+    expect(currentView({ ...DEFAULT_FILTERS, kind: "license" })).toBe("licenses");
+    expect(currentView({ ...DEFAULT_FILTERS, kind: "vulnerability" })).toBeNull();
   });
 });
 

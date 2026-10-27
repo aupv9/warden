@@ -4,14 +4,16 @@
 //
 // Try: append ?mock_error=CODE to any page URL (e.g. VERSION_CONFLICT, RATE_LIMITED, NOT_FOUND)
 // to make the next write fail with that code.
-import { ACTIVE_STATUSES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS } from "../types";
+import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS } from "../types";
 import type {
   ApiToken,
   AssignRule,
+  CreateScanBody,
   CreateTokenBody,
   ExceptionRequest,
   Issue,
   IssueStatus,
+  LicensePolicy,
   MetricsDays,
   NotificationPref,
   OrgRole,
@@ -110,13 +112,66 @@ function advance(s: Scan): Scan {
     s.status = runs.some((r) => r.status !== "succeeded") ? "partial" : "completed";
     s.finished_at = new Date().toISOString();
     s.stats = { new: 2, fixed: 1, reopened: 0, total: 12 };
-    if (s.file_name.includes("traversal")) {
+    // An SBOM when Trivy finished (the server stores it from the same Trivy run).
+    if (runs.some((r) => r.tool === "trivy" && r.status === "succeeded")) {
+      s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118 };
+    }
+    // Name a file …traversal….zip, …multiple….tar or …invalid….tar to see a rejection.
+    const reject = s.file_name.includes("traversal")
+      ? "ZIP_PATH_TRAVERSAL"
+      : s.kind === "image" && s.file_name.includes("multiple")
+        ? "IMAGE_MULTIPLE"
+        : s.kind === "image" && s.file_name.includes("invalid")
+          ? "IMAGE_INVALID"
+          : null;
+    if (reject) {
       s.status = "failed";
-      s.error_code = "ZIP_PATH_TRAVERSAL";
+      s.error_code = reject;
       s.tool_runs = [];
+      s.sbom = null;
     }
   }
   return s;
+}
+
+/** The contract's patterns for v0.3 inputs. */
+const IMAGE_TARGET = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$/;
+const SPDX_ID = /^(LicenseRef-)?[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/;
+
+function validateLicensePolicy(body: unknown): LicensePolicy {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const fields: Record<string, string> = {};
+  for (const k of Object.keys(b)) if (!["categories", "deny", "allow"].includes(k)) fields[k] = "unknown field";
+  const cats = b.categories as Record<string, unknown> | undefined;
+  if (!cats || typeof cats !== "object") fields.categories = "required";
+  else {
+    for (const c of LICENSE_CATEGORIES) {
+      if (!LICENSE_ACTIONS.includes(cats[c] as never)) fields[`categories.${c}`] = "must be allow, review or block";
+    }
+    for (const k of Object.keys(cats)) if (!LICENSE_CATEGORIES.includes(k as never)) fields[`categories.${k}`] = "unknown category";
+  }
+  const lists: Record<"deny" | "allow", string[]> = { deny: [], allow: [] };
+  for (const list of ["deny", "allow"] as const) {
+    const v = b[list];
+    if (!Array.isArray(v)) {
+      fields[list] = "required";
+      continue;
+    }
+    if (v.length > 100) fields[list] = "at most 100 licenses";
+    const seen = new Set<string>();
+    v.forEach((id, i) => {
+      if (typeof id !== "string" || !SPDX_ID.test(id)) fields[`${list}[${i}]`] = "must be an SPDX license id";
+      else if (seen.has(id.toLowerCase())) fields[`${list}[${i}]`] = "duplicate license";
+      else seen.add(id.toLowerCase());
+    });
+    lists[list] = v.filter((x): x is string => typeof x === "string");
+  }
+  const overlap = lists.allow.findIndex((a) => lists.deny.some((d) => d.toLowerCase() === a.toLowerCase()));
+  if (overlap >= 0 && !fields[`allow[${overlap}]`]) fields[`allow[${overlap}]`] = "also in deny";
+  if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+  const categories = Object.fromEntries(LICENSE_CATEGORIES.map((c) => [c, cats![c]])) as LicensePolicy["categories"];
+  const enabled = lists.deny.length > 0 || LICENSE_CATEGORIES.some((c) => categories[c] !== "allow");
+  return { enabled, categories, deny: lists.deny, allow: lists.allow };
 }
 
 function findIssue(id: string): Issue {
@@ -264,6 +319,49 @@ const routes: [string, RegExp, Handler][] = [
         mine: active.filter((i) => i.assignee?.id === db.me.id).length,
         past_sla: active.filter((i) => i.past_sla).length,
         secrets: active.filter((i) => i.tool === "gitleaks").length,
+        kev: active.filter((i) => i.kev).length,
+        licenses: active.filter((i) => i.tool === "trivy" && i.rule_id.startsWith("license:")).length,
+      };
+    },
+  ],
+  // ---- v0.3 license policy (any member reads, security lead writes) and vulnerability data ----
+  [
+    "GET",
+    new RegExp(`^${O}/license-policy$`),
+    (m) => {
+      const p = db.licensePolicies[m[1]!];
+      if (!p) throw NOT_FOUND();
+      return p;
+    },
+  ],
+  [
+    "PUT",
+    new RegExp(`^${O}/license-policy$`),
+    (m, _u, body) => {
+      const orgId = m[1]!;
+      if (callerRole(orgId) !== "security_lead") throw new Fail(403, "FORBIDDEN");
+      const next = validateLicensePolicy(body);
+      const from = db.licensePolicies[orgId];
+      db.licensePolicies[orgId] = next;
+      if (JSON.stringify(from) !== JSON.stringify(next)) audit("org.license_policy_changed", "org", orgId, { from, to: next });
+      return next;
+    },
+  ],
+  ["GET", new RegExp(`^${O}/vuln-data$`), () => db.vulnData()],
+  [
+    "GET",
+    new RegExp(`^${O}/scans/([^/]+)/sbom$`),
+    (m) => {
+      const s = db.scans.find((x) => x.id === m[2]);
+      if (!s || !s.sbom) throw NOT_FOUND();
+      return {
+        // Never followed in mock mode (there is no object store); shaped like a presigned GET.
+        url: `https://storage.mock.invalid/warden/sboms/${m[1]}/${s.id}.cdx.json?X-Amz-Expires=300&X-Amz-Signature=mock`,
+        expires_at: new Date(db.now() + 5 * 60_000).toISOString(),
+        format: "cyclonedx-json",
+        size: s.sbom.size,
+        sha256: db.fakeSha256(s.sbom.size),
+        components: s.sbom.components,
       };
     },
   ],
@@ -560,11 +658,24 @@ const routes: [string, RegExp, Handler][] = [
     new RegExp(`^${O}/projects/([^/]+)/scans$`),
     (m, _u, body) => {
       const p = findProject(m[2]!);
-      const b = body as { file_name: string; file_size: number; sha256: string; tools?: Scan["tools"] };
+      const b = body as CreateScanBody;
       if (p.archived_at) throw new Fail(409, "PROJECT_ARCHIVED");
       if (b.file_name.includes("ratelimit")) throw new Fail(429, "RATE_LIMITED");
       if (!/^[0-9a-f]{64}$/.test(b.sha256)) throw new Fail(422, "VALIDATION_FAILED", { sha256: "must be 64 hex characters" });
-      const tools = b.tools ?? p.default_tools;
+      const kind = b.kind ?? "source";
+      const fields: Record<string, string> = {};
+      if (kind === "image") {
+        if (!/\.tar$/i.test(b.file_name)) fields.file_name = "must be a .tar for an image scan";
+        if (!b.target || b.target.length > 255 || !IMAGE_TARGET.test(b.target)) fields.target = "must be an image repository without tag, e.g. ghcr.io/acme/api";
+        if (b.tools && b.tools.some((t) => t !== "trivy")) fields.tools = "image scans run trivy only";
+        if (b.image_ref && b.image_ref.length > 512) fields.image_ref = "at most 512 characters";
+        if (b.file_size > db.me.limits.image_upload_max_mb * 1024 * 1024) fields.file_size = "larger than image_upload_max_mb";
+      } else {
+        if (!/\.zip$/i.test(b.file_name)) fields.file_name = "must be a .zip for a source scan";
+        if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
+      }
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : (b.tools ?? p.default_tools);
       const scan: Scan = {
         id: db.uuid(),
         project_id: p.id,
@@ -580,11 +691,16 @@ const routes: [string, RegExp, Handler][] = [
         started_at: null,
         finished_at: null,
         via_token: null,
+        kind,
+        target: kind === "image" ? b.target! : "",
+        image_ref: kind === "image" ? (b.image_ref ?? null) : null,
+        sbom: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
       audit("scan.created", "scan", scan.id, { project_key: p.key, file_name: scan.file_name, file_size: scan.file_size });
-      return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": "application/zip" }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
+      const type = kind === "image" ? "application/x-tar" : "application/zip";
+      return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": type }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
     },
   ],
   [
@@ -640,6 +756,13 @@ const routes: [string, RegExp, Handler][] = [
           (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
           (!sp.get("tool") || i.tool === sp.get("tool")) &&
           (sp.get("past_sla") !== "true" || i.past_sla) &&
+          // v0.3
+          (sp.get("kev") !== "true" || i.kev) &&
+          (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
+          (!sp.get("kind") ||
+            (i.tool === "trivy" && (sp.get("kind") === "license") === i.rule_id.startsWith("license:"))) &&
+          (!sp.get("source") || (sp.get("source") === "image") === (i.target !== "")) &&
+          (!sp.get("target") || i.target === sp.get("target")) &&
           (!sp.get("assignee") ||
             (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
           (!q || [i.title, i.rule_id, i.file_path ?? "", i.key].some((s) => s.toLowerCase().includes(q))),
@@ -648,7 +771,9 @@ const routes: [string, RegExp, Handler][] = [
       const filtered = sev.length ? base.filter((i) => sev.includes(i.severity)) : base;
       const sort = sp.get("sort") ?? "due_at";
       const sorted = [...filtered].sort((a, b) =>
-        sort === "-severity"
+        sort === "-epss"
+          ? (b.epss ?? -1) - (a.epss ?? -1) || (a.due_at ?? "9").localeCompare(b.due_at ?? "9")
+          : sort === "-severity"
           ? SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)
           : sort === "-updated_at"
             ? b.updated_at.localeCompare(a.updated_at)
@@ -803,7 +928,7 @@ const routes: [string, RegExp, Handler][] = [
 ];
 
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, ...rest } = i;
   return rest;
 }
 

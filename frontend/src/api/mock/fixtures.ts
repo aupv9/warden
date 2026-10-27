@@ -10,6 +10,7 @@ import type {
   ExceptionRequest,
   Issue,
   IssueEvent,
+  LicensePolicy,
   Me,
   Metrics,
   MetricsDays,
@@ -24,6 +25,7 @@ import type {
   Severity,
   SignInSettings,
   UserRef,
+  VulnData,
 } from "../types";
 
 const DAY = 86_400_000;
@@ -53,6 +55,8 @@ const ROLE_PARAM = PARAMS.get("mock_role");
 const ENG_ROLE: OrgRole = ROLE_PARAM === "org_admin" || ROLE_PARAM === "member" ? ROLE_PARAM : "security_lead";
 /** `?mock_keys=error` or `?mock_keys=not_loaded` shows the other identity-provider key states. */
 const KEYS_PARAM = PARAMS.get("mock_keys");
+/** `?mock_vuln=fresh`, `stale` or `missing` changes the vulnerability data card (default: EPSS is stale). */
+const VULN_PARAM = PARAMS.get("mock_vuln");
 
 const u = (display_name: string, email: string): UserRef => ({ id: uuid(), display_name, email });
 export const users = {
@@ -77,7 +81,7 @@ export const me: Me = {
     { id: ORG2_ID, name: "Acme Labs", role: "member" },
     { id: ORG3_ID, name: "Acme Security", role: "org_admin" },
   ],
-  limits: { upload_max_mb: 200, unzip_max_mb: 1024, unzip_max_files: 100000, scan_timeout_minutes: 30, scans_per_hour: 20 },
+  limits: { upload_max_mb: 200, unzip_max_mb: 1024, unzip_max_files: 100000, scan_timeout_minutes: 30, scans_per_hour: 20, image_upload_max_mb: 2048 },
   mfa_required_orgs: [ORG3_ID],
 };
 
@@ -191,9 +195,17 @@ export function rebuildSignIn(orgId: string, policy: SignInSettings["policy"]): 
   return next;
 }
 
+/** A plainly fake SHA-256 for mock SBOMs: hex from the seeded generator, never a real file's. */
+export function fakeSha256(seed: number): string {
+  const rand = seeded(seed);
+  let out = "";
+  for (let i = 0; i < 64; i++) out += "0123456789abcdef"[Math.floor(rand() * 16)];
+  return out;
+}
+
 function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
   const created = ago(createdAgo);
-  return {
+  const s: Scan = {
     id: uuid(),
     project_id: p.id,
     status: "completed",
@@ -216,8 +228,17 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
       error: null,
     })),
     via_token: null,
+    kind: "source",
+    target: "",
+    image_ref: null,
+    sbom: null,
     ...partial,
   };
+  // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
+  if (partial.sbom === undefined && s.status === "completed" && s.tools.includes("trivy")) {
+    s.sbom = { components: 120 + (Math.round(createdAgo / H) % 97), size: 260_000 + (Math.round(createdAgo / H) % 400) * 97 };
+  }
+  return s;
 }
 
 export const scans: Scan[] = [
@@ -260,6 +281,38 @@ export const scans: Scan[] = [
   scan(PAY, { file_name: "payments-api.zip" }, DAY),
   scan(INFRA, { file_name: "terraform.zip" }, 5 * DAY),
   scan(projects[4]!, { file_name: "legacy-portal-final.zip", stats: { new: 0, fixed: 3, reopened: 0, total: 9 } }, 24 * DAY),
+  // v0.3: image scans (a `docker save` .tar), Trivy only, issues tracked per target.
+  scan(
+    WEB,
+    {
+      kind: "image",
+      target: "ghcr.io/acme/api",
+      image_ref: "ghcr.io/acme/api:1.4.2",
+      file_name: "api-1.4.2.tar",
+      file_size: 187 * 1024 * 1024,
+      tools: ["trivy"],
+      created_by: users.linh,
+      stats: { new: 5, fixed: 1, reopened: 0, total: 5 },
+      tool_runs: [{ tool: "trivy", tool_version: "0.75.0", status: "succeeded", findings_count: 5, duration_ms: 96_000, error: null }],
+      sbom: { components: 412, size: 1_284_311 },
+    },
+    3 * H,
+  ),
+  scan(
+    WEB,
+    {
+      kind: "image",
+      target: "ghcr.io/acme/api",
+      file_name: "api-and-worker.tar",
+      file_size: 402 * 1024 * 1024,
+      tools: ["trivy"],
+      status: "failed",
+      error_code: "IMAGE_MULTIPLE",
+      tool_runs: [],
+      finished_at: ago(3 * DAY - 20_000),
+    },
+    3 * DAY,
+  ),
 ];
 
 const issueN: Record<string, number> = { WEB: 40, PAY: 6, INFRA: 3 };
@@ -281,6 +334,11 @@ interface IssueSeed {
   cve?: string[];
   remediation: string;
   description: string;
+  /** v0.3: image repository for issues from image scans. */
+  target?: string;
+  kev?: { added: string; ransomware: boolean };
+  /** v0.3: [EPSS score, percentile]. */
+  epss?: [number, number];
 }
 
 function issue(s: IssueSeed): Issue {
@@ -318,6 +376,12 @@ function issue(s: IssueSeed): Issue {
     can_assign: false,
     can_request_exception: false,
     pending_exception_id: null,
+    target: s.target ?? "",
+    kev: !!s.kev,
+    kev_added: s.kev?.added ?? null,
+    kev_ransomware: s.kev?.ransomware ?? false,
+    epss: s.epss?.[0] ?? null,
+    epss_percentile: s.epss?.[1] ?? null,
   };
 }
 
@@ -368,6 +432,8 @@ export const issues: Issue[] = [
     assignee: users.an,
     dueIn: 4 * H,
     cve: ["CVE-2023-44487"],
+    kev: { added: "2023-10-10", ransomware: false },
+    epss: [0.9442, 0.9997],
     description: "The HTTP/2 implementation allows a denial of service through rapid stream resets.",
     remediation: "Upgrade golang.org/x/net to v0.23.0 or later and rebuild.",
   }),
@@ -411,6 +477,7 @@ export const issues: Issue[] = [
     assignee: users.bao,
     dueIn: 10 * DAY,
     cve: ["CVE-2020-8203"],
+    epss: [0.0263, 0.853],
     description: "Prototype pollution in lodash before 4.17.20.",
     remediation: "Upgrade lodash to 4.17.21.",
   }),
@@ -430,6 +497,97 @@ export const issues: Issue[] = [
       remediation: "Example remediation for the mock mode.",
     }),
   ),
+  // ---- v0.3: an image scan of ghcr.io/acme/api (KEV, EPSS) and license-policy issues ----
+  issue({
+    p: WEB,
+    title: "log4j-core: remote code execution through JNDI lookups (Log4Shell)",
+    severity: "critical",
+    status: "open",
+    tool: "trivy",
+    rule_id: "CVE-2021-44228",
+    file_path: "app/lib/log4j-core-2.14.1.jar",
+    pkg: ["org.apache.logging.log4j:log4j-core", "2.14.1", "2.17.1"],
+    target: "ghcr.io/acme/api",
+    dueIn: 5 * DAY,
+    cve: ["CVE-2021-44228"],
+    kev: { added: "2021-12-10", ransomware: true },
+    epss: [0.9447, 0.9999],
+    description: "Log4j 2 evaluates JNDI lookups in logged messages, so an attacker who controls a logged string can run code on the server.",
+    remediation: "Rebuild the image with log4j-core 2.17.1 or later, then scan the new image.",
+  }),
+  issue({
+    p: WEB,
+    title: "glibc: buffer overflow in ld.so through GLIBC_TUNABLES",
+    severity: "high",
+    status: "open",
+    tool: "trivy",
+    rule_id: "CVE-2023-4911",
+    file_path: "debian 12.1 (os)",
+    pkg: ["libc6", "2.36-9", "2.36-9+deb12u3"],
+    target: "ghcr.io/acme/api",
+    dueIn: 22 * DAY,
+    cve: ["CVE-2023-4911"],
+    kev: { added: "2023-11-21", ransomware: false },
+    epss: [0.7921, 0.9893],
+    description: "A local attacker can gain root through a crafted GLIBC_TUNABLES environment variable.",
+    remediation: "Rebuild the image on an updated base (debian:12 with libc6 2.36-9+deb12u3 or later).",
+  }),
+  issue({
+    p: WEB,
+    title: "openssl: incorrect cipher key and IV length processing",
+    severity: "high",
+    status: "open",
+    tool: "trivy",
+    rule_id: "CVE-2023-5363",
+    file_path: "debian 12.1 (os)",
+    pkg: ["libssl3", "3.0.9-1", "3.0.11-1~deb12u2"],
+    target: "ghcr.io/acme/api",
+    dueIn: 26 * DAY,
+    cve: ["CVE-2023-5363"],
+    epss: [0.0045, 0.7212],
+    description: "Key and IV lengths set after the cipher is initialised are ignored, which can truncate or overrun them.",
+    remediation: "Rebuild the image on an updated base with libssl3 3.0.11-1~deb12u2 or later.",
+  }),
+  issue({
+    p: WEB,
+    title: "@acme/legacy-charts uses GPL-3.0-only (restricted)",
+    severity: "medium",
+    status: "open",
+    tool: "trivy",
+    rule_id: "license:GPL-3.0-only",
+    file_path: "package-lock.json",
+    pkg: ["@acme/legacy-charts", "2.1.0", null],
+    dueIn: 75 * DAY,
+    description: "The package is licensed under GPL-3.0-only. The org's license policy asks for a review of restricted licenses.",
+    remediation: "Replace the package, or ask a security lead to add GPL-3.0-only to the license policy's Allow list if your use is fine.",
+  }),
+  issue({
+    p: PAY,
+    title: "@acme/pdf-render uses AGPL-3.0-only (forbidden)",
+    severity: "high",
+    status: "open",
+    tool: "trivy",
+    rule_id: "license:AGPL-3.0-only",
+    file_path: "package-lock.json",
+    pkg: ["@acme/pdf-render", "0.9.4", null],
+    dueIn: 12 * DAY,
+    description: "The package is licensed under AGPL-3.0-only. The org's license policy blocks forbidden licenses.",
+    remediation: "Remove the package or replace it with one under an allowed license.",
+  }),
+  issue({
+    p: WEB,
+    title: "busybox uses GPL-2.0-only (restricted)",
+    severity: "medium",
+    status: "open",
+    tool: "trivy",
+    rule_id: "license:GPL-2.0-only",
+    file_path: "debian 12.1 (os)",
+    pkg: ["busybox", "1:1.35.0-4", null],
+    target: "ghcr.io/acme/api",
+    dueIn: 80 * DAY,
+    description: "An OS package in the image is licensed under GPL-2.0-only. The org's license policy asks for a review of restricted licenses.",
+    remediation: "Use a base image without busybox, or allow GPL-2.0-only for OS packages if you ship the image unmodified.",
+  }),
 ];
 
 export const events: Record<string, IssueEvent[]> = {};
@@ -505,6 +663,41 @@ export const audit: AuditEntry[] = [
   { id: uuid(), actor: null, action: "issue.transitioned", target_type: "issue", target_id: issues[10]!.id, ip: null, data: { issue_key: issues[10]!.key, from: "open", to: "fixed" }, created_at: ago(7 * DAY) },
   { id: uuid(), actor: users.huy, action: "project.created", target_type: "project", target_id: PAY.id, ip: "10.20.4.2", data: { project_key: "PAY", name: "Payments API" }, created_at: ago(40 * DAY) },
 ];
+
+// ---- v0.3: license policy per org, and the vulnerability data the mirror loaded ----
+
+export const licensePolicies: Record<string, LicensePolicy> = {
+  [ORG_ID]: {
+    enabled: true,
+    categories: { forbidden: "block", restricted: "review", reciprocal: "allow", notice: "allow", permissive: "allow", unencumbered: "allow", unknown: "allow" },
+    deny: ["SSPL-1.0", "BUSL-1.1"],
+    allow: ["LGPL-2.1-only"],
+  },
+  // Off, as every org starts.
+  [ORG2_ID]: {
+    enabled: false,
+    categories: { forbidden: "allow", restricted: "allow", reciprocal: "allow", notice: "allow", permissive: "allow", unencumbered: "allow", unknown: "allow" },
+    deny: [],
+    allow: [],
+  },
+};
+
+export function vulnData(): VulnData {
+  if (VULN_PARAM === "missing") {
+    return {
+      sources: (["trivy_db", "kev", "epss"] as const).map((name) => ({ name, updated_at: null, loaded_at: null, records: null, stale: true })),
+    };
+  }
+  const stale = VULN_PARAM === "stale";
+  const fresh = VULN_PARAM === "fresh";
+  return {
+    sources: [
+      { name: "trivy_db", updated_at: ago(stale ? 12 * DAY : 7 * H), loaded_at: null, records: null, stale },
+      { name: "kev", updated_at: ago(stale ? 15 * DAY : 20 * H), loaded_at: ago(stale ? 15 * DAY : 50 * 60_000), records: 1484, stale },
+      { name: "epss", updated_at: ago(fresh ? 9 * H : 9 * DAY), loaded_at: ago(fresh ? 40 * 60_000 : 9 * DAY - H), records: 296_331, stale: !fresh },
+    ],
+  };
+}
 
 // ---- v0.2 fixtures ----
 
