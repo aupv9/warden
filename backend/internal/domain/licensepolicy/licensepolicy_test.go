@@ -118,6 +118,25 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// SPDX ids are case-insensitive: lists are validated and matched without case
+// (the UI checks the same way).
+func TestIDsIgnoreCase(t *testing.T) {
+	got := map[string]string{}
+	for _, e := range (Policy{Deny: []string{"GPL-3.0-only", "gpl-3.0-ONLY"}, Allow: []string{"mit", "MIT", "gpl-3.0-only"}}).Validate() {
+		got[e.Field] = e.Message
+	}
+	if got["deny[1]"] != "is listed twice" || got["allow[1]"] != "is listed twice" || got["allow[2]"] != "is also in deny" || got["allow[0]"] != "" {
+		t.Fatal(got)
+	}
+	p := Policy{Deny: []string{"agpl-3.0-only"}, Allow: []string{"lgpl-2.1-only"}, Categories: map[Category]Action{Restricted: Block}}
+	if d := p.Evaluate([][]string{{"AGPL-3.0-only"}}, Notice); d.Action != Block || d.ID != "AGPL-3.0-only" {
+		t.Fatal(d)
+	}
+	if d := p.Evaluate([][]string{{"LGPL-2.1-ONLY"}}, Restricted); d.Action != Allow || d.Rule != RuleAllowList {
+		t.Fatal(d)
+	}
+}
+
 func TestNormalizeAndEqual(t *testing.T) {
 	if !Equal(Policy{}, Policy{Categories: map[Category]Action{Notice: Allow}, Deny: []string{}}) {
 		t.Fatal("same meaning, not equal")
