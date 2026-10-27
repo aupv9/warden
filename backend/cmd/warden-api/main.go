@@ -54,7 +54,11 @@ func appOptions(cfg *config.Config) fx.Option {
 		db.Module,
 		httpserver.Module(api.ServerOptions()...),
 		fx.Provide(func(c *config.Config) cgauth.Verifier {
-			return auth.NewVerifier(c.OIDC.Issuer, c.OIDC.Audience, auth.NewJWKS(c.OIDC.Issuer, c.OIDC.JWKSCache))
+			v := auth.NewVerifier(c.OIDC.Issuer, c.OIDC.Audience,
+				auth.NewJWKS(c.OIDC.Issuer, c.OIDC.JWKSURL, c.OIDC.JWKSCache, c.OIDC.Algorithms))
+			v.Algs = c.OIDC.Algorithms
+			v.MFA = auth.MFAPolicy{AMR: c.OIDC.MFAAMR, ACR: c.OIDC.MFAACR}
+			return v
 		}),
 		// Insert-only River client: the API enqueues scans, workers run them.
 		fx.Provide(func(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {

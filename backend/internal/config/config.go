@@ -11,6 +11,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -62,7 +63,20 @@ type OIDCSection struct {
 	// RequireMFARoles: org roles that must sign in with a second factor to use
 	// an org (403 MFA_REQUIRED otherwise). Empty disables the rule.
 	RequireMFARoles List `koanf:"require_mfa_roles"`
+	// JWKSURL pins the signing-key URL. Empty: discovered from the issuer's
+	// /.well-known/openid-configuration, so any OIDC provider works.
+	JWKSURL string `koanf:"jwks_url" validate:"omitempty,url"`
+	// Algorithms the access tokens may be signed with: RS256 and/or ES256.
+	Algorithms List `koanf:"algorithms"`
+	// MFAAMR / MFAACR: a token proves a second factor when its "amr" claim holds
+	// one of MFAAMR, or its "acr" claim equals one of MFAACR (providers differ).
+	MFAAMR List `koanf:"mfa_amr"`
+	MFAACR List `koanf:"mfa_acr"`
 }
+
+// TokenAlgorithms are the signing algorithms Warden can verify; anything else
+// (HS*, none, PS*) is rejected at startup.
+var TokenAlgorithms = []string{"RS256", "ES256"}
 
 // List is a list setting given as a YAML list or, in the environment, as a
 // comma-separated string (an empty string is an empty list).
@@ -151,6 +165,8 @@ func settingsDefaults() *Settings {
 			// Admins and security leads change who can do what and decide
 			// exceptions: a stolen password alone must not be enough.
 			RequireMFARoles: List{"org_admin", "security_lead"},
+			Algorithms:      List{"RS256"},
+			MFAAMR:          List{"otp", "mfa", "hwk", "webauthn"},
 		},
 		Storage: StorageSection{Endpoint: "http://localhost:8333", Bucket: "warden-uploads"},
 		SMTP:    SMTPSection{Host: "localhost", Port: 1025, From: "warden@localhost", PublicBaseURL: "http://localhost:5173", DigestHour: 8},
@@ -201,6 +217,14 @@ func Load() (*Config, error) {
 	}
 	if err := validateImages(c.Scan.Images); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	if len(c.OIDC.Algorithms) == 0 {
+		return nil, errors.New("config: oidc.algorithms must list at least one algorithm")
+	}
+	for _, a := range c.OIDC.Algorithms {
+		if !slices.Contains(TokenAlgorithms, a) {
+			return nil, fmt.Errorf("config: oidc.algorithms: unsupported algorithm %q (want RS256 or ES256)", a)
+		}
 	}
 	for _, r := range c.OIDC.RequireMFARoles {
 		if !slices.Contains(orgRoles, r) {
