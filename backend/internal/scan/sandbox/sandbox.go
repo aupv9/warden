@@ -32,6 +32,42 @@ type ToolSpec struct {
 	NeedsHMACKey bool
 	TmpExec      bool // Opengrep's binary self-extracts into /tmp and execs
 	OKExitCodes  []int
+	// Artifacts are reports the tool writes to /out besides its SARIF, by name.
+	Artifacts map[string]ArtifactSpec
+}
+
+// ArtifactSpec is one extra report: its file name under /out and the largest
+// size Warden reads. Like the SARIF, it is derived from hostile input.
+type ArtifactSpec struct {
+	File     string
+	MaxBytes int64
+}
+
+// Trivy's artifacts (see trivyScript).
+const (
+	ArtifactTrivyJSON = "trivy_json"
+	ArtifactSBOM      = "sbom"
+)
+
+// trivyFlags: offline, nothing read from the scanned tree. The JSON report
+// lists every package (--list-all-pkgs) with its licenses, for the license
+// policy and the SBOM.
+const trivyFlags = "--scanners vuln,license --list-all-pkgs --cache-dir /data --cache-backend memory " +
+	"--skip-db-update --skip-java-db-update --offline-scan --format json --output /out/trivy.json"
+
+// trivyScript runs one Trivy scan and derives from its JSON report the SARIF
+// (vulnerabilities and licenses; the SARIF parser keeps only vulnerabilities)
+// and a CycloneDX SBOM. It is a constant: nothing from the upload is
+// interpolated. A failed SBOM conversion loses only the SBOM, not the results.
+func trivyScript(scan string) string {
+	return "set -eu; trivy " + scan + " " + trivyFlags +
+		" && trivy convert --format sarif --output /out/result.sarif /out/trivy.json" +
+		" && { trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json || rm -f /out/sbom.cdx.json; }"
+}
+
+var trivyArtifacts = map[string]ArtifactSpec{
+	ArtifactTrivyJSON: {File: "trivy.json", MaxBytes: 256 << 20},
+	ArtifactSBOM:      {File: "sbom.cdx.json", MaxBytes: 64 << 20},
 }
 
 // Tools is the fixed scanner set. Uploaded code can't configure its own scan: every
@@ -53,12 +89,10 @@ var Tools = map[string]ToolSpec{
 		OKExitCodes: []int{0, 2}, // 2 = some files failed to parse; SARIF still written
 	},
 	"trivy": {
+		// The pinned upstream image is Alpine, so it has sh: no Warden-built image needed.
 		Name: "trivy", Timeout: 10 * time.Minute, CPUs: "0.5", Memory: "1g",
-		Command: []string{
-			"trivy", "fs", "--scanners", "vuln", "--cache-dir", "/data", "--cache-backend", "memory",
-			"--skip-db-update", "--skip-java-db-update", "--offline-scan",
-			"--format", "sarif", "--output", "/out/result.sarif", "/src",
-		},
+		Command:   []string{"sh", "-c", trivyScript("fs /src")},
+		Artifacts: trivyArtifacts,
 	},
 	"checkov": {
 		// 512m and 1g were SIGKILLed under gVisor, which accounts sentry memory to the container.
@@ -106,6 +140,10 @@ type ToolRun struct {
 	DurationMS int64
 	Sarif      string // path of the SARIF file when Succeeded
 	Error      string
+	// Artifacts: the path of each artifact the tool wrote as a regular file
+	// within its size cap. A missing or oversized one is left out; that doesn't
+	// fail the tool.
+	Artifacts map[string]string
 }
 
 func ContainerName(scanID, tool string) string {
@@ -226,5 +264,21 @@ func Run(ctx context.Context, spec ToolSpec, c RunConfig) ToolRun {
 		}
 		return ToolRun{Tool: spec.Name, Status: Failed, DurationMS: ms, Error: msg}
 	}
-	return ToolRun{Tool: spec.Name, Status: Succeeded, DurationMS: ms, Sarif: sarif}
+	return ToolRun{Tool: spec.Name, Status: Succeeded, DurationMS: ms, Sarif: sarif, Artifacts: artifacts(spec, outDir)}
+}
+
+// artifacts returns the tool's artifacts that are regular files (Lstat: a
+// symlink the tool planted is not followed) within their size caps.
+func artifacts(spec ToolSpec, outDir string) map[string]string {
+	if len(spec.Artifacts) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for name, a := range spec.Artifacts {
+		p := filepath.Join(outDir, a.File)
+		if st, err := os.Lstat(p); err == nil && st.Mode().IsRegular() && st.Size() <= a.MaxBytes {
+			out[name] = p
+		}
+	}
+	return out
 }

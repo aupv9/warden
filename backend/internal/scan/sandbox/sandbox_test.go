@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -87,6 +88,54 @@ func TestToolNamesMatchTools(t *testing.T) {
 		if Tools[n].Name != n {
 			t.Fatalf("%s: name %q", n, Tools[n].Name)
 		}
+	}
+}
+
+// Trivy runs a constant script through sh: one JSON report, from which the
+// SARIF and the SBOM are converted offline.
+func TestTrivyScript(t *testing.T) {
+	c := Tools["trivy"].Command
+	if len(c) != 3 || c[0] != "sh" || c[1] != "-c" {
+		t.Fatal(c)
+	}
+	for _, want := range []string{"set -eu;", "trivy fs /src ", "--scanners vuln,license", "--list-all-pkgs", "--offline-scan",
+		"--skip-db-update", "--format json --output /out/trivy.json",
+		"trivy convert --format sarif --output /out/result.sarif /out/trivy.json",
+		"trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json"} {
+		if !strings.Contains(c[2], want) {
+			t.Errorf("script lacks %q: %s", want, c[2])
+		}
+	}
+	a := Tools["trivy"].Artifacts
+	if a[ArtifactTrivyJSON].File != "trivy.json" || a[ArtifactSBOM].MaxBytes != 64<<20 {
+		t.Fatal(a)
+	}
+}
+
+func TestArtifactsAreRegularFilesWithinCaps(t *testing.T) {
+	dir := t.TempDir()
+	spec := ToolSpec{Artifacts: map[string]ArtifactSpec{
+		"ok": {File: "ok.json", MaxBytes: 10}, "big": {File: "big.json", MaxBytes: 3},
+		"link": {File: "link.json", MaxBytes: 10}, "missing": {File: "none.json", MaxBytes: 10},
+		"dir": {File: "d", MaxBytes: 10},
+	}}
+	for name, body := range map[string]string{"ok.json": "{}", "big.json": "toolarge"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(dir, "ok.json"), filepath.Join(dir, "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := artifacts(spec, dir)
+	if len(got) != 1 || got["ok"] != filepath.Join(dir, "ok.json") {
+		t.Fatal(got)
+	}
+	if artifacts(ToolSpec{}, dir) != nil {
+		t.Fatal("no artifacts expected")
 	}
 }
 

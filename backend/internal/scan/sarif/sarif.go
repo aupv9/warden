@@ -257,6 +257,12 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 			tags = append(tags, s)
 		}
 	}
+	// Trivy's SARIF also lists every package license (tag "license"). License
+	// issues come from its JSON report under the org's policy (trivyjson,
+	// licensepolicy), so here Trivy yields vulnerabilities only, as before.
+	if tool == "trivy" && slices.Contains(tags, "license") {
+		return nil, nil
+	}
 
 	var loc map[string]any
 	if locs := arr(result["locations"]); len(locs) > 0 {
