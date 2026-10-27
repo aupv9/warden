@@ -46,8 +46,8 @@ func fail(c *gin.Context, err error) {
 	response.Error(c.Writer, c.Request, apperrors.Internal("INTERNAL", "internal server error"))
 }
 
-func identityFrom(p *cgauth.Principal) service.Identity {
-	id := service.Identity{Sub: p.Subject, Email: auth.Email(p), Name: auth.Name(p), MFA: auth.MFA(p)}
+func identityFrom(v cgauth.Verifier, p *cgauth.Principal) service.Identity {
+	id := service.Identity{Sub: p.Subject, Email: auth.Email(p), Name: auth.Name(p), MFA: auth.MFAOf(v, p)}
 	if v, ok := p.Claims["email_verified"].(bool); ok {
 		id.EmailVerified = &v
 	}
@@ -68,7 +68,7 @@ func authenticate(v cgauth.Verifier, svc *service.Service, lim *rateLimiter) gin
 			}
 			return
 		}
-		if verifyJWT(c, v, token) && identify(c, svc) {
+		if verifyJWT(c, v, token) && identify(c, svc, v) {
 			c.Next()
 		}
 	}
@@ -76,13 +76,13 @@ func authenticate(v cgauth.Verifier, svc *service.Service, lim *rateLimiter) gin
 
 // identify maps the verified access token to an active app_user (provisioning
 // it on first sight). Inactive users get 403 on every endpoint.
-func identify(c *gin.Context, svc *service.Service) bool {
+func identify(c *gin.Context, svc *service.Service, v cgauth.Verifier) bool {
 	p, ok := cgauth.FromContext(c.Request.Context())
 	if !ok {
 		fail(c, apperrors.Unauthorized("UNAUTHORIZED", "invalid or expired token"))
 		return false
 	}
-	id := identityFrom(p)
+	id := identityFrom(v, p)
 	u, err := svc.Authenticate(c.Request.Context(), id)
 	if err != nil {
 		fail(c, err)
