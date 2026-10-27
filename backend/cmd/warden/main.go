@@ -3,10 +3,17 @@
 //
 //	export WARDEN_TOKEN=wdn_...        # an API token with scope scan:write
 //	warden scan --url https://warden.example --org ORG_ID --project PROJECT_ID \
-//	    [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--timeout 30m]
+//	    [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--fail-on-kev] [--timeout 30m] \
+//	    [--sbom-out bom.cdx.json]
+//
+// --sbom-out saves the scan's CycloneDX SBOM (Trivy must be among the tools),
+// after checking it against the SHA-256 the server recorded. --fail-on-kev also
+// fails the gate on any issue whose CVE is on CISA's Known Exploited
+// Vulnerabilities list, whatever its severity.
 //
 // Exit status: 0 the gate passed, 1 the gate failed (blocking issues), 2 any
-// error (bad arguments, network, authentication, the scan failed or timed out).
+// error (bad arguments, network, authentication, the scan failed or timed out,
+// the SBOM could not be saved).
 //
 // The token is read only from $WARDEN_TOKEN (a flag would show up in process
 // listings and CI logs) and is never printed. Only https:// servers are
@@ -40,7 +47,8 @@ const (
 	exitGateFailed = 1
 	exitError      = 2
 
-	usage = `usage: warden scan --url URL --org ORG_ID --project PROJECT_ID [--dir DIR] [--tools a,b] [--fail-on high] [--timeout 30m]
+	usage = `usage: warden scan --url URL --org ORG_ID --project PROJECT_ID [--dir DIR] [--tools a,b] [--fail-on high]
+                   [--fail-on-kev] [--timeout 30m] [--sbom-out FILE]
 The API token is read from $WARDEN_TOKEN.`
 )
 
@@ -54,7 +62,7 @@ func main() {
 // deps are the pieces tests replace.
 type deps struct {
 	api    *http.Client // API calls: short timeout, no redirects
-	upload *http.Client // the archive upload to object storage
+	upload *http.Client // object storage: the archive upload, the SBOM download
 	pack   func(dir, dest, prefix string) (int, error)
 	sleep  func(ctx context.Context, d time.Duration) error
 	poll   time.Duration // first polling interval (backs off to maxPoll)
@@ -101,6 +109,8 @@ type options struct {
 	dir            string
 	tools          []string
 	failOn         string
+	failOnKEV      bool
+	sbomOut        string
 	timeout        time.Duration
 	token          string
 	stdout, stderr io.Writer
@@ -120,11 +130,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	tools := fs.String("tools", "", "comma-separated scanners (default: the project's)")
 	failOn := fs.String("fail-on", "high", "critical|high|medium|low")
 	timeout := fs.Duration("timeout", 30*time.Minute, "give up (and cancel the scan) after this long")
+	failOnKEV := fs.Bool("fail-on-kev", false, "also fail on any issue whose CVE is known exploited (CISA KEV)")
+	sbomOut := fs.String("sbom-out", "", "save the scan's CycloneDX SBOM to this file")
 	if err := fs.Parse(args[1:]); err != nil {
 		fmt.Fprintln(stderr, usage)
 		return exitError
 	}
-	o := options{dir: *dir, failOn: *failOn, timeout: *timeout, stdout: stdout, stderr: stderr}
+	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, timeout: *timeout, stdout: stdout, stderr: stderr}
 	var problems []string
 	var err error
 	if o.server, err = checkURL(*server); err != nil {
