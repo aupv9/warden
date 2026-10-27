@@ -162,6 +162,9 @@
           },
           "scans_per_hour": {
             "type": "integer"
+          },
+          "image_upload_max_mb": {
+            "type": "integer"
           }
         },
         "required": [
@@ -169,7 +172,8 @@
           "unzip_max_mb",
           "unzip_max_files",
           "scan_timeout_minutes",
-          "scans_per_hour"
+          "scans_per_hour",
+          "image_upload_max_mb"
         ],
         "additionalProperties": false
       },
@@ -641,6 +645,44 @@
               }
             ],
             "description": "The API token that created the scan, if any (created_by is the token's creator)."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScanKind"
+          },
+          "target": {
+            "type": "string",
+            "description": "Image repository for image scans (no tag); empty for source scans."
+          },
+          "image_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The image reference given at upload, for display (image scans only)."
+          },
+          "sbom": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "components": {
+                    "type": "integer"
+                  },
+                  "size": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "components",
+                  "size"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when the scan produced a CycloneDX SBOM that hasn't expired (see GET .../sbom)."
           }
         },
         "required": [
@@ -657,7 +699,11 @@
           "queued_at",
           "started_at",
           "finished_at",
-          "via_token"
+          "via_token",
+          "kind",
+          "target",
+          "image_ref",
+          "sbom"
         ],
         "additionalProperties": false
       },
@@ -790,6 +836,23 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "target": {
+            "type": "string",
+            "description": "Image repository for issues found in image scans; empty for source code."
+          },
+          "kev": {
+            "type": "boolean",
+            "description": "One of the issue's CVEs is in the CISA Known Exploited Vulnerabilities catalog."
+          },
+          "epss": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days)."
           }
         },
         "required": [
@@ -809,7 +872,10 @@
           "assignee",
           "due_at",
           "past_sla",
-          "updated_at"
+          "updated_at",
+          "target",
+          "kev",
+          "epss"
         ],
         "additionalProperties": false
       },
@@ -993,6 +1059,43 @@
               "null"
             ],
             "format": "uuid"
+          },
+          "target": {
+            "type": "string",
+            "description": "Image repository for issues found in image scans; empty for source code."
+          },
+          "kev": {
+            "type": "boolean",
+            "description": "One of the issue's CVEs is in the CISA Known Exploited Vulnerabilities catalog."
+          },
+          "epss": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days)."
+          },
+          "epss_percentile": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "kev_added": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Earliest date one of the CVEs was added to KEV."
+          },
+          "kev_ransomware": {
+            "type": "boolean",
+            "description": "KEV marks a CVE as known to be used in ransomware campaigns."
           }
         },
         "required": [
@@ -1026,7 +1129,13 @@
           "allowed_transitions",
           "can_assign",
           "can_request_exception",
-          "pending_exception_id"
+          "pending_exception_id",
+          "target",
+          "kev",
+          "epss",
+          "epss_percentile",
+          "kev_added",
+          "kev_ransomware"
         ],
         "additionalProperties": false
       },
@@ -1584,13 +1693,23 @@
           "secrets": {
             "type": "integer",
             "description": "Active Gitleaks issues."
+          },
+          "kev": {
+            "type": "integer",
+            "description": "Active issues with a CVE in KEV."
+          },
+          "licenses": {
+            "type": "integer",
+            "description": "Active license-policy issues."
           }
         },
         "required": [
           "active",
           "mine",
           "past_sla",
-          "secrets"
+          "secrets",
+          "kev",
+          "licenses"
         ],
         "additionalProperties": false
       },
@@ -1754,12 +1873,13 @@
           "file_name": {
             "type": "string",
             "maxLength": 255,
-            "pattern": "^[^/\\\\]+\\.[zZ][iI][pP]$"
+            "pattern": "^[^/\\\\]+\\.([zZ][iI][pP]|[tT][aA][rR])$",
+            "description": "A .zip of source code (kind source) or a `docker save` .tar (kind image)."
           },
           "file_size": {
             "type": "integer",
             "minimum": 1,
-            "description": "At most upload_max_mb MiB."
+            "description": "At most upload_max_mb MiB (source) or image_upload_max_mb MiB (image)."
           },
           "sha256": {
             "type": "string",
@@ -1771,7 +1891,23 @@
               "$ref": "#/components/schemas/Tool"
             },
             "minItems": 1,
-            "uniqueItems": true
+            "uniqueItems": true,
+            "description": "Image scans only run trivy; any other tool is a 422."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScanKind",
+            "description": "Default source."
+          },
+          "target": {
+            "type": "string",
+            "maxLength": 255,
+            "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$",
+            "description": "Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Issues are tracked per target."
+          },
+          "image_ref": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Optional, image scans only: the full reference (tag or digest), shown on the scan."
           }
         },
         "required": [
@@ -2174,7 +2310,14 @@
             "items": {
               "$ref": "#/components/schemas/IssueSummary"
             },
-            "description": "Active issues seen in this scan at or above fail_on, most severe first (at most 100)."
+            "description": "Active issues seen in this scan at or above fail_on (or in KEV with fail_on_kev), most severe first (at most 100)."
+          },
+          "fail_on_kev": {
+            "type": "boolean"
+          },
+          "kev": {
+            "type": "integer",
+            "description": "Active issues seen in this scan with a CVE in KEV."
           }
         },
         "required": [
@@ -2184,7 +2327,9 @@
           "fail_on",
           "pass",
           "counts",
-          "blocking"
+          "blocking",
+          "fail_on_kev",
+          "kev"
         ],
         "additionalProperties": false,
         "description": "counts: active issues (open, assigned, in_progress, reopened) seen in this scan. false_positive and risk_accepted issues never block."
@@ -2375,6 +2520,255 @@
           "keys",
           "mfa",
           "policy"
+        ],
+        "additionalProperties": false
+      },
+      "ScanKind": {
+        "type": "string",
+        "enum": [
+          "source",
+          "image"
+        ]
+      },
+      "SbomDownload": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Presigned GET, valid for 5 minutes; served as an attachment."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "cyclonedx-json"
+            ]
+          },
+          "size": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "components": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at",
+          "format",
+          "size",
+          "sha256",
+          "components"
+        ],
+        "additionalProperties": false
+      },
+      "LicenseAction": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "review",
+          "block"
+        ],
+        "description": "block: High issue (fails the default gate); review: Medium issue; allow: no issue."
+      },
+      "LicensePolicyRequest": {
+        "type": "object",
+        "properties": {
+          "categories": {
+            "type": "object",
+            "properties": {
+              "forbidden": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "restricted": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "reciprocal": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "notice": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "permissive": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "unencumbered": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "unknown": {
+                "$ref": "#/components/schemas/LicenseAction"
+              }
+            },
+            "required": [
+              "forbidden",
+              "restricted",
+              "reciprocal",
+              "notice",
+              "permissive",
+              "unencumbered",
+              "unknown"
+            ],
+            "additionalProperties": false,
+            "description": "Action per Trivy license category."
+          },
+          "deny": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^(LicenseRef-)?[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$"
+            },
+            "description": "SPDX ids always blocked (overrides the category)."
+          },
+          "allow": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^(LicenseRef-)?[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$"
+            },
+            "description": "SPDX ids never reported (overrides deny and the category). Must not overlap deny."
+          }
+        },
+        "required": [
+          "categories",
+          "deny",
+          "allow"
+        ],
+        "additionalProperties": false
+      },
+      "LicensePolicy": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "False when every category is allow and deny is empty: no license issues are created."
+          },
+          "categories": {
+            "type": "object",
+            "properties": {
+              "forbidden": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "restricted": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "reciprocal": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "notice": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "permissive": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "unencumbered": {
+                "$ref": "#/components/schemas/LicenseAction"
+              },
+              "unknown": {
+                "$ref": "#/components/schemas/LicenseAction"
+              }
+            },
+            "required": [
+              "forbidden",
+              "restricted",
+              "reciprocal",
+              "notice",
+              "permissive",
+              "unencumbered",
+              "unknown"
+            ],
+            "additionalProperties": false
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "categories",
+          "deny",
+          "allow"
+        ],
+        "additionalProperties": false
+      },
+      "VulnDataSource": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "trivy_db",
+              "kev",
+              "epss"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the publisher last updated the data, as recorded in the mirror."
+          },
+          "loaded_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the worker last loaded it (null for trivy_db: Trivy reads the mirror directly)."
+          },
+          "records": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "updated_at missing or older than 7 days."
+          }
+        },
+        "required": [
+          "name",
+          "updated_at",
+          "loaded_at",
+          "records",
+          "stale"
+        ],
+        "additionalProperties": false
+      },
+      "VulnData": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnDataSource"
+            }
+          }
+        },
+        "required": [
+          "sources"
         ],
         "additionalProperties": false
       }
@@ -5412,6 +5806,62 @@
             }
           },
           {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "vulnerability",
+                "license"
+              ]
+            },
+            "description": "Trivy issues only: dependency vulnerabilities or license-policy issues."
+          },
+          {
+            "name": "kev",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Only issues with a CVE in KEV."
+          },
+          {
+            "name": "epss_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "code",
+                "image"
+              ]
+            },
+            "description": "Issues from source scans or from image scans."
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
+            },
+            "description": "Issues from image scans of this repository."
+          },
+          {
             "name": "q",
             "in": "query",
             "required": false,
@@ -5430,7 +5880,8 @@
               "enum": [
                 "due_at",
                 "-severity",
-                "-updated_at"
+                "-updated_at",
+                "-epss"
               ],
               "default": "due_at"
             }
@@ -7256,6 +7707,16 @@
               ],
               "default": "high"
             }
+          },
+          {
+            "name": "fail_on_kev",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Also fail on any active issue with a CVE in KEV, whatever its severity."
           }
         ],
         "responses": {
@@ -7546,6 +8007,381 @@
             }
           }
         }
+      }
+    },
+    "/orgs/{org_id}/scans/{scan_id}/sbom": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "scan_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "scans"
+        ],
+        "operationId": "getScanSbom",
+        "summary": "Download link for the scan's CycloneDX SBOM",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SbomDownload"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention)."
+      }
+    },
+    "/orgs/{org_id}/license-policy": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "getLicensePolicy",
+        "summary": "The org's license policy (any member)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LicensePolicy"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Off by default. Licenses come from Trivy and depend on the lockfile: npm, Cargo and images carry them; go.mod and requirements.txt don't."
+      },
+      "put": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "setLicensePolicy",
+        "summary": "Replace the org's license policy (security_lead)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LicensePolicy"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Applies from the next scan. Audited as org.license_policy_changed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LicensePolicyRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/vuln-data": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "orgs"
+        ],
+        "operationId": "getVulnData",
+        "summary": "Freshness of the vulnerability data (any member)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/VulnData"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "The Trivy DB, CISA KEV and FIRST EPSS come from the mirror (make mirror). KEV and EPSS only rank issues; they never change severity or status."
       }
     }
   }
