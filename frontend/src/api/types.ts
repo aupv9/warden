@@ -1,4 +1,4 @@
-// API types, mirroring the v0.1 and v0.2 API contracts field for field (snake_case, as on the wire).
+// API types, mirroring the v0.1, v0.2 and v0.3 API contracts field for field (snake_case, as on the wire).
 // Every screen imports from this one module so it can later be replaced by types generated
 // from the backend's openapi.json (`npm run gen:api` writes src/api/schema.d.ts).
 
@@ -60,6 +60,8 @@ export interface Limits {
   unzip_max_files: number;
   scan_timeout_minutes: number;
   scans_per_hour: number;
+  /** v0.3: size limit for `docker save` archives (image scans). */
+  image_upload_max_mb: number;
 }
 
 export interface Me {
@@ -205,13 +207,40 @@ export interface Scan {
   tool_runs?: ToolRun[];
   /** v0.2: the API token that created the scan (CI), or null for a scan from the UI. */
   via_token: TokenRef | null;
+  /** v0.3: what was uploaded: a .zip of source code or a `docker save` .tar. */
+  kind: ScanKind;
+  /** v0.3: image repository without tag (image scans); "" for source scans. */
+  target: string;
+  /** v0.3: the full image reference given at upload, for display only. */
+  image_ref: string | null;
+  /** v0.3: the scan's CycloneDX SBOM, while it is kept (download with GET …/sbom). */
+  sbom: { components: number; size: number } | null;
 }
+
+export type ScanKind = "source" | "image";
 
 export interface CreateScanBody {
   file_name: string;
   file_size: number;
   sha256: string;
   tools?: Tool[];
+  /** v0.3; the server's default is "source". */
+  kind?: ScanKind;
+  /** v0.3, image scans: repository without tag or digest (IMAGE_TARGET_RE). */
+  target?: string;
+  /** v0.3, image scans: tag or digest reference, for display. */
+  image_ref?: string;
+}
+
+/** v0.3: GET /orgs/{org}/scans/{scan}/sbom. `url` is a 5-minute presigned GET served as an
+ *  attachment; the UI only follows it (http(s) only) and never reads the file. */
+export interface SbomDownload {
+  url: string;
+  expires_at: Timestamp;
+  format: "cyclonedx-json";
+  size: number;
+  sha256: string;
+  components: number;
 }
 
 export interface PresignedUpload {
@@ -246,6 +275,12 @@ export interface IssueSummary {
   due_at: Timestamp | null;
   past_sla: boolean;
   updated_at: Timestamp;
+  /** v0.3: image repository for issues from image scans; "" for source code. */
+  target: string;
+  /** v0.3: one of the issue's CVEs is in the CISA KEV catalog. Ranking only. */
+  kev: boolean;
+  /** v0.3: highest FIRST EPSS score (0..1) of the issue's CVEs. Ranking only. */
+  epss: number | null;
 }
 
 export interface IssuePage extends Page<IssueSummary> {
@@ -268,9 +303,15 @@ export interface Issue extends IssueSummary {
   can_assign: boolean;
   can_request_exception: boolean;
   pending_exception_id: UUID | null;
+  /** v0.3: percentile (0..1) of `epss` among all scored CVEs. */
+  epss_percentile: number | null;
+  /** v0.3: date (YYYY-MM-DD) the first of the CVEs was added to KEV. */
+  kev_added: string | null;
+  /** v0.3: KEV marks a CVE as used in ransomware campaigns. */
+  kev_ransomware: boolean;
 }
 
-export type IssueSort = "due_at" | "-severity" | "-updated_at";
+export type IssueSort = "due_at" | "-severity" | "-updated_at" | "-epss";
 
 export interface TransitionBody {
   to: IssueStatus;
@@ -381,6 +422,7 @@ export const AUDIT_ACTIONS = [
   "org.sign_in_policy_changed",
   "user.relinked",
   "user.relink_allowed",
+  "org.license_policy_changed",
 ] as const;
 
 // ---- v0.2: API tokens and the scan gate ----
@@ -429,6 +471,10 @@ export interface Gate {
   pass: boolean;
   counts: SeverityCounts;
   blocking: IssueSummary[];
+  /** v0.3: an active KEV issue blocks whatever its severity. */
+  fail_on_kev: boolean;
+  /** v0.3: active issues in this scan with a CVE in KEV. */
+  kev: number;
 }
 
 // ---- v0.2: notifications ----
@@ -527,6 +573,50 @@ export interface IssueCounts {
   mine: number;
   past_sla: number;
   secrets: number;
+  /** v0.3: active issues with a CVE in KEV. */
+  kev: number;
+  /** v0.3: active license-policy issues. */
+  licenses: number;
+}
+
+// ---- v0.3: license policy and vulnerability data ----
+
+/** block: High issue (fails the default gate); review: Medium issue; allow: no issue. */
+export type LicenseAction = "allow" | "review" | "block";
+/** Trivy's license categories, most to least restrictive. */
+export type LicenseCategory = "forbidden" | "restricted" | "reciprocal" | "notice" | "permissive" | "unencumbered" | "unknown";
+export const LICENSE_CATEGORIES: LicenseCategory[] = ["forbidden", "restricted", "reciprocal", "notice", "permissive", "unencumbered", "unknown"];
+export const LICENSE_ACTIONS: LicenseAction[] = ["allow", "review", "block"];
+
+/** PUT /orgs/{org}/license-policy (security lead). Allow beats Deny beats the category. */
+export interface LicensePolicyInput {
+  categories: Record<LicenseCategory, LicenseAction>;
+  /** SPDX ids always blocked; at most 100. */
+  deny: string[];
+  /** SPDX ids never reported; at most 100, no overlap with deny. */
+  allow: string[];
+}
+
+export interface LicensePolicy extends LicensePolicyInput {
+  /** False when every category is allow and deny is empty: no license issues are created. */
+  enabled: boolean;
+}
+
+export type VulnDataName = "trivy_db" | "kev" | "epss";
+
+export interface VulnDataSource {
+  name: VulnDataName;
+  /** When the publisher last updated it, as recorded by the mirror. */
+  updated_at: Timestamp | null;
+  /** When the worker loaded it; null for trivy_db (Trivy reads the mirror itself). */
+  loaded_at: Timestamp | null;
+  records: number | null;
+  /** updated_at missing or older than 7 days. */
+  stale: boolean;
+}
+
+export interface VulnData {
+  sources: VulnDataSource[];
 }
 
 // ---- Errors ----

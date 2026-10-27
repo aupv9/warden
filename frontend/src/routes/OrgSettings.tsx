@@ -15,7 +15,9 @@ import { can, ORG_ROLE_LABELS } from "../lib/permissions";
 import { canViewSignIn } from "../lib/signIn";
 import { showToast } from "../lib/toast";
 import { usePageTitle } from "../lib/usePageTitle";
+import { LicensePolicySection } from "./settings/LicensePolicy";
 import { SignInSection } from "./settings/SignIn";
+import { VulnDataCard } from "./settings/VulnData";
 
 export const SLA_KEYS = ["critical", "high", "medium", "low"] as const;
 export const SLA_MIN = 1;
@@ -54,6 +56,8 @@ export function OrgSettingsPage() {
         ) : (
           <SlaReadOnly org={org.data} role={ORG_ROLE_LABELS[meOrg.role]} />
         )}
+        <LicensePolicySection />
+        <VulnDataCard />
         {canViewSignIn(meOrg.role) && <SignInSection />}
       </div>
     </div>

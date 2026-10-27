@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, isMockMode } from "../client";
+import { api, ApiError, isMockMode } from "../client";
+import { isNotFound } from "../errors";
 import { qk } from "../keys";
 import { useCursorList } from "../paging";
-import type { CreateScanBody, CreateScanResponse, Page, Scan, ScanStatus, Tool } from "../types";
+import type { CreateScanBody, CreateScanResponse, Page, SbomDownload, Scan, ScanStatus, Tool } from "../types";
 import { hashFile, UploadSession, xhrPut } from "../../lib/upload";
-import type { UploadDeps, UploadSnapshot } from "../../lib/upload";
+import type { ScanOptions, UploadDeps, UploadSnapshot } from "../../lib/upload";
+import { safeExternalUrl, startDownload } from "../../lib/url";
 
 const orgBase = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}`;
 const projectScans = (orgId: string, projectId: string) =>
@@ -70,6 +72,32 @@ export function useCancelScan(orgId: string) {
   });
 }
 
+/** The link's URL isn't an absolute http(s) URL, so it is not followed. */
+export const BAD_DOWNLOAD_URL = "BAD_DOWNLOAD_URL";
+/** 404 from …/sbom: the SBOM expired (scan.sbom_retention) or the scan isn't visible any more.
+ *  Shown under the button rather than as the generic "no longer exists" toast. */
+export const SBOM_GONE = "SBOM_GONE";
+
+/**
+ * v0.3: asks for a fresh 5-minute link to the scan's CycloneDX SBOM and starts the browser
+ * download. The link is used at once and not cached (it expires); the page never reads the
+ * file. Resolves with the link's metadata (size, SHA-256, components) for the panel.
+ */
+export function useSbomDownload(orgId: string) {
+  return useMutation({
+    mutationFn: async ({ scanId, fileName }: { scanId: string; fileName: string }) => {
+      const link = await api<SbomDownload>(`${scanPath(orgId, scanId)}/sbom`).catch((err: unknown) => {
+        throw isNotFound(err) ? new ApiError(0, { code: SBOM_GONE, message: "no SBOM" }) : err;
+      });
+      // Mock mode has no object store behind the URL: check it, but don't follow it.
+      const started = isMockMode ? safeExternalUrl(link.url) !== null : startDownload(link.url, fileName);
+      if (!started) throw new ApiError(0, { code: BAD_DOWNLOAD_URL, message: "invalid download URL" });
+      const { url: _url, ...meta } = link;
+      return meta;
+    },
+  });
+}
+
 export function uploadDeps(orgId: string, projectId: string): UploadDeps {
   return {
     hash: hashFile,
@@ -128,9 +156,9 @@ export function useUploadScan(orgId: string, projectId: string) {
   );
 
   const start = useCallback(
-    async (file: File, tools: Tool[]) => {
+    async (file: File, tools: Tool[], options?: ScanOptions) => {
       await session.current?.cancel();
-      const s = new UploadSession(file, tools, uploadDeps(orgId, projectId), setState);
+      const s = new UploadSession(file, tools, uploadDeps(orgId, projectId), setState, options);
       session.current = s;
       return finish(await s.start());
     },

@@ -24,16 +24,25 @@ import {
   currentView,
   DEFAULT_FILTERS,
   describeFilters,
+  EPSS_PRESETS,
+  epssMinText,
   hasActiveFilters,
+  ISSUE_KINDS,
+  ISSUE_SOURCES,
   issueFiltersToApiQuery,
   issueFiltersToSearch,
   issueHref,
   issueListHref,
+  KIND_LABELS,
+  parseEpssMin,
   parseIssueFilters,
   SAVED_VIEWS,
+  SOURCE_LABELS,
   toggleSeverity,
 } from "../lib/issueFilters";
-import type { IssueFilters, SavedView, StatusFilter } from "../lib/issueFilters";
+import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, StatusFilter } from "../lib/issueFilters";
+import { formatEpss, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
+import { validateImageTarget } from "../lib/upload";
 import { useIssueCounts } from "../api/hooks/metrics";
 import type { IssueCounts } from "../api/types";
 import { can } from "../lib/permissions";
@@ -54,7 +63,12 @@ const SORT_OPTIONS: Option[] = [
   { value: "due_at", label: "Due date" },
   { value: "-severity", label: "Severity" },
   { value: "-updated_at", label: "Recently updated" },
+  { value: "-epss", label: "Exploit probability" },
 ];
+
+const KIND_OPTIONS: Option[] = [{ value: "", label: "Any type" }, ...ISSUE_KINDS.map((k) => ({ value: k, label: KIND_LABELS[k] }))];
+const SOURCE_OPTIONS: Option[] = [{ value: "", label: "Code and images" }, ...ISSUE_SOURCES.map((k) => ({ value: k, label: SOURCE_LABELS[k] }))];
+const EPSS_OPTIONS: Option[] = [{ value: "", label: "Any EPSS" }, ...EPSS_PRESETS.map((n) => ({ value: String(n), label: epssMinText(n) }))];
 
 type GroupBy = "severity" | "none";
 const GROUP_KEY = "warden.issues.groupBy";
@@ -250,7 +264,17 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
   };
   const views = <SavedViews filters={filters} counts={viewCounts.data} count={matchCount} hrefFor={viewHref} />;
   const otherFilterCount =
-    (filters.project && !fixedProject ? 1 : 0) + (filters.status !== "active" ? 1 : 0) + (filters.assignee ? 1 : 0) + (filters.tool ? 1 : 0);
+    (filters.project && !fixedProject ? 1 : 0) +
+    (filters.status !== "active" ? 1 : 0) +
+    (filters.assignee ? 1 : 0) +
+    (filters.tool ? 1 : 0) +
+    (filters.kind ? 1 : 0) +
+    (filters.source ? 1 : 0) +
+    (filters.epssMin !== null ? 1 : 0) +
+    (filters.target ? 1 : 0);
+  // Image repositories to suggest in the Target filter: the contract has no list of an org's
+  // targets, so these come from the issues loaded so far (any other is typed).
+  const targets = [...new Set(items.map((i) => i.target).filter(Boolean))].sort();
 
   const phoneFilters = (
     <>
@@ -280,6 +304,19 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         onChange={(e) => update({ ...filters, tool: e.target.value as Tool | "" })}
         options={[{ value: "", label: "All scanners" }, ...TOOLS.map((t) => ({ value: t, label: TOOL_LABELS[t] }))]}
       />
+      <Select label="Type" value={filters.kind} onChange={(e) => update({ ...filters, kind: e.target.value as IssueKindFilter | "" })} options={KIND_OPTIONS} />
+      <Select
+        label="Exploit probability"
+        value={filters.epssMin === null ? "" : String(filters.epssMin)}
+        onChange={(e) => update({ ...filters, epssMin: parseEpssMin(e.target.value) })}
+        options={
+          filters.epssMin !== null && !(EPSS_PRESETS as readonly number[]).includes(filters.epssMin)
+            ? [...EPSS_OPTIONS, { value: String(filters.epssMin), label: epssMinText(filters.epssMin) }]
+            : EPSS_OPTIONS
+        }
+      />
+      <Select label="Source" value={filters.source} onChange={(e) => update({ ...filters, source: e.target.value as IssueSourceFilter | "" })} options={SOURCE_OPTIONS} />
+      <TargetField value={filters.target} targets={targets} onApply={(target) => update({ ...filters, target })} />
     </>
   );
 
@@ -305,6 +342,9 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         <button type="button" className="chip" aria-pressed={filters.pastSla} onClick={() => update({ ...filters, pastSla: !filters.pastSla })}>
           Past SLA only
         </button>
+        <button type="button" className="chip" aria-pressed={filters.kev} onClick={() => update({ ...filters, kev: !filters.kev })}>
+          Known exploited
+        </button>
       </div>
     </section>
   ) : (
@@ -318,6 +358,7 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         projects={fixedProject ? undefined : (projects.data ?? [])}
         members={members.data ?? []}
         meId={me.id}
+        targets={targets}
       />
       <span className="filter-bar-end">
         {canAssign && selected.size > 0 && (
@@ -620,7 +661,80 @@ function SavedViews({
   );
 }
 
-const VIEW_COUNT_KEY: Record<SavedView, keyof IssueCounts> = { active: "active", mine: "mine", past_sla: "past_sla", secrets: "secrets" };
+const VIEW_COUNT_KEY: Record<SavedView, keyof IssueCounts> = {
+  active: "active",
+  mine: "mine",
+  past_sla: "past_sla",
+  kev: "kev",
+  secrets: "secrets",
+  licenses: "licenses",
+};
+
+/** The image repository filter: typed (checked against the contract's pattern) or picked from
+ *  the repositories of the issues loaded so far. Applies on Enter or the button. */
+function TargetField({ value, targets, onApply, autoFocus }: { value: string; targets: string[]; onApply: (t: string) => void; autoFocus?: boolean }) {
+  const [text, setText] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+  const id = useId();
+  useEffect(() => setText(value), [value]);
+  const apply = () => {
+    const t = text.trim();
+    if (!t) {
+      setError(null);
+      onApply("");
+      return;
+    }
+    const problem = validateImageTarget(t);
+    setError(problem);
+    if (!problem) onApply(t);
+  };
+  return (
+    <div className="field target-field">
+      <label htmlFor={`${id}-t`}>Image repository</label>
+      <div className="row" style={{ flexWrap: "nowrap", gap: 6 }}>
+        <input
+          id={`${id}-t`}
+          className="input mono"
+          list={targets.length ? `${id}-l` : undefined}
+          value={text}
+          placeholder="ghcr.io/acme/api"
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          maxLength={300}
+          autoFocus={autoFocus}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-e` : undefined}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (error) setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              apply();
+            }
+          }}
+        />
+        <Button size="sm" onClick={apply}>
+          Apply
+        </Button>
+      </div>
+      {targets.length > 0 && (
+        <datalist id={`${id}-l`}>
+          {targets.map((t) => (
+            <option key={t} value={t} />
+          ))}
+        </datalist>
+      )}
+      {error && (
+        <span id={`${id}-e`} className="error">
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function SearchBox({ value, onChange, inputRef }: { value: string; onChange: (q: string) => void; inputRef: RefObject<HTMLInputElement | null> }) {
   const [text, setText] = useState(value);
@@ -657,7 +771,7 @@ function SearchBox({ value, onChange, inputRef }: { value: string; onChange: (q:
 
 // ---- Filter chips ("Severity is Critical, High ×") and the "+ Filter" menu ----
 
-type Field = "severity" | "status" | "project" | "assignee" | "tool" | "pastSla";
+type Field = "severity" | "status" | "project" | "assignee" | "tool" | "pastSla" | "kind" | "kev" | "epss" | "source" | "target";
 const FIELD_LABELS: Record<Field, string> = {
   severity: "Severity",
   status: "Status",
@@ -665,6 +779,16 @@ const FIELD_LABELS: Record<Field, string> = {
   assignee: "Assignee",
   tool: "Scanner",
   pastSla: "Past SLA",
+  kind: "Type",
+  kev: "Known exploited",
+  epss: "Exploit probability",
+  source: "Source",
+  target: "Image",
+};
+/** On/off filters: picking one in "+ Filter" applies it, and its chip has nothing to edit. */
+const TOGGLES: Partial<Record<Field, (f: IssueFilters) => IssueFilters>> = {
+  pastSla: (f) => ({ ...f, pastSla: true }),
+  kev: (f) => ({ ...f, kev: true }),
 };
 
 interface ChipCtx {
@@ -675,6 +799,8 @@ interface ChipCtx {
   projects?: Project[];
   members: OrgMember[];
   meId: string;
+  /** Image repositories seen in the loaded issues (suggestions for the Image filter). */
+  targets: string[];
 }
 
 function FilterChips(ctx: ChipCtx) {
@@ -694,16 +820,21 @@ function FilterChips(ctx: ChipCtx) {
     });
   if (f.tool) chips.push({ field: "tool", k: "Scanner is", v: TOOL_LABELS[f.tool], clear: { ...f, tool: "" } });
   if (f.pastSla) chips.push({ field: "pastSla", k: "", v: "Past SLA", clear: { ...f, pastSla: false } });
+  if (f.kev) chips.push({ field: "kev", k: "", v: "Known exploited", clear: { ...f, kev: false } });
+  if (f.epssMin !== null) chips.push({ field: "epss", k: "", v: epssMinText(f.epssMin), clear: { ...f, epssMin: null } });
+  if (f.kind) chips.push({ field: "kind", k: "Type is", v: KIND_LABELS[f.kind], clear: { ...f, kind: "" } });
+  if (f.source) chips.push({ field: "source", k: "Source is", v: SOURCE_LABELS[f.source], clear: { ...f, source: "" } });
+  if (f.target) chips.push({ field: "target", k: "Image is", v: f.target, clear: { ...f, target: "" } });
 
-  const available: Field[] = (["severity", "status", "project", "assignee", "tool", "pastSla"] as Field[]).filter(
-    (x) => !(x === "project" && !projects) && !chips.some((c) => c.field === x),
-  );
+  const available: Field[] = (
+    ["severity", "status", "project", "assignee", "tool", "pastSla", "kev", "epss", "kind", "source", "target"] as Field[]
+  ).filter((x) => !(x === "project" && !projects) && !chips.some((c) => c.field === x));
 
   return (
     <div className="fchips" role="group" aria-label="Active filters">
       {chips.map((c) => (
         <span key={c.field} className="fchip">
-          {c.field === "pastSla" ? (
+          {TOGGLES[c.field] ? (
             <span className="fchip-main static">{c.v}</span>
           ) : (
             <Popover
@@ -758,14 +889,15 @@ function AddFilter({ ctx, fields }: { ctx: ChipCtx; fields: Field[] }) {
                 type="button"
                 className="menu-item"
                 onClick={() => {
-                  if (x === "pastSla") {
-                    ctx.update({ ...ctx.filters, pastSla: true });
+                  const toggle = TOGGLES[x];
+                  if (toggle) {
+                    ctx.update(toggle(ctx.filters));
                     close();
                   } else setField(x);
                 }}
               >
                 <span className="grow">{FIELD_LABELS[x]}</span>
-                {x !== "pastSla" && <ChevronRightIcon size={12} />}
+                {!TOGGLES[x] && <ChevronRightIcon size={12} />}
               </button>
             ))}
           </MenuList>
@@ -886,7 +1018,32 @@ function FieldEditor({ field, ctx, close, onBack }: { field: Field; ctx: ChipCtx
         (v) => ({ ...f, tool: v as Tool }),
       );
       break;
+    case "kind":
+      body = radio(
+        ISSUE_KINDS.map((k) => ({ value: k, label: KIND_LABELS[k] })),
+        f.kind,
+        (v) => ({ ...f, kind: v as IssueKindFilter }),
+      );
+      break;
+    case "source":
+      body = radio(
+        ISSUE_SOURCES.map((k) => ({ value: k, label: SOURCE_LABELS[k] })),
+        f.source,
+        (v) => ({ ...f, source: v as IssueSourceFilter }),
+      );
+      break;
+    case "epss":
+      body = radio(
+        EPSS_PRESETS.map((n) => ({ value: String(n), label: epssMinText(n) })),
+        f.epssMin === null ? "" : String(f.epssMin),
+        (v) => ({ ...f, epssMin: parseEpssMin(v) }),
+      );
+      break;
+    case "target":
+      body = <TargetField value={f.target} targets={ctx.targets} autoFocus onApply={(target) => pick({ ...f, target })} />;
+      break;
     case "pastSla":
+    case "kev":
       body = null;
   }
   return (
@@ -919,11 +1076,44 @@ interface RowProps {
 }
 
 function whereText(i: IssueSummary): string {
+  let where: string;
   if (i.package_name) {
     const v = `${i.package_version ?? ""}${i.fixed_version ? ` → ${i.fixed_version}` : ""}`;
-    return i.file_path ? `${i.file_path} · ${v}` : v;
+    where = i.file_path ? `${i.file_path} · ${v}` : v;
+  } else where = location(i.file_path, i.start_line);
+  // v0.3: issues from an image scan say which image first.
+  return i.target ? [i.target, where].filter(Boolean).join(" · ") : where;
+}
+
+/** v0.3: KEV and EPSS beside the title of a dependency vulnerability (ranking signals, never
+ *  instead of the severity), and a tag on license-policy issues. */
+function IntelMarks({ issue: i }: { issue: IssueSummary }) {
+  if (isLicenseIssue(i)) {
+    return (
+      <span className="intel-marks">
+        <span className="tag">License</span>
+      </span>
+    );
   }
-  return location(i.file_path, i.start_line);
+  if (!isVulnIssue(i)) return null;
+  const epss = formatEpss(i.epss);
+  if (!i.kev && !epss) return null;
+  return (
+    <span className="intel-marks">
+      {i.kev && (
+        <span className="tag tag-danger kev-tag" title={KEV_LABEL}>
+          <span aria-hidden="true">KEV</span>
+          <span className="visually-hidden">{KEV_LABEL}</span>
+        </span>
+      )}
+      {epss && (
+        <span className="tag epss-tag num" title="Probability of exploitation in the next 30 days (FIRST EPSS)">
+          <span aria-hidden="true">EPSS {epss}</span>
+          <span className="visually-hidden">Exploit probability {epss}</span>
+        </span>
+      )}
+    </span>
+  );
 }
 
 function Due({ dueAt }: { dueAt: string | null }) {
@@ -995,6 +1185,7 @@ function IssueRow(p: RowProps & { showSource: boolean }) {
           <Link to={p.href} className="row-link" aria-current={p.open ? "true" : undefined} onFocus={p.onFocus}>
             {i.title}
           </Link>
+          <IntelMarks issue={i} />
           {where && <span className="where">{where}</span>}
           {p.project && <span className="where where-project">{p.project.name}</span>}
         </span>
@@ -1040,6 +1231,7 @@ function QueueItem(p: RowProps & { showSeverity: boolean; phone: boolean }) {
           <span className="key">{i.key}</span>
           {p.showSeverity && <SeverityMark severity={i.severity} />}
           <StatusMark status={i.status} />
+          <IntelMarks issue={i} />
           <span className="q-due">
             <Due dueAt={i.due_at} />
           </span>

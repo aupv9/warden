@@ -29,6 +29,19 @@ export type C21 = Fits<T.AssignRule, S["AssignRule"]>;
 export type C22 = Fits<T.Metrics, S["Metrics"]>;
 export type C23 = Fits<T.IssueCounts, S["IssueCounts"]>;
 export type C24 = Fits<T.SignInSettings, S["SignInSettings"]>;
+// v0.3
+export type C25 = Fits<T.SbomDownload, S["SbomDownload"]>;
+export type C26 = Fits<T.LicensePolicy, S["LicensePolicy"]>;
+export type C27 = Fits<T.VulnData, S["VulnData"]>;
+export type C28 = Fits<T.VulnDataSource, S["VulnDataSource"]>;
+export type C29 = Fits<T.ScanKind, S["ScanKind"]>;
+export type C30 = Fits<T.LicenseAction, S["LicenseAction"]>;
+export type C31 = Fits<T.LicenseCategory, keyof S["LicensePolicy"]["categories"]>;
+// Every sort and issue-list filter value the UI sends is one the server accepts.
+type IssueListQuery = NonNullable<import("./schema").operations["listIssues"]["parameters"]["query"]>;
+export type Q1 = Fits<NonNullable<IssueListQuery["sort"]>, T.IssueSort>;
+export type Q2 = Fits<NonNullable<IssueListQuery["kind"]>, import("../lib/issueFilters").IssueKindFilter>;
+export type Q3 = Fits<NonNullable<IssueListQuery["source"]>, import("../lib/issueFilters").IssueSourceFilter>;
 // Every error code the server sends is one the UI knows, and the server's list has the newest.
 export type E1 = Fits<T.ApiErrorCode, S["Error"]["code"]>;
 export type E2 = Fits<S["Error"]["code"], "MFA_NOT_ENABLED">;
@@ -44,3 +57,4 @@ export type R8 = Fits<S["CreateTokenRequest"], T.CreateTokenBody>;
 export type R9 = Fits<S["MarkReadRequest"], T.MarkReadBody>;
 export type R10 = Fits<S["OrgPolicyRequest"], T.UpdatePolicyBody>;
 export type R11 = Fits<S["SignInPolicyRequest"], T.SignInPolicyInput>;
+export type R12 = Fits<S["LicensePolicyRequest"], T.LicensePolicyInput>;

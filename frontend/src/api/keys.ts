@@ -32,6 +32,9 @@ export const qk = {
   metrics: (orgId: string, query: QueryParams) => ["org", orgId, "metrics", query] as const,
   // Under the issue-list prefix, so every issue change refreshes the saved-view counts too.
   issueCounts: (orgId: string, projectId: string | undefined) => ["org", orgId, "issues", "counts", projectId ?? null] as const,
+  // v0.3
+  licensePolicy: (orgId: string) => ["org", orgId, "license-policy"] as const,
+  vulnData: (orgId: string) => ["org", orgId, "vuln-data"] as const,
   // Notifications belong to the user, not to an org.
   notificationsAll: ["notifications"] as const,
   unreadCount: ["notifications", "unread-count"] as const,
