@@ -310,6 +310,12 @@ func (f *Fake) IssueTotals(_ context.Context, q service.TotalsQuery) (service.Is
 		if i.Tool == "gitleaks" {
 			t.Secrets++
 		}
+		if f.intel(i.CVE).KEVAdded != nil {
+			t.KEV++
+		}
+		if isLicense(i) {
+			t.Licenses++
+		}
 	}
 	return t, nil
 }

@@ -159,24 +159,29 @@ func (f *Fake) seen(scan uuid.UUID) []uuid.UUID {
 	return out
 }
 
-func (f *Fake) ScanIssueCounts(_ context.Context, scan uuid.UUID) (service.SeverityCounts, error) {
+func (f *Fake) ScanIssueCounts(_ context.Context, scan uuid.UUID) (service.SeverityCounts, int, error) {
 	if err := f.fail("ScanIssueCounts"); err != nil {
-		return service.SeverityCounts{}, err
+		return service.SeverityCounts{}, 0, err
 	}
 	var c service.SeverityCounts
+	kev := 0
 	for _, id := range f.seen(scan) {
 		c.Add(f.st.Issues[id].Severity, 1)
+		if f.intel(f.st.Issues[id].CVE).KEVAdded != nil {
+			kev++
+		}
 	}
-	return c, nil
+	return c, kev, nil
 }
 
-func (f *Fake) ScanIssues(_ context.Context, scan uuid.UUID, severities []string, now time.Time, limit int) ([]service.IssueSummary, error) {
+func (f *Fake) ScanIssues(_ context.Context, scan uuid.UUID, severities []string, kev bool, now time.Time, limit int) ([]service.IssueSummary, error) {
 	if err := f.fail("ScanIssues"); err != nil {
 		return nil, err
 	}
 	var out []service.IssueSummary
 	for _, id := range f.seen(scan) {
-		if slices.Contains(severities, f.st.Issues[id].Severity) {
+		i := f.st.Issues[id]
+		if slices.Contains(severities, i.Severity) || kev && f.intel(i.CVE).KEVAdded != nil {
 			out = append(out, f.summary(id, now))
 		}
 	}

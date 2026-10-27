@@ -116,6 +116,7 @@ func Config(opts Options) (*river.Config, error) {
 	river.AddWorker(workers, ReopenExpiredRiskAcceptedWorker{Env: opts.Env})
 	river.AddWorker(workers, DispatchNotificationsWorker{Env: opts.Env})
 	river.AddWorker(workers, SLADigestWorker{Env: opts.Env})
+	river.AddWorker(workers, LoadVulnIntelWorker{Env: opts.Env})
 	cfg.Workers = workers
 	cfg.Queues = map[string]river.QueueConfig{
 		QueueScan:          {MaxWorkers: opts.ScanSlots},
@@ -139,6 +140,11 @@ func Config(opts Options) (*river.Config, error) {
 		river.NewPeriodicJob(DailyAt(opts.Env.DigestHour),
 			func() (river.JobArgs, *river.InsertOpts) { return SLADigestArgs{}, nil },
 			&river.PeriodicJobOpts{ID: "sla_digest"}),
+		// Cheap when nothing changed (a hash per feed file); the mirror is
+		// synced on its own schedule (intel.go).
+		river.NewPeriodicJob(river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return LoadVulnIntelArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "load_vuln_intel", RunOnStart: true}),
 	}
 	return cfg, nil
 }

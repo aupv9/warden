@@ -77,26 +77,31 @@ func (r *Repo) RevokeToken(ctx context.Context, tokenID uuid.UUID, at time.Time)
 
 const seenInScan = ` JOIN occurrence o ON o.issue_id = i.id AND o.scan_id = `
 
-func (r *Repo) ScanIssueCounts(ctx context.Context, scanID uuid.UUID) (service.SeverityCounts, error) {
+func (r *Repo) ScanIssueCounts(ctx context.Context, scanID uuid.UUID) (service.SeverityCounts, int, error) {
 	var c service.SeverityCounts
-	rows, _ := r.tx.Query(ctx, `SELECT i.severity::text, count(*) FROM issue i`+seenInScan+`$1
-		WHERE i.status IN `+activeStatuses+` GROUP BY 1`, scanID)
+	rows, _ := r.tx.Query(ctx, `SELECT i.severity::text, count(*), count(*) FILTER (WHERE `+kevExists+`)
+		FROM issue i`+seenInScan+`$1 WHERE i.status IN `+activeStatuses+` GROUP BY 1`, scanID)
 	var (
-		sev string
-		n   int
+		sev        string
+		n, k, kevs int
 	)
-	_, err := pgx.ForEachRow(rows, []any{&sev, &n}, func() error {
+	_, err := pgx.ForEachRow(rows, []any{&sev, &n, &k}, func() error {
 		c.Add(sev, n)
+		kevs += k
 		return nil
 	})
-	return c, err
+	return c, kevs, err
 }
 
-func (r *Repo) ScanIssues(ctx context.Context, scanID uuid.UUID, severities []string, now time.Time, limit int) ([]service.IssueSummary, error) {
+func (r *Repo) ScanIssues(ctx context.Context, scanID uuid.UUID, severities []string, kev bool, now time.Time, limit int) ([]service.IssueSummary, error) {
 	var a args
 	cols := issueSummaryCols(a.add(now))
+	match := `i.severity = ANY(` + a.add(severities) + `::severity[])`
+	if kev {
+		match = `(` + match + ` OR vi.kev)`
+	}
 	q := `SELECT ` + cols + issueFrom + seenInScan + a.add(scanID) + `
-		WHERE i.status IN ` + activeStatuses + ` AND i.severity = ANY(` + a.add(severities) + `::severity[])
+		WHERE i.status IN ` + activeStatuses + ` AND ` + match + `
 		ORDER BY i.severity ASC, i.number ASC LIMIT ` + a.add(limit)
 	rows, _ := r.tx.Query(ctx, q, a...)
 	return collect(rows, scanSummary)

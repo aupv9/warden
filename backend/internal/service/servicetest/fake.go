@@ -66,6 +66,8 @@ type IssueRow struct {
 	ScanID     uuid.UUID
 	UpdatedAt  time.Time
 	CWE        []string
+	CVE        []string
+	Target     string
 }
 
 type eventRow struct {
@@ -103,6 +105,8 @@ type state struct {
 	Jobs       []worker.ScanArgs
 	Tokens     map[uuid.UUID]tokenRow
 	Seen       map[[2]uuid.UUID]bool // issue, scan: occurrences
+	Intel      map[string]IntelRow   // vuln_intel by CVE (intel.go)
+	VulnSrc    []service.VulnDataSource
 	nextID     int64
 	ext        extState // v0.2 tables (v02.go)
 }
@@ -124,6 +128,8 @@ func (s *state) clone() *state {
 	c.Jobs = slices.Clone(s.Jobs)
 	c.Tokens = maps.Clone(s.Tokens)
 	c.Seen = maps.Clone(s.Seen)
+	c.Intel = maps.Clone(s.Intel)
+	c.VulnSrc = slices.Clone(s.VulnSrc)
 	c.ext = s.ext.clone()
 	return &c
 }
@@ -144,7 +150,7 @@ func New() *Fake {
 		Users: map[uuid.UUID]service.User{}, Orgs: map[uuid.UUID]orgRow{}, Members: map[[2]uuid.UUID]rbac.Role{},
 		Projects: map[uuid.UUID]projectRow{}, PMembers: map[[2]uuid.UUID]pmRow{}, Scans: map[uuid.UUID]scanRow{},
 		ToolRuns: map[uuid.UUID][]service.ToolRun{}, Issues: map[uuid.UUID]IssueRow{}, Exceptions: map[uuid.UUID]excRow{},
-		Tokens: map[uuid.UUID]tokenRow{}, Seen: map[[2]uuid.UUID]bool{},
+		Tokens: map[uuid.UUID]tokenRow{}, Seen: map[[2]uuid.UUID]bool{}, Intel: map[string]IntelRow{},
 	}, Fail: map[string]error{}, Now: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)}
 }
 
@@ -775,7 +781,9 @@ func (f *Fake) summary(id uuid.UUID, now time.Time) service.IssueSummary {
 	i := f.st.Issues[id]
 	out := service.IssueSummary{ID: id, Key: f.st.Projects[i.ProjectID].Key + "-" + itoa(i.Number), ProjectID: i.ProjectID,
 		Title: i.Title, Severity: i.Severity, Status: i.Status, Tool: i.Tool, RuleID: i.RuleID, FilePath: i.FilePath,
-		Assignee: f.refp(i.AssigneeID), UpdatedAt: service.Time(i.UpdatedAt)}
+		Assignee: f.refp(i.AssigneeID), UpdatedAt: service.Time(i.UpdatedAt), Target: i.Target}
+	in := f.intel(i.CVE)
+	out.KEV, out.EPSS = in.KEVAdded != nil, in.EPSS
 	if i.DueAt != nil {
 		t := service.Time(*i.DueAt)
 		out.DueAt = &t
@@ -802,6 +810,7 @@ func (f *Fake) match(q service.IssueQuery, id uuid.UUID, i IssueRow) bool {
 		q.Tool != "" && q.Tool != i.Tool,
 		q.PastSLA && (i.DueAt == nil || !i.DueAt.Before(q.Now) || !active(i.Status)),
 		q.KeyProject != "" && (f.st.Projects[i.ProjectID].Key != q.KeyProject || i.Number != q.KeyNumber),
+		!f.matchIntel(q, i),
 		q.Text != "" && !strings.Contains(strings.ToLower(i.Title+" "+i.RuleID), strings.ToLower(q.Text)):
 		return false
 	}
@@ -824,6 +833,8 @@ func (f *Fake) Issues(_ context.Context, q service.IssueQuery) ([]service.IssueS
 			return cmp.Or(cmp.Compare(sevRank[a.Severity], sevRank[b.Severity]), cmp.Compare(a.ID.String(), b.ID.String()))
 		case service.SortUpdatedAt:
 			return cmp.Or(b.UpdatedAt.T().Compare(a.UpdatedAt.T()), cmp.Compare(b.ID.String(), a.ID.String()))
+		case service.SortEPSS:
+			return cmp.Or(compareEPSS(a.EPSS, b.EPSS), cmp.Compare(b.ID.String(), a.ID.String()))
 		}
 		return cmp.Compare(a.ID.String(), b.ID.String())
 	})
@@ -863,8 +874,15 @@ func (f *Fake) Issue(_ context.Context, id uuid.UUID, _ bool, now time.Time) (se
 		return service.Issue{}, service.ErrNotFound
 	}
 	scan := service.ScanRef{ID: i.ScanID}
-	return service.Issue{IssueSummary: f.summary(id, now), CWE: i.CWE, FirstSeenScan: scan, LastSeenScan: scan,
-		Occurrences: 1, Version: i.Version, AssigneeID: i.AssigneeID, Number: i.Number, ProjectKey: f.st.Projects[i.ProjectID].Key}, nil
+	in := f.intel(i.CVE)
+	out := service.Issue{IssueSummary: f.summary(id, now), CWE: i.CWE, CVE: i.CVE, FirstSeenScan: scan, LastSeenScan: scan,
+		Occurrences: 1, Version: i.Version, AssigneeID: i.AssigneeID, Number: i.Number, ProjectKey: f.st.Projects[i.ProjectID].Key,
+		EPSSPercentile: in.Percentile, KEVRansomware: in.Ransomware}
+	if in.KEVAdded != nil {
+		d := in.KEVAdded.Format(time.DateOnly)
+		out.KEVAdded = &d
+	}
+	return out, nil
 }
 
 func (f *Fake) UpdateIssueState(_ context.Context, id uuid.UUID, status string, assignee *uuid.UUID) error {

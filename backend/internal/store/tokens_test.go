@@ -18,7 +18,7 @@ func TestRepoTokens(t *testing.T) {
 		"FROM warden_lookup_token":        {{tok, org, proj, user, hash, []string{"scan:write"}, now, nil}},
 		"FROM app_user WHERE id":          {{user, "sub", "a@b.c", "A", true, nil, nil}},
 		"FROM api_token t JOIN app_user":  {tokRow},
-		"SELECT i.severity::text, count(": {{"critical", 2}, {"low", 1}},
+		"SELECT i.severity::text, count(": {{"critical", 2, 1}, {"low", 1, 0}},
 		"JOIN occurrence o":               {issueRow(iss, proj, scan, false)},
 	}))
 	rec, err := r.LookupToken(ctx, "abcdefgh")
@@ -48,11 +48,14 @@ func TestRepoTokens(t *testing.T) {
 			t.Fatalf("token hash read outside the lookup function: %s", sql)
 		}
 	}
-	if c, err := r.ScanIssueCounts(ctx, scan); err != nil || c.Critical != 2 || c.Low != 1 {
-		t.Fatal(c, err)
+	if c, kev, err := r.ScanIssueCounts(ctx, scan); err != nil || c.Critical != 2 || c.Low != 1 || kev != 1 {
+		t.Fatal(c, kev, err)
 	}
-	if l, err := r.ScanIssues(ctx, scan, []string{"critical", "high"}, now, 100); err != nil || len(l) != 1 || l[0].ID != iss {
+	if l, err := r.ScanIssues(ctx, scan, []string{"critical", "high"}, true, now, 100); err != nil || len(l) != 1 || l[0].ID != iss {
 		t.Fatal(l, err)
+	}
+	if q := tx.sqls[len(tx.sqls)-1]; !strings.Contains(q, "OR vi.kev)") {
+		t.Fatal(q)
 	}
 
 	empty, _ := repoWith(nil)
@@ -66,10 +69,10 @@ func TestRepoTokens(t *testing.T) {
 		t.Fatal(l, err)
 	}
 	bad, _ := repoWith(failing)
-	if _, err := bad.ScanIssueCounts(ctx, scan); !errors.Is(err, errDB) {
+	if _, _, err := bad.ScanIssueCounts(ctx, scan); !errors.Is(err, errDB) {
 		t.Fatal(err)
 	}
-	if _, err := bad.ScanIssues(ctx, scan, nil, now, 1); !errors.Is(err, errDB) {
+	if _, err := bad.ScanIssues(ctx, scan, nil, false, now, 1); !errors.Is(err, errDB) {
 		t.Fatal(err)
 	}
 	if err := bad.TouchToken(ctx, tok, now); !errors.Is(err, errDB) {
