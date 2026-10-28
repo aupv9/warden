@@ -173,19 +173,26 @@ func TestVulnDataEndpoint(t *testing.T) {
 	at := service.Time(e.f.Now.Add(-time.Hour))
 	n := 312000
 	e.f.SetVulnSource(service.VulnDataSource{Name: "epss", UpdatedAt: &at, LoadedAt: &at, Records: &n})
+	unsupported := 533
+	e.f.SetVulnSource(service.VulnDataSource{Name: "osv_mal:npm", UpdatedAt: &at, LoadedAt: &at, Records: &n, Unsupported: &unsupported})
 
 	r := e.do("GET", "/vuln-data", outsider, nil) // any member
 	e.expect(r, 200, "")
 	src := r.obj()["sources"].([]any)
-	if len(src) != 3 {
+	names := []string{"trivy_db", "kev", "epss", "osv_mal:npm", "osv_mal:PyPI", "osv_mal:Go", "osv_mal:Maven",
+		"osv_mal:crates.io", "osv_mal:RubyGems", "osv_mal:NuGet", "osv_mal:Packagist"}
+	if len(src) != len(names) {
 		t.Fatal(r.body)
 	}
-	for i, name := range []string{"trivy_db", "kev", "epss"} {
+	for i, name := range names {
 		s := src[i].(map[string]any)
-		if s["name"] != name || s["stale"] != (name != "epss") {
+		if s["name"] != name || s["stale"] != (name != "epss" && name != "osv_mal:npm") {
 			t.Fatal(r.body)
 		}
-		for _, k := range []string{"updated_at", "loaded_at", "records"} {
+		if want := any(nil); name == "osv_mal:npm" && s["unsupported"] != 533.0 || name != "osv_mal:npm" && s["unsupported"] != want {
+			t.Fatal(r.body)
+		}
+		for _, k := range []string{"updated_at", "loaded_at", "records", "unsupported"} {
 			if _, ok := s[k]; !ok {
 				t.Fatalf("%s.%s missing: %s", name, k, r.body)
 			}
