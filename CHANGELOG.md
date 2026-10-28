@@ -42,6 +42,17 @@ All notable changes to Warden are listed here. The format follows
   KEV and EPSS on issues, filters and a sort in the issue list, "Exploited (KEV)" and
   "Licenses" views, `fail_on_kev` on the gate (`warden scan --fail-on-kev`), and a
   "Vulnerability data" card that shows how fresh the feeds are.
+- Org-wide component inventory: every package of each project's current scan per target,
+  searchable by name, ecosystem and version ("which projects use xz 5.6.0?") with where each
+  one is used, plus a Components tab per project and `GET …/projects/{id}/targets`.
+- Malicious-package detection from OSV `MAL-` advisories (mirrored per ecosystem by
+  `make mirror`): a matching package is a Critical issue with a `component.malicious`
+  notification, at scan time and, for packages already in the inventory, as soon as a new
+  advisory is loaded. Issue filter `kind=malicious`, a "Malicious" view and an Overview banner.
+- SPDX 2.3 JSON SBOM next to the CycloneDX one (`GET …/sbom?format=spdx`,
+  `warden scan --sbom-format spdx`).
+- `license_category` on license-policy issues (existing issues are backfilled).
+- `make e2e`: an end-to-end smoke test against the running dev stack.
 
 ### Changed
 
