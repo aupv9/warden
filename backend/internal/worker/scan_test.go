@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
@@ -173,6 +174,30 @@ type harness struct {
 	sha     string
 	orgs    []uuid.UUID // org of every transaction
 	mu      sync.Mutex
+	// copied: rows COPYed through copyDB (trivyHarness).
+	copied [][]any
+}
+
+// copyDB adds COPY to the fake, as a pgx transaction has it (the component
+// inventory needs it), recording the rows.
+type copyDB struct {
+	*dbtest.DB
+	h *harness
+}
+
+func (c copyDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, src pgx.CopyFromSource) (int64, error) {
+	n := int64(0)
+	for src.Next() {
+		v, err := src.Values()
+		if err != nil {
+			return n, err
+		}
+		c.h.mu.Lock()
+		c.h.copied = append(c.h.copied, v)
+		c.h.mu.Unlock()
+		n++
+	}
+	return n, nil
 }
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -527,9 +552,20 @@ func trivyHarness(t *testing.T, overrides ...dbtest.Step) *harness {
 		{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{}`), []byte(`{"categories":{"restricted":"review"}}`))},
 		{Prefix: "UPDATE project SET issue_seq", Rows: row(2)},
 		{Prefix: "UPDATE scan SET sbom_key", Affected: 1},
+		{Prefix: "CREATE TABLE IF NOT EXISTS pg_temp.component_in"},
+		{Prefix: "TRUNCATE pg_temp.component_in"},
+		{Prefix: "ANALYZE pg_temp.component_in"},
+		{Prefix: "DELETE FROM component"},
+		{Prefix: "SELECT count(*) FROM component", Rows: row(0)},
+		{Prefix: "INSERT INTO component", Affected: 1},
 	}, overrides...)...)...)
+	tx := h.env.Tx
+	h.env.Tx = func(ctx context.Context, org uuid.UUID, fn func(DB) error) error {
+		return tx(ctx, org, func(db DB) error { return fn(copyDB{DB: db.(*dbtest.DB), h: h}) })
+	}
 	h.env.Images = map[string]string{"trivy": "docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64)}
-	h.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"},{"name":"y"}]}`}
+	h.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"},{"name":"y"}]}`,
+		"sbom.spdx.json": `{"spdxVersion":"SPDX-2.3","packages":[{"name":"x"}]}`}
 	return h
 }
 
@@ -548,6 +584,17 @@ func TestRunScanStoresSBOMAndLicenseIssues(t *testing.T) {
 	}
 	if exp := c[0].Args[5].(time.Time); exp.Before(time.Now().Add(23*time.Hour)) || exp.After(time.Now().Add(25*time.Hour)) {
 		t.Fatalf("expires %v", exp)
+	}
+	spdx := "sboms/" + h.org.String() + "/" + h.scan.String() + ".spdx.json"
+	if h.store.types[spdx] != "application/spdx+json" || !strings.Contains(string(h.store.objects[spdx]), `"documentNamespace":"urn:uuid:`+h.scan.String()) {
+		t.Fatalf("%v", h.store.types)
+	}
+	if k, size := c[0].Args[6].(*string), c[0].Args[7].(*int64); k == nil || *k != spdx || size == nil || *size != int64(len(h.store.objects[spdx])) {
+		t.Fatalf("%v", c[0].Args)
+	}
+	// The package is copied into the inventory with the path its findings get.
+	if len(h.copied) != 1 || h.copied[0][1] != "gpl-thing" || h.copied[0][5] != "package-lock.json" {
+		t.Fatalf("copied %v", h.copied)
 	}
 	var rules []any
 	for _, c := range h.db.Calls("INSERT INTO issue (") {
@@ -583,7 +630,8 @@ func TestRunScanDeletesSBOMOfUnrecordedResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "sboms/" + h.org.String() + "/" + h.scan.String() + ".cdx.json"
-	if !slices.Contains(h.store.deleted, key) {
+	spdx := "sboms/" + h.org.String() + "/" + h.scan.String() + ".spdx.json"
+	if !slices.Contains(h.store.deleted, key) || !slices.Contains(h.store.deleted, spdx) {
 		t.Fatalf("deleted %v", h.store.deleted)
 	}
 	if c := h.db.Calls("UPDATE scan SET status = 'failed'"); len(c) != 1 || c[0].Args[1] != CodeInternal {

@@ -32,16 +32,17 @@ func LicenseFindings(licenses []trivyjson.License, p licensepolicy.Policy) []sar
 		}
 		ruleID := LicenseRulePrefix + id
 		out = append(out, sarif.Finding{
-			Tool:           "trivy",
-			RuleID:         ruleID,
-			Title:          truncate(fmt.Sprintf("%s uses %s (%s)", l.PkgName, id, l.Category), sarif.MaxTitle),
-			Severity:       d.Action.Severity(),
-			FilePath:       l.FilePath,
-			ContentKey:     fingerprint.SCAContentKey(ruleID, l.PkgName, l.PkgVersion),
-			Description:    licenseDescription(l, d),
-			Remediation:    licenseRemediation,
-			PackageName:    l.PkgName,
-			PackageVersion: l.PkgVersion,
+			Tool:            "trivy",
+			RuleID:          ruleID,
+			Title:           truncate(fmt.Sprintf("%s uses %s (%s)", l.PkgName, id, l.Category), sarif.MaxTitle),
+			Severity:        d.Action.Severity(),
+			FilePath:        l.FilePath,
+			ContentKey:      fingerprint.SCAContentKey(ruleID, l.PkgName, l.PkgVersion),
+			Description:     licenseDescription(l, d),
+			Remediation:     licenseRemediation,
+			PackageName:     l.PkgName,
+			PackageVersion:  l.PkgVersion,
+			LicenseCategory: string(l.Category),
 		})
 	}
 	return out
