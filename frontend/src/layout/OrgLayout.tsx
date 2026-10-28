@@ -18,6 +18,7 @@ import {
   CloseIcon,
   ExceptionsIcon,
   IssuesIcon,
+  IntegrationsIcon,
   MembersIcon,
   MenuIcon,
   OverviewIcon,
@@ -438,6 +439,13 @@ function OrgNav({ org }: { org: MeOrg }) {
         <NavLink to={`${base}/audit-log`}>
           <AuditIcon />
           <span className="grow">Audit log</span>
+        </NavLink>
+      )}
+      {/* v0.4 wave 2: webhooks and Slack send org data out of Warden; members don't see them. */}
+      {can("manage_integrations", org.role) && (
+        <NavLink to={`${base}/integrations`}>
+          <IntegrationsIcon />
+          <span className="grow">Integrations</span>
         </NavLink>
       )}
       <NavLink to={`${base}/settings`}>

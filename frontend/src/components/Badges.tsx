@@ -14,7 +14,17 @@ export function MaliciousTag() {
   );
 }
 
-type Tone = "default" | "success" | "accent" | "danger" | "warn";
+/** v0.4 wave 2: a secret found in git history (a history scan), beside the issue title. */
+export function HistoryTag() {
+  return (
+    <span className="tag history-tag" title="Found in git history (a history scan)">
+      <span aria-hidden="true">History</span>
+      <span className="visually-hidden">Found in git history</span>
+    </span>
+  );
+}
+
+type Tone ="default" | "success" | "accent" | "danger" | "warn";
 
 /** A small neutral tag (role, exception type). Square-ish corners: full pills are for counts only. */
 export function Pill({ tone = "default", children, title }: { tone?: Tone; children: ReactNode; title?: string }) {

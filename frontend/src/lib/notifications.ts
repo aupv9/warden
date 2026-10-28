@@ -18,6 +18,10 @@ export const NOTIFICATION_LABELS: Record<NotificationType, { label: string; deta
     label: "Malicious package found",
     detail: "An OSV advisory lists a package version in your projects as malicious, at scan time or later. Sent to security leads and project owners.",
   },
+  "webhook.disabled": {
+    label: "Webhook turned off",
+    detail: "Warden turns off a webhook or Slack channel after its deliveries keep failing. Sent to org admins and security leads.",
+  },
 };
 
 /** The contract's defaults: email on for every type except scan.finished. */

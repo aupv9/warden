@@ -359,3 +359,34 @@ export function TrashIcon({ size = 14 }: P) {
     </Svg>
   );
 }
+
+/** v0.4 wave 2: Integrations (webhooks and Slack): a plug. */
+export function IntegrationsIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M9 2v5M15 2v5" />
+      <path d="M6 7h12v4a6 6 0 0 1-12 0V7z" />
+      <path d="M12 17v5" />
+    </Svg>
+  );
+}
+
+/** Send a test delivery: a paper plane. */
+export function SendIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M22 2 11 13" />
+      <path d="M22 2 15 22l-4-9-9-4 20-7z" />
+    </Svg>
+  );
+}
+
+/** A git commit: a dot on a line. */
+export function CommitIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M2 12h6.5M15.5 12H22" />
+    </Svg>
+  );
+}
