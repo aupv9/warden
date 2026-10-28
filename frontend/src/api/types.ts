@@ -1,4 +1,4 @@
-// API types, mirroring the v0.1, v0.2 and v0.3 API contracts field for field (snake_case, as on the wire).
+// API types, mirroring the v0.1 to v0.4 API contracts field for field (snake_case, as on the wire).
 // Every screen imports from this one module so it can later be replaced by types generated
 // from the backend's openapi.json (`npm run gen:api` writes src/api/schema.d.ts).
 
@@ -213,11 +213,16 @@ export interface Scan {
   target: string;
   /** v0.3: the full image reference given at upload, for display only. */
   image_ref: string | null;
-  /** v0.3: the scan's CycloneDX SBOM, while it is kept (download with GET …/sbom). */
-  sbom: { components: number; size: number } | null;
+  /** v0.3: the scan's SBOM, while it is kept (download with GET …/sbom). `size` is the
+   *  CycloneDX file's; v0.4 adds `formats`, the files the scan produced. */
+  sbom: { components: number; size: number; formats: SbomFormat[] } | null;
 }
 
 export type ScanKind = "source" | "image";
+/** v0.4: the SBOM files a scan can have. */
+export type SbomFormat = "cyclonedx-json" | "spdx-json";
+/** v0.4: `?format=` of GET …/sbom. */
+export type SbomFormatParam = "cyclonedx" | "spdx";
 
 export interface CreateScanBody {
   file_name: string;
@@ -237,7 +242,7 @@ export interface CreateScanBody {
 export interface SbomDownload {
   url: string;
   expires_at: Timestamp;
-  format: "cyclonedx-json";
+  format: SbomFormat;
   size: number;
   sha256: string;
   components: number;
@@ -281,6 +286,8 @@ export interface IssueSummary {
   kev: boolean;
   /** v0.3: highest FIRST EPSS score (0..1) of the issue's CVEs. Ranking only. */
   epss: number | null;
+  /** v0.4: Trivy license category, for license-policy issues (null otherwise). */
+  license_category: LicenseCategory | null;
 }
 
 export interface IssuePage extends Page<IssueSummary> {
@@ -486,7 +493,9 @@ export type NotificationType =
   | "exception.decided"
   | "scan.finished"
   | "sla.due_soon"
-  | "sla.overdue";
+  | "sla.overdue"
+  // v0.4: an OSV malicious-package advisory matched a component (at scan time or later).
+  | "component.malicious";
 
 export const NOTIFICATION_TYPES: NotificationType[] = [
   "issue.assigned",
@@ -496,6 +505,7 @@ export const NOTIFICATION_TYPES: NotificationType[] = [
   "scan.finished",
   "sla.due_soon",
   "sla.overdue",
+  "component.malicious",
 ];
 
 export interface Notification {
@@ -577,6 +587,8 @@ export interface IssueCounts {
   kev: number;
   /** v0.3: active license-policy issues. */
   licenses: number;
+  /** v0.4: active malicious-package issues. */
+  malicious: number;
 }
 
 // ---- v0.3: license policy and vulnerability data ----
@@ -602,10 +614,13 @@ export interface LicensePolicy extends LicensePolicyInput {
   enabled: boolean;
 }
 
-export type VulnDataName = "trivy_db" | "kev" | "epss";
+/** v0.4: `osv_mal:<ecosystem>` is the OSV malicious-package feed for one ecosystem. */
+export type VulnDataName = "trivy_db" | "kev" | "epss" | `osv_mal:${string}`;
 
 export interface VulnDataSource {
-  name: VulnDataName;
+  /** A VulnDataName. Typed `string` (the contract only gives a pattern), so a feed the UI
+   *  doesn't know yet is still listed under its raw name. */
+  name: string;
   /** When the publisher last updated it, as recorded by the mirror. */
   updated_at: Timestamp | null;
   /** When the worker loaded it; null for trivy_db (Trivy reads the mirror itself). */
@@ -613,10 +628,73 @@ export interface VulnDataSource {
   records: number | null;
   /** updated_at missing or older than 7 days. */
   stale: boolean;
+  /** v0.4, OSV only: advisories skipped because their version ranges aren't supported. */
+  unsupported: number | null;
 }
 
 export interface VulnData {
   sources: VulnDataSource[];
+}
+
+// ---- v0.4: component inventory ----
+
+/** OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for OS
+ *  packages, the purl type (apk, deb, rpm, …). */
+export type Ecosystem = string;
+
+/** GET /orgs/{org}/components: one row per (ecosystem, name, version), from each (project,
+ *  target)'s latest scan where Trivy succeeded. Names, versions, paths and purls come from
+ *  scanned lockfiles and images: untrusted text, rendered as text only. */
+export interface ComponentSummary {
+  ecosystem: Ecosystem;
+  name: string;
+  version: string;
+  purl: string | null;
+  licenses: string[];
+  /** Visible projects whose current scans contain it. */
+  projects: number;
+  /** Distinct (project, target) pairs. */
+  targets: number;
+  /** Active Trivy issues on this package and version in those projects. */
+  open_issues: number;
+  /** Listed by an OSV malicious-package advisory. */
+  malicious: boolean;
+}
+
+/** GET /orgs/{org}/components/usage: where one component is used. */
+export interface ComponentUsage {
+  project_id: UUID;
+  project_key: string;
+  project_name: string;
+  /** Image repository, or "" for source code. */
+  target: string;
+  /** Lockfile or image layer target where Trivy found it (untrusted text). */
+  path: string;
+  scan_id: UUID;
+  scanned_at: Timestamp;
+  first_seen: Timestamp;
+}
+
+/** GET /orgs/{org}/projects/{p}/components. */
+export interface ProjectComponent {
+  ecosystem: Ecosystem;
+  name: string;
+  version: string;
+  purl: string | null;
+  licenses: string[];
+  target: string;
+  path: string;
+  first_seen: Timestamp;
+  open_issues: number;
+  malicious: boolean;
+}
+
+/** GET /orgs/{org}/projects/{p}/targets: source code ("") and each scanned image repository. */
+export interface ProjectTarget {
+  target: string;
+  kind: ScanKind;
+  last_scan_at: Timestamp | null;
+  open_issues: number;
 }
 
 // ---- Errors ----

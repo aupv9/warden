@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { Link, useLocation, useMatch, useNavigate, useSearchParams } from "react-router";
+import { useProjectTargets } from "../api/hooks/components";
 import { useIssues } from "../api/hooks/issues";
 import { useOrgMembers } from "../api/hooks/orgs";
 import { useProjects } from "../api/hooks/projects";
@@ -8,7 +9,7 @@ import { flattenPages } from "../api/paging";
 import { ISSUE_STATUSES, SEVERITIES, TOOLS } from "../api/types";
 import type { IssueSort, IssueStatus, IssueSummary, OrgMember, Project, Severity, SeverityCounts, Tool } from "../api/types";
 import { Avatar, ProjectDot } from "../components/Avatar";
-import { SeverityMark, StatusMark } from "../components/Badges";
+import { MaliciousTag, SeverityMark, StatusMark } from "../components/Badges";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Select } from "../components/Field";
@@ -41,8 +42,8 @@ import {
   toggleSeverity,
 } from "../lib/issueFilters";
 import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, StatusFilter } from "../lib/issueFilters";
-import { formatEpss, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
-import { validateImageTarget } from "../lib/upload";
+import { formatEpss, isImageTarget, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
+import { isMaliciousIssue } from "../lib/malicious";
 import { useIssueCounts } from "../api/hooks/metrics";
 import type { IssueCounts } from "../api/types";
 import { can } from "../lib/permissions";
@@ -272,9 +273,13 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
     (filters.source ? 1 : 0) +
     (filters.epssMin !== null ? 1 : 0) +
     (filters.target ? 1 : 0);
-  // Image repositories to suggest in the Target filter: the contract has no list of an org's
-  // targets, so these come from the issues loaded so far (any other is typed).
-  const targets = [...new Set(items.map((i) => i.target).filter(Boolean))].sort();
+  // v0.4: the Image filter picks from the image repositories scanned in the project in scope
+  // (GET …/targets). The list is per project, so the filter is offered once a project is in
+  // scope; a target already in the URL stays listed so it can be seen and removed.
+  const scopeProject = fixedProject?.id ?? (filters.project || undefined);
+  const projectTargets = useProjectTargets(orgId, scopeProject);
+  const imageTargets = (projectTargets.data ?? []).filter((t) => t.kind === "image" && isImageTarget(t.target)).map((t) => t.target);
+  const targets = filters.target && !imageTargets.includes(filters.target) ? [...imageTargets, filters.target] : imageTargets;
 
   const phoneFilters = (
     <>
@@ -316,7 +321,19 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         }
       />
       <Select label="Source" value={filters.source} onChange={(e) => update({ ...filters, source: e.target.value as IssueSourceFilter | "" })} options={SOURCE_OPTIONS} />
-      <TargetField value={filters.target} targets={targets} onApply={(target) => update({ ...filters, target })} />
+      {scopeProject ? (
+        targets.length > 0 && (
+          <Select
+            label="Image"
+            className="mono"
+            value={filters.target}
+            onChange={(e) => update({ ...filters, target: e.target.value })}
+            options={[{ value: "", label: "Any image" }, ...targets.map((t) => ({ value: t, label: t }))]}
+          />
+        )
+      ) : (
+        <p className="faint small">Pick a project to filter by container image.</p>
+      )}
     </>
   );
 
@@ -359,6 +376,7 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         members={members.data ?? []}
         meId={me.id}
         targets={targets}
+        targetsLoading={!!scopeProject && projectTargets.isPending}
       />
       <span className="filter-bar-end">
         {canAssign && selected.size > 0 && (
@@ -666,75 +684,10 @@ const VIEW_COUNT_KEY: Record<SavedView, keyof IssueCounts> = {
   mine: "mine",
   past_sla: "past_sla",
   kev: "kev",
+  malicious: "malicious",
   secrets: "secrets",
   licenses: "licenses",
 };
-
-/** The image repository filter: typed (checked against the contract's pattern) or picked from
- *  the repositories of the issues loaded so far. Applies on Enter or the button. */
-function TargetField({ value, targets, onApply, autoFocus }: { value: string; targets: string[]; onApply: (t: string) => void; autoFocus?: boolean }) {
-  const [text, setText] = useState(value);
-  const [error, setError] = useState<string | null>(null);
-  const id = useId();
-  useEffect(() => setText(value), [value]);
-  const apply = () => {
-    const t = text.trim();
-    if (!t) {
-      setError(null);
-      onApply("");
-      return;
-    }
-    const problem = validateImageTarget(t);
-    setError(problem);
-    if (!problem) onApply(t);
-  };
-  return (
-    <div className="field target-field">
-      <label htmlFor={`${id}-t`}>Image repository</label>
-      <div className="row" style={{ flexWrap: "nowrap", gap: 6 }}>
-        <input
-          id={`${id}-t`}
-          className="input mono"
-          list={targets.length ? `${id}-l` : undefined}
-          value={text}
-          placeholder="ghcr.io/acme/api"
-          autoComplete="off"
-          autoCapitalize="none"
-          spellCheck={false}
-          maxLength={300}
-          autoFocus={autoFocus}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-e` : undefined}
-          onChange={(e) => {
-            setText(e.target.value);
-            if (error) setError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              apply();
-            }
-          }}
-        />
-        <Button size="sm" onClick={apply}>
-          Apply
-        </Button>
-      </div>
-      {targets.length > 0 && (
-        <datalist id={`${id}-l`}>
-          {targets.map((t) => (
-            <option key={t} value={t} />
-          ))}
-        </datalist>
-      )}
-      {error && (
-        <span id={`${id}-e`} className="error">
-          {error}
-        </span>
-      )}
-    </div>
-  );
-}
 
 function SearchBox({ value, onChange, inputRef }: { value: string; onChange: (q: string) => void; inputRef: RefObject<HTMLInputElement | null> }) {
   const [text, setText] = useState(value);
@@ -799,8 +752,10 @@ interface ChipCtx {
   projects?: Project[];
   members: OrgMember[];
   meId: string;
-  /** Image repositories seen in the loaded issues (suggestions for the Image filter). */
+  /** v0.4: image repositories scanned in the project in scope (GET …/targets); empty when no
+   *  project is in scope. */
   targets: string[];
+  targetsLoading: boolean;
 }
 
 function FilterChips(ctx: ChipCtx) {
@@ -828,7 +783,7 @@ function FilterChips(ctx: ChipCtx) {
 
   const available: Field[] = (
     ["severity", "status", "project", "assignee", "tool", "pastSla", "kev", "epss", "kind", "source", "target"] as Field[]
-  ).filter((x) => !(x === "project" && !projects) && !chips.some((c) => c.field === x));
+  ).filter((x) => !(x === "project" && !projects) && !(x === "target" && ctx.targets.length === 0) && !chips.some((c) => c.field === x));
 
   return (
     <div className="fchips" role="group" aria-label="Active filters">
@@ -1040,7 +995,16 @@ function FieldEditor({ field, ctx, close, onBack }: { field: Field; ctx: ChipCtx
       );
       break;
     case "target":
-      body = <TargetField value={f.target} targets={ctx.targets} autoFocus onApply={(target) => pick({ ...f, target })} />;
+      body =
+        ctx.targets.length > 0 ? (
+          radio(
+            ctx.targets.map((t) => ({ value: t, label: <span className="mono">{t}</span> })),
+            f.target,
+            (v) => ({ ...f, target: v }),
+          )
+        ) : (
+          <p className="faint small menu-note">{ctx.targetsLoading ? "Loading images…" : "Pick a project to filter by container image."}</p>
+        );
       break;
     case "pastSla":
     case "kev":
@@ -1088,6 +1052,14 @@ function whereText(i: IssueSummary): string {
 /** v0.3: KEV and EPSS beside the title of a dependency vulnerability (ranking signals, never
  *  instead of the severity), and a tag on license-policy issues. */
 function IntelMarks({ issue: i }: { issue: IssueSummary }) {
+  // v0.4: a malicious package is said in red next to the title (with the label, not colour alone).
+  if (isMaliciousIssue(i)) {
+    return (
+      <span className="intel-marks">
+        <MaliciousTag />
+      </span>
+    );
+  }
   if (isLicenseIssue(i)) {
     return (
       <span className="intel-marks">

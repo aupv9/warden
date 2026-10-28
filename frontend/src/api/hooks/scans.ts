@@ -4,7 +4,7 @@ import { api, ApiError, isMockMode } from "../client";
 import { isNotFound } from "../errors";
 import { qk } from "../keys";
 import { useCursorList } from "../paging";
-import type { CreateScanBody, CreateScanResponse, Page, SbomDownload, Scan, ScanStatus, Tool } from "../types";
+import type { CreateScanBody, CreateScanResponse, Page, SbomDownload, SbomFormatParam, Scan, ScanStatus, Tool } from "../types";
 import { hashFile, UploadSession, xhrPut } from "../../lib/upload";
 import type { ScanOptions, UploadDeps, UploadSnapshot } from "../../lib/upload";
 import { safeExternalUrl, startDownload } from "../../lib/url";
@@ -79,14 +79,15 @@ export const BAD_DOWNLOAD_URL = "BAD_DOWNLOAD_URL";
 export const SBOM_GONE = "SBOM_GONE";
 
 /**
- * v0.3: asks for a fresh 5-minute link to the scan's CycloneDX SBOM and starts the browser
- * download. The link is used at once and not cached (it expires); the page never reads the
- * file. Resolves with the link's metadata (size, SHA-256, components) for the panel.
+ * v0.3: asks for a fresh 5-minute link to the scan's SBOM and starts the browser download.
+ * v0.4: `format` picks CycloneDX (the server's default) or SPDX. The link is used at once and
+ * not cached (it expires); the page never reads the file. Resolves with the link's metadata
+ * (format, size, SHA-256, components) for the panel.
  */
 export function useSbomDownload(orgId: string) {
   return useMutation({
-    mutationFn: async ({ scanId, fileName }: { scanId: string; fileName: string }) => {
-      const link = await api<SbomDownload>(`${scanPath(orgId, scanId)}/sbom`).catch((err: unknown) => {
+    mutationFn: async ({ scanId, fileName, format = "cyclonedx" }: { scanId: string; fileName: string; format?: SbomFormatParam }) => {
+      const link = await api<SbomDownload>(`${scanPath(orgId, scanId)}/sbom`, { query: { format } }).catch((err: unknown) => {
         throw isNotFound(err) ? new ApiError(0, { code: SBOM_GONE, message: "no SBOM" }) : err;
       });
       // Mock mode has no object store behind the URL: check it, but don't follow it.
