@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,17 +20,20 @@ const (
 )
 
 // tokenRoutes is the only place that decides what an API token may call: the
-// route (method and gin path) and the scope it needs. Anything else is 403
-// TOKEN_SCOPE, including routes added later. Which project a token may reach is
-// enforced by the service (projectAccess): its own, else 404.
-var tokenRoutes = map[string]string{
-	"POST " + Prefix + "/orgs/:org_id/projects/:project_id/scans": service.ScopeScanWrite,
-	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/start":       service.ScopeScanWrite,
-	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/cancel":      service.ScopeScanWrite,
-	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id":              service.ScopeScanWrite,
-	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/gate":         service.ScopeScanWrite,
-	"GET " + Prefix + "/orgs/:org_id/issues":                      service.ScopeIssuesRead,
-	"GET " + Prefix + "/orgs/:org_id/issues/:issue_id":            service.ScopeIssuesRead,
+// route (method and gin path) and the scopes that allow it (any one is
+// enough). Anything else is 403 TOKEN_SCOPE, including routes added later.
+// Which project a token may reach is enforced by the service (projectAccess):
+// its own, else 404.
+var tokenRoutes = map[string][]string{
+	"POST " + Prefix + "/orgs/:org_id/projects/:project_id/scans": {service.ScopeScanWrite},
+	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/start":       {service.ScopeScanWrite},
+	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/cancel":      {service.ScopeScanWrite},
+	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id":              {service.ScopeScanWrite},
+	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/gate":         {service.ScopeScanWrite},
+	// The CLI fetches the SBOM after its scan; a reporting job may too.
+	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/sbom": {service.ScopeScanWrite, service.ScopeIssuesRead},
+	"GET " + Prefix + "/orgs/:org_id/issues":              {service.ScopeIssuesRead},
+	"GET " + Prefix + "/orgs/:org_id/issues/:issue_id":    {service.ScopeIssuesRead},
 }
 
 func errTokenScope() error {
@@ -59,7 +63,7 @@ func tokenAuth(c *gin.Context, svc *service.Service, lim *rateLimiter, raw strin
 		fail(c, errTokenRateLimited(retry))
 		return false
 	}
-	if scope, ok := tokenRoutes[c.Request.Method+" "+c.FullPath()]; !ok || !t.Has(scope) {
+	if scopes := tokenRoutes[c.Request.Method+" "+c.FullPath()]; !slices.ContainsFunc(scopes, t.Has) {
 		fail(c, errTokenScope())
 		return false
 	}
@@ -170,6 +174,6 @@ func (h tokenHandlers) gate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.Gate(c.Request.Context(), actor(c), scanID, c.Query("fail_on"))
+	out, err := h.svc.Gate(c.Request.Context(), actor(c), scanID, c.Query("fail_on"), c.Query("fail_on_kev"))
 	reply(c, false, out, err)
 }

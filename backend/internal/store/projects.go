@@ -150,16 +150,23 @@ func (r *Repo) ScansSince(ctx context.Context, userID uuid.UUID, since time.Time
 }
 
 func (r *Repo) InsertScan(ctx context.Context, s service.NewScan) error {
-	_, err := r.tx.Exec(ctx, `INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, object_key, file_size, sha256, tools, via_token)
-		VALUES ($1, $2, $3, $4, 'pending_upload', $5, $6, $7, $8, $9, $10)`,
-		s.ID, s.OrgID, s.ProjectID, s.CreatedBy, s.FileName, s.ObjectKey, s.FileSize, s.SHA256, s.Tools, s.ViaToken)
+	kind := s.Kind
+	if kind == "" {
+		kind = service.KindSource
+	}
+	_, err := r.tx.Exec(ctx, `INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, object_key, file_size, sha256, tools, via_token,
+		kind, target, image_ref)
+		VALUES ($1, $2, $3, $4, 'pending_upload', $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		s.ID, s.OrgID, s.ProjectID, s.CreatedBy, s.FileName, s.ObjectKey, s.FileSize, s.SHA256, s.Tools, s.ViaToken,
+		kind, s.Target, s.ImageRef)
 	return mapErr(err)
 }
 
 const scanSelect = `SELECT s.id, s.org_id, s.project_id, s.status::text, s.file_name, coalesce(s.file_size, 0), s.tools,
 	s.error_code, s.stats, s.created_at, s.queued_at, s.started_at, s.finished_at,
 	coalesce(s.object_key, ''), coalesce(s.sha256, ''), u.id, u.email::text, u.display_name,
-	vt.id, vt.name, vt.prefix::text
+	vt.id, vt.name, vt.prefix::text, s.kind, s.target, s.image_ref,
+	CASE WHEN s.sbom_expires_at > now() THEN s.sbom_key END, s.sbom_size, s.sbom_sha256, s.sbom_components
 	FROM scan s JOIN app_user u ON u.id = s.created_by LEFT JOIN api_token vt ON vt.id = s.via_token`
 
 func scanScan(row pgx.CollectableRow) (service.Scan, error) {
@@ -167,12 +174,20 @@ func scanScan(row pgx.CollectableRow) (service.Scan, error) {
 		s                service.Scan
 		vtID             *uuid.UUID
 		vtName, vtPrefix *string
+		sbomKey, sbomSum *string
+		sbomSize         *int64
+		sbomComponents   *int
 	)
 	err := row.Scan(&s.ID, &s.OrgID, &s.ProjectID, &s.Status, &s.FileName, &s.FileSize, &s.Tools,
 		&s.ErrorCode, &s.Stats, &s.CreatedAt, &s.QueuedAt, &s.StartedAt, &s.FinishedAt,
-		&s.ObjectKey, &s.SHA256, &s.CreatedBy.ID, &s.CreatedBy.Email, &s.CreatedBy.DisplayName, &vtID, &vtName, &vtPrefix)
+		&s.ObjectKey, &s.SHA256, &s.CreatedBy.ID, &s.CreatedBy.Email, &s.CreatedBy.DisplayName, &vtID, &vtName, &vtPrefix,
+		&s.Kind, &s.Target, &s.ImageRef, &sbomKey, &sbomSize, &sbomSum, &sbomComponents)
 	if vtID != nil && vtName != nil && vtPrefix != nil {
 		s.ViaToken = &service.TokenRef{ID: *vtID, Name: *vtName, Prefix: *vtPrefix}
+	}
+	// An expired SBOM (awaiting the purge job) reads as none.
+	if sbomKey != nil && sbomSize != nil && sbomSum != nil && sbomComponents != nil {
+		s.SBOM = &service.ScanSBOM{Key: *sbomKey, Size: *sbomSize, SHA256: *sbomSum, Components: *sbomComponents}
 	}
 	if s.Tools == nil {
 		s.Tools = []string{}

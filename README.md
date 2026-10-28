@@ -1,9 +1,12 @@
 # Warden
 
-**Self-hosted security scanning for source code uploads.** Developers upload a `.zip`;
-Warden runs [Gitleaks](https://github.com/gitleaks/gitleaks), [Opengrep](https://github.com/opengrep/opengrep),
-[Trivy](https://github.com/aquasecurity/trivy) and [Checkov](https://github.com/bridgecrewio/checkov)
-in throw-away sandboxes and turns every finding into a tracked issue with an owner, an SLA and an audit trail.
+**Self-hosted security scanning for source code uploads.** Developers upload a `.zip` (or a
+container image saved with `docker save`); Warden runs [Gitleaks](https://github.com/gitleaks/gitleaks),
+[Opengrep](https://github.com/opengrep/opengrep), [Trivy](https://github.com/aquasecurity/trivy) and
+[Checkov](https://github.com/bridgecrewio/checkov) in throw-away sandboxes and turns every finding into a
+tracked issue with an owner, an SLA and an audit trail. Each scan also yields a CycloneDX SBOM, an
+org can turn licenses it doesn't accept into issues, and dependency issues are ranked by CISA KEV and
+FIRST EPSS.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8.svg)
@@ -35,19 +38,24 @@ that threat model instead of bolting it on:
   forced row-level security that fails closed. The application role can't bypass RLS,
   change the schema, or rewrite the audit log.
 - **Uploaded source is short-lived.** The extracted source and the uploaded object are
-  deleted on every exit path of a scan.
+  deleted on every exit path of a scan. Image tarballs are validated without being unpacked,
+  and Warden never pulls from a registry or holds registry credentials.
 
 ## How it works
 
 ```
  upload.zip ─▶ object storage ─▶ worker (River job, queue "scan")
-                                    │
+ (image.tar)                        │
                                     ├─ verify SHA-256, validate + extract (zipcheck)
+                                    │    image scans: validate the tarball (imagecheck), no extraction
                                     ├─ run scanners in parallel, one sandbox each
                                     │    gitleaks ─▶ warden-redact (inside the sandbox)
-                                    │    opengrep · trivy · checkov
-                                    ├─ parse SARIF (treated as hostile input)
+                                    │    opengrep · checkov
+                                    │    trivy ─▶ one JSON report ─▶ SARIF + CycloneDX SBOM
+                                    ├─ parse SARIF and Trivy JSON (treated as hostile input)
+                                    ├─ license policy ─▶ license findings
                                     ├─ fingerprint findings ─▶ issues (dedupe, auto-fix, reopen)
+                                    ├─ store the SBOM (object storage, scan.sbom_retention)
                                     └─ delete source + uploaded object
 ```
 
@@ -110,7 +118,10 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
 | `WARDEN_SCAN__HMAC_KEY` | | Master key for secret fingerprints, at least 32 bytes (`openssl rand -hex 32`). Each organization gets its own key derived from it, so changing it changes every secret's fingerprint |
 | `WARDEN_SCAN__TIMEOUT` / `WARDEN_SCAN__SLOTS_PER_NODE` | `30m` / `7` | Per-scan timeout, concurrent scans per worker |
-| `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest upload; the presigned URL pins the exact size and the worker refuses larger objects |
+| `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest source upload; the presigned URL pins the exact size and the worker refuses larger objects |
+| `WARDEN_SCAN__UNZIP_MAX_MB` / `WARDEN_SCAN__UNZIP_MAX_FILES` | `1024` / `100000` | Unpacked size and file count a source archive may have |
+| `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB` | `2048` | Largest `docker save` tarball for image scans |
+| `WARDEN_SCAN__SBOM_RETENTION` | `8760h` | How long a scan's SBOM is kept before the purge job deletes it (at least `1h`) |
 | `WARDEN_SCAN__SCRATCH_DIR` / `WARDEN_SCAN__MIRROR_DIR` | `/scratch` / `/mirror` | Worker's per-scan working directory; offline scanner data (`make mirror`) |
 | `WARDEN_SCAN__SOURCE_RETENTION` | `1h` | Uploaded objects still present after this are deleted by a sweep (normally a scan deletes its own upload when it ends). Uploads never started within 1 hour are cancelled (`UPLOAD_ABANDONED`) |
 | `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan that would auto-fix 5 or more issues may fix at most this fraction of the project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation`. Fewer than 5 are always fixed |
@@ -223,7 +234,9 @@ endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 | `/orgs/{org_id}/members` | Org members and roles (`org_admin`, `security_lead`, `member`) |
 | `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`), scans, auto-assign rules, archiving |
 | `/orgs/{org_id}/projects/{id}/tokens` | API tokens for CI: list, create (the secret is shown once), revoke |
-| `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel`, and the CI `gate` |
+| `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel`, the CI `gate`, and the `sbom` download link |
+| `/orgs/{org_id}/license-policy` | The org's license policy (any member reads it, security leads change it) |
+| `/orgs/{org_id}/vuln-data` | How fresh the Trivy DB, CISA KEV and FIRST EPSS data are |
 | `/orgs/{org_id}/issues` | Issues: filters, counts, transitions, bulk assignment, comments, history |
 | `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
 | `/orgs/{org_id}/audit-log` | Hash-chained audit log |
@@ -231,7 +244,8 @@ endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 How it behaves:
 
 - **Uploads bypass the API.** `POST …/projects/{id}/scans` returns a presigned `PUT` URL
-  (15 minutes, pinned size and SHA-256); the browser uploads the `.zip` to object storage and
+  (15 minutes, pinned size and SHA-256); the browser uploads the `.zip` (or, with
+  `kind: image` and a `target`, the `.tar`) to object storage and
   then calls `POST …/scans/{id}/start`, which checks the object and queues the scan. Scan
   creation is limited per user per hour (`WARDEN_SCAN__RATE_LIMIT_PER_HOUR`, default 10;
   `429` with `Retry-After`).
@@ -271,7 +285,12 @@ How it behaves:
 - **Scan gate.** `GET …/scans/{id}/gate?fail_on=critical|high|medium|low` (default `high`)
   returns `pass`, the severity `counts` of the active issues seen in that scan and up to 100
   `blocking` issues at or above `fail_on`. `false_positive` and `risk_accepted` issues never
-  block; a scan that hasn't finished, failed or was cancelled never passes.
+  block; a scan that hasn't finished, failed or was cancelled never passes. With
+  `fail_on_kev=true`, an active issue with a CVE in CISA KEV blocks whatever its severity.
+- **SBOM download.** `GET …/scans/{id}/sbom` returns a presigned `GET` URL valid for 5 minutes,
+  served as an attachment (`application/vnd.cyclonedx+json`), with its size and SHA-256. It
+  needs view access to the project (API tokens: `scan:write` or `issues:read`); `404` when
+  the scan has no SBOM or it expired.
 - **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `MFA_REQUIRED`,
   `MFA_NOT_ENABLED`, `TOKEN_SCOPE`, `NOT_FOUND`, `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`,
   `VERSION_CONFLICT`, `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`,
@@ -303,6 +322,48 @@ the actor's name and a link to the web UI. They never include snippets, descript
 file contents, comments or secrets; titles are HTML-escaped, and header values with line
 breaks are refused.
 
+## Images, SBOMs, licenses and exploit data
+
+**Container images.** An image scan takes the tarball from `docker save` (Docker and OCI
+layouts), at most `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB`. Warden checks it before Trivy sees it
+(`imagecheck`: one image, at most 4096 entries and 256 layers, only files and directories, every
+referenced blob present, safe names; it is never unpacked by Warden) and runs only Trivy, in the
+same sandbox as any scanner. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
+`IMAGE_MULTIPLE`. Issues are tracked per `target` (the image repository): an image scan only
+auto-fixes issues of the same target, never source-code issues or another image's. Secrets in
+image layers are not scanned, because Gitleaks is the only secret scanner (its output is the only
+output Warden redacts).
+
+**SBOM.** Trivy writes one JSON report per scan; Warden converts it to SARIF for findings and to a
+CycloneDX SBOM (spec 1.7) named after the project key, with a `warden:scan_id` property. It is
+kept in object storage for `WARDEN_SCAN__SBOM_RETENTION`. Development dependencies are left out,
+as Trivy does by default. A missing or invalid SBOM never fails the scan.
+
+**License policy.** Off until a security lead sets it (Org settings, or
+`PUT /orgs/{org_id}/license-policy`). Each Trivy license category (forbidden, restricted,
+reciprocal, notice, permissive, unencumbered, unknown) is *allow*, *review* (a Medium issue) or
+*block* (a High issue, which fails the default gate); a Deny list of SPDX ids always blocks and an
+Allow list never reports (Allow wins, ids compare without case). Expressions follow SPDX: with `OR`
+one acceptable alternative is enough, with `AND` any blocked id blocks, `WITH` exceptions count as
+the base license; anything else is `LicenseRef-unknown` in Trivy's category. License data comes
+from the lockfile: npm `package-lock.json`, Cargo and images carry it, `go.mod` and
+`requirements.txt` don't. Changes apply from the next scan (license issues that no longer match
+are auto-fixed) and are audited as `org.license_policy_changed`.
+
+**Exploit data.** `make mirror` also downloads the [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+catalog and the [FIRST EPSS](https://www.first.org/epss/) scores into the mirror
+(`scripts/sync-mirror.sh intel` refreshes only these; `WARDEN_KEV_URL` and `WARDEN_EPSS_URL`
+override the sources). The worker's `load_vuln_intel` job loads them hourly when they change,
+after strict checks (sizes, gzip bomb, every row), and keeps the previous data if a file is bad.
+Issues then show whether a CVE is known exploited and its EPSS score; the issue list filters
+(`kev`, `epss_min`) and sorts (`-epss`) on them, and the gate can fail on KEV. They only rank
+issues: they never change severity, status or the SLA, and never hide an issue. KEV matches the
+CVE ids Trivy reports, so an alias Trivy doesn't use (for example CVE-2023-44487, which Trivy
+reports for `golang.org/x/net` as CVE-2023-39325) isn't flagged. Run the sync daily (cron, or a
+Kubernetes CronJob writing to the mirror volume); Org settings warns when a feed is more than 7
+days old. Loading uses a temporary table, so the database must keep the default `TEMPORARY`
+privilege for `warden_app`.
+
 ## CI integration
 
 The `warden` CLI scans a git checkout from a pipeline and fails the build on blocking issues.
@@ -312,8 +373,17 @@ starts the scan, waits for it and applies the scan gate:
 ```bash
 export WARDEN_TOKEN=wdn_...   # a project API token with scope scan:write
 warden scan --url https://warden.example.com --org <org id> --project <project id> \
-  [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--timeout 30m]
+  [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--fail-on-kev] [--timeout 30m] \
+  [--sbom-out bom.cdx.json]
+
+# a container image instead of the checkout (Trivy only):
+warden scan --url … --org … --project … --image ghcr.io/acme/api:1.4.2
+warden scan --url … --org … --project … --image-tar api.tar --target ghcr.io/acme/api
 ```
+
+`--image` runs `docker save` and tracks issues under the repository without its tag
+(`alpine` becomes `docker.io/library/alpine`). `--sbom-out` writes the scan's CycloneDX SBOM
+after checking its SHA-256 (exit `2` if the scan has none).
 
 It prints the blocking issues (key, severity, title, file:line, link) and exits `0` when the
 gate passes, `1` when it fails and `2` on any error (authentication, network, a failed or
@@ -397,8 +467,8 @@ Protected variables are only exposed on protected branches and tags, hence the r
 | `make vulncheck` | govulncheck over dependencies and the Go toolchain |
 | `make build` | Static binaries in `backend/bin` |
 
-Code that handles hostile input (`zipcheck`, `sarif`, `redact`) has tests for the attacks,
-not just the happy path. Test fixtures never contain real-looking secrets; they are built
+Code that handles hostile input (`zipcheck`, `imagecheck`, `sarif`, `trivyjson`, `sbom`,
+`redact`, `intel`) has tests for the attacks, not just the happy path. Test fixtures never contain real-looking secrets; they are built
 at test time.
 
 ### Self-scan
@@ -406,7 +476,7 @@ at test time.
 Warden scans itself with its own pipeline before every release:
 
 ```bash
-make mirror             # Trivy DB + pinned Opengrep rules (the only step that needs the Internet)
+make mirror             # Trivy DB, pinned Opengrep rules, CISA KEV, FIRST EPSS (the only step that needs the Internet)
 make selfscan           # fails on any Critical finding
 make selfscan-release   # fails on any Critical or un-baselined High
 ```
@@ -425,14 +495,16 @@ backend/                 Go module
   internal/service/      business rules: permissions, issue workflow, exceptions, scans
   internal/store/        Postgres repositories, hash-chained audit log
   internal/auth/         OIDC access-token and JWKS verification
-  internal/domain/       fingerprints, severity mapping, issue state machine, permission matrix
-  internal/scan/         zipcheck, sandbox, SARIF parser, redactor, orchestrator, result
-                         processor (findings → issues), release gate
-  internal/storage/      S3-compatible client (presigned uploads, download, delete)
+  internal/domain/       fingerprints, severity mapping, issue state machine, permission matrix,
+                         license policy
+  internal/scan/         zipcheck, imagecheck, sandbox, SARIF and Trivy JSON parsers, SBOM,
+                         redactor, orchestrator, result processor (findings → issues), release gate
+  internal/intel/        CISA KEV and FIRST EPSS parsers
+  internal/storage/      S3-compatible client (presigned uploads and downloads, put, delete)
   internal/notify/       notification dispatch (outbox → notifications), email rendering, SMTP
   internal/pack/         zips a git working tree like an upload (selfscan, warden CLI)
-  internal/worker/       background jobs (River): scans, source purge, risk-acceptance expiry,
-                         notifications, SLA digest
+  internal/worker/       background jobs (River): scans, source and SBOM purge, risk-acceptance
+                         expiry, notifications, SLA digest, exploit-data loading
   internal/migrations/   SQL migrations (goose), River tables, role grants
 frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
@@ -471,7 +543,11 @@ Pull the image by the digest from the release notes, not by tag.
 
 Changes that weaken one of these need an explicit discussion in the pull request:
 
-- Archives are only ever extracted by `zipcheck.Extract`.
+- Archives are only ever extracted by `zipcheck.Extract`. Image tarballs are checked by
+  `imagecheck` and never extracted by Warden; Trivy reads them inside the sandbox.
+- Everything a scanner writes (SARIF, Trivy JSON, the SBOM) is hostile input: size-capped and
+  parsed into typed values. SBOMs are only served as attachments through 5-minute links.
+- CISA KEV and EPSS only rank issues; they never change severity or status or hide an issue.
 - Scanner containers run with `runsc`, `--network=none`, a read-only rootfs, a non-root
   user and `--cap-drop=ALL`, with no Docker socket. Images are pinned by digest.
 - Gitleaks is the only secret scanner, and raw secrets never leave its sandbox.

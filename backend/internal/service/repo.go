@@ -58,6 +58,10 @@ type NewScan struct {
 	Tools     []string
 	// ViaToken is the API token that created the scan, if any.
 	ViaToken *uuid.UUID
+	// Kind is source or image; Target and ImageRef are for images only.
+	Kind     string
+	Target   string
+	ImageRef *string
 }
 
 // ScanCursor positions a newest-first scan list.
@@ -71,6 +75,13 @@ const (
 	SortDueAt     = "due_at"
 	SortSeverity  = "-severity"
 	SortUpdatedAt = "-updated_at"
+	SortEPSS      = "-epss" // highest first, issues without a score last
+)
+
+// Issue kinds (Trivy issues only).
+const (
+	KindVulnerability = "vulnerability"
+	KindLicense       = "license"
 )
 
 // IssueCursor positions an issue list for one sort.
@@ -79,6 +90,7 @@ type IssueCursor struct {
 	DueAt     *time.Time `json:"d,omitempty"`
 	Severity  string     `json:"v,omitempty"`
 	UpdatedAt time.Time  `json:"u,omitzero"`
+	EPSS      *float64   `json:"e,omitempty"`
 	ID        uuid.UUID  `json:"id"`
 }
 
@@ -93,6 +105,15 @@ type IssueQuery struct {
 	AssigneeID   *uuid.UUID
 	Tool         string
 	PastSLA      bool
+	// Kind: "", KindVulnerability or KindLicense.
+	Kind string
+	// KEV: only issues with a CVE in KEV. EPSSMin: only issues with a CVE
+	// scored at least this.
+	KEV     bool
+	EPSSMin *float64
+	// Source: "", "code" (target '') or "image" (any target); Target: one image.
+	Source string
+	Target string
 	// Text search (title, rule_id, file_path), or an issue key.
 	Text       string
 	KeyProject string
@@ -259,7 +280,9 @@ type Repo interface {
 
 	TokenRepo
 	GateRepo
+	VulnRepo
 	SignInRepo
+	LicensePolicyRepo // licenses.go
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }
@@ -273,6 +296,9 @@ type ObjectStore interface {
 	PresignPut(ctx context.Context, key string, size int64, sha256Hex string, ttl time.Duration) (url string, headers map[string]string, err error)
 	// Head returns the stored object's size, or ErrObjectNotFound.
 	Head(ctx context.Context, key string) (size int64, err error)
+	// PresignGet returns a URL valid for ttl that downloads key as an
+	// attachment named filename, with the given content type.
+	PresignGet(ctx context.Context, key string, ttl time.Duration, filename, contentType string) (url string, err error)
 }
 
 // ErrObjectNotFound is returned by ObjectStore.Head for a missing object.

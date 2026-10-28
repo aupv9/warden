@@ -830,6 +830,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/scans/{scan_id}/sbom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Download link for the scan's CycloneDX SBOM
+         * @description Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention).
+         */
+        get: operations["getScanSbom"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/license-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * The org's license policy (any member)
+         * @description Off by default. Licenses come from Trivy and depend on the lockfile: npm, Cargo and images carry them; go.mod and requirements.txt don't.
+         */
+        get: operations["getLicensePolicy"];
+        /**
+         * Replace the org's license policy (security_lead)
+         * @description Applies from the next scan. Audited as org.license_policy_changed.
+         */
+        put: operations["setLicensePolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/vuln-data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Freshness of the vulnerability data (any member)
+         * @description The Trivy DB, CISA KEV and FIRST EPSS come from the mirror (make mirror). KEV and EPSS only rank issues; they never change severity or status.
+         */
+        get: operations["getVulnData"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -867,6 +941,7 @@ export interface components {
             unzip_max_files: number;
             scan_timeout_minutes: number;
             scans_per_hour: number;
+            image_upload_max_mb: number;
         };
         Me: {
             /** Format: uuid */
@@ -984,6 +1059,16 @@ export interface components {
             tool_runs?: components["schemas"]["ToolRun"][];
             /** @description The API token that created the scan, if any (created_by is the token's creator). */
             via_token: components["schemas"]["TokenRef"] | null;
+            kind: components["schemas"]["ScanKind"];
+            /** @description Image repository for image scans (no tag); empty for source scans. */
+            target: string;
+            /** @description The image reference given at upload, for display (image scans only). */
+            image_ref: string | null;
+            /** @description Present when the scan produced a CycloneDX SBOM that hasn't expired (see GET .../sbom). */
+            sbom: {
+                components: number;
+                size: number;
+            } | null;
         };
         Upload: {
             /** @enum {string} */
@@ -1021,6 +1106,12 @@ export interface components {
             past_sla: boolean;
             /** Format: date-time */
             updated_at: string;
+            /** @description Image repository for issues found in image scans; empty for source code. */
+            target: string;
+            /** @description One of the issue's CVEs is in the CISA Known Exploited Vulnerabilities catalog. */
+            kev: boolean;
+            /** @description Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days). */
+            epss: number | null;
         };
         Issue: {
             /** Format: uuid */
@@ -1070,6 +1161,20 @@ export interface components {
             can_request_exception: boolean;
             /** Format: uuid */
             pending_exception_id: string | null;
+            /** @description Image repository for issues found in image scans; empty for source code. */
+            target: string;
+            /** @description One of the issue's CVEs is in the CISA Known Exploited Vulnerabilities catalog. */
+            kev: boolean;
+            /** @description Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days). */
+            epss: number | null;
+            epss_percentile: number | null;
+            /**
+             * Format: date
+             * @description Earliest date one of the CVEs was added to KEV.
+             */
+            kev_added: string | null;
+            /** @description KEV marks a CVE as known to be used in ransomware campaigns. */
+            kev_ransomware: boolean;
         };
         IssueEvent: {
             /** @description Numeric event id, as a string. */
@@ -1205,6 +1310,10 @@ export interface components {
             past_sla: number;
             /** @description Active Gitleaks issues. */
             secrets: number;
+            /** @description Active issues with a CVE in KEV. */
+            kev: number;
+            /** @description Active license-policy issues. */
+            licenses: number;
         };
         Error: {
             /** @enum {string} */
@@ -1245,11 +1354,19 @@ export interface components {
             role: components["schemas"]["ProjectRole"];
         };
         CreateScanRequest: {
+            /** @description A .zip of source code (kind source) or a `docker save` .tar (kind image). */
             file_name: string;
-            /** @description At most upload_max_mb MiB. */
+            /** @description At most upload_max_mb MiB (source) or image_upload_max_mb MiB (image). */
             file_size: number;
             sha256: string;
+            /** @description Image scans only run trivy; any other tool is a 422. */
             tools?: components["schemas"]["Tool"][];
+            /** @description Default source. */
+            kind?: components["schemas"]["ScanKind"];
+            /** @description Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Issues are tracked per target. */
+            target?: string;
+            /** @description Optional, image scans only: the full reference (tag or digest), shown on the scan. */
+            image_ref?: string;
         };
         TransitionRequest: {
             to: components["schemas"]["IssueStatus"];
@@ -1364,8 +1481,11 @@ export interface components {
             /** @description False until the scan has finished, and always for failed or cancelled scans. */
             pass: boolean;
             counts: components["schemas"]["SeverityCounts"];
-            /** @description Active issues seen in this scan at or above fail_on, most severe first (at most 100). */
+            /** @description Active issues seen in this scan at or above fail_on (or in KEV with fail_on_kev), most severe first (at most 100). */
             blocking: components["schemas"]["IssueSummary"][];
+            fail_on_kev: boolean;
+            /** @description Active issues seen in this scan with a CVE in KEV. */
+            kev: number;
         };
         SignInPolicy: {
             mfa_roles: components["schemas"]["OrgRole"][];
@@ -1407,6 +1527,78 @@ export interface components {
                 effective_roles: components["schemas"]["OrgRole"][];
             };
             policy: components["schemas"]["SignInPolicy"];
+        };
+        /** @enum {string} */
+        ScanKind: "source" | "image";
+        SbomDownload: {
+            /**
+             * Format: uri
+             * @description Presigned GET, valid for 5 minutes; served as an attachment.
+             */
+            url: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** @enum {string} */
+            format: "cyclonedx-json";
+            size: number;
+            sha256: string;
+            components: number;
+        };
+        /**
+         * @description block: High issue (fails the default gate); review: Medium issue; allow: no issue.
+         * @enum {string}
+         */
+        LicenseAction: "allow" | "review" | "block";
+        LicensePolicyRequest: {
+            /** @description Action per Trivy license category. */
+            categories: {
+                forbidden: components["schemas"]["LicenseAction"];
+                restricted: components["schemas"]["LicenseAction"];
+                reciprocal: components["schemas"]["LicenseAction"];
+                notice: components["schemas"]["LicenseAction"];
+                permissive: components["schemas"]["LicenseAction"];
+                unencumbered: components["schemas"]["LicenseAction"];
+                unknown: components["schemas"]["LicenseAction"];
+            };
+            /** @description SPDX ids always blocked (overrides the category). */
+            deny: string[];
+            /** @description SPDX ids never reported (overrides deny and the category). Must not overlap deny. */
+            allow: string[];
+        };
+        LicensePolicy: {
+            /** @description False when every category is allow and deny is empty: no license issues are created. */
+            enabled: boolean;
+            categories: {
+                forbidden: components["schemas"]["LicenseAction"];
+                restricted: components["schemas"]["LicenseAction"];
+                reciprocal: components["schemas"]["LicenseAction"];
+                notice: components["schemas"]["LicenseAction"];
+                permissive: components["schemas"]["LicenseAction"];
+                unencumbered: components["schemas"]["LicenseAction"];
+                unknown: components["schemas"]["LicenseAction"];
+            };
+            deny: string[];
+            allow: string[];
+        };
+        VulnDataSource: {
+            /** @enum {string} */
+            name: "trivy_db" | "kev" | "epss";
+            /**
+             * Format: date-time
+             * @description When the publisher last updated the data, as recorded in the mirror.
+             */
+            updated_at: string | null;
+            /**
+             * Format: date-time
+             * @description When the worker last loaded it (null for trivy_db: Trivy reads the mirror directly).
+             */
+            loaded_at: string | null;
+            records: number | null;
+            /** @description updated_at missing or older than 7 days. */
+            stale: boolean;
+        };
+        VulnData: {
+            sources: components["schemas"]["VulnDataSource"][];
         };
     };
     responses: never;
@@ -3456,9 +3648,18 @@ export interface operations {
                 assignee?: string;
                 tool?: components["schemas"]["Tool"];
                 past_sla?: boolean;
+                /** @description Trivy issues only: dependency vulnerabilities or license-policy issues. */
+                kind?: "vulnerability" | "license";
+                /** @description Only issues with a CVE in KEV. */
+                kev?: boolean;
+                epss_min?: number;
+                /** @description Issues from source scans or from image scans. */
+                source?: "code" | "image";
+                /** @description Issues from image scans of this repository. */
+                target?: string;
                 /** @description Title, rule_id or file_path substring, or an issue key such as WEB-41. */
                 q?: string;
-                sort?: "due_at" | "-severity" | "-updated_at";
+                sort?: "due_at" | "-severity" | "-updated_at" | "-epss";
                 limit?: number;
                 /** @description Opaque, from next_cursor. */
                 cursor?: string;
@@ -4592,6 +4793,8 @@ export interface operations {
         parameters: {
             query?: {
                 fail_on?: "critical" | "high" | "medium" | "low";
+                /** @description Also fail on any active issue with a CVE in KEV, whatever its severity. */
+                fail_on_kev?: boolean;
             };
             header?: never;
             path: {
@@ -4793,6 +4996,272 @@ export interface operations {
             };
             /** @description Validation failed or invalid transition. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getScanSbom: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SbomDownload"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getLicensePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LicensePolicy"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setLicensePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LicensePolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LicensePolicy"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getVulnData: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["VulnData"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

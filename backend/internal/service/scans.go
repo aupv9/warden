@@ -27,28 +27,81 @@ type CreateScanInput struct {
 	FileSize int64     `json:"file_size"`
 	SHA256   string    `json:"sha256"`
 	Tools    *[]string `json:"tools"`
+	// Kind is source (default: a .zip of code) or image (a docker save .tar).
+	Kind     string  `json:"kind"`
+	Target   *string `json:"target"`
+	ImageRef *string `json:"image_ref"`
 }
 
-// ObjectKey is where a scan's upload lives in object storage.
+// Scan kinds.
+const (
+	KindSource = orchestrator.KindSource
+	KindImage  = orchestrator.KindImage
+)
+
+// ImageTarget is an image repository without tag or digest (the OpenAPI
+// CreateScanRequest.target pattern): lower-case path components, an optional
+// registry host and port. Image issues are tracked per target.
+var ImageTarget = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
+
+const (
+	maxTarget   = 255
+	maxImageRef = 512
+)
+
+// ObjectKey is where a source scan's upload lives in object storage.
 func ObjectKey(orgID, scanID uuid.UUID) string {
 	return fmt.Sprintf("scans/%s/%s.zip", orgID, scanID)
 }
 
+// ImageObjectKey is where an image scan's tarball lives in object storage.
+func ImageObjectKey(orgID, scanID uuid.UUID) string {
+	return fmt.Sprintf("scans/%s/%s.tar", orgID, scanID)
+}
+
 func (s *Service) validateScanInput(in CreateScanInput) fieldErrors {
 	fe := fieldErrors{}
-	n := in.FileName
-	if !strings.HasSuffix(strings.ToLower(n), ".zip") || len(n) <= len(".zip") || utf8.RuneCountInString(n) > 255 ||
-		strings.ContainsAny(n, `/\`) || !validText(n) || strings.ContainsFunc(n, isControl) {
-		fe.add("file_name", "must be a .zip file name of at most 255 characters, without / or \\")
+	image := in.Kind == KindImage
+	if in.Kind != "" && in.Kind != KindSource && !image {
+		fe.add("kind", "must be source or image")
 	}
-	if in.FileSize < 1 || in.FileSize > s.cfg.UploadMaxBytes {
-		fe.add("file_size", fmt.Sprintf("must be between 1 and %d bytes", s.cfg.UploadMaxBytes))
+	ext, maxBytes := ".zip", s.cfg.UploadMaxBytes
+	if image {
+		ext, maxBytes = ".tar", s.cfg.ImageUploadMaxBytes
+	}
+	n := in.FileName
+	if !strings.HasSuffix(strings.ToLower(n), ext) || len(n) <= len(ext) || utf8.RuneCountInString(n) > 255 ||
+		strings.ContainsAny(n, `/\`) || !validText(n) || strings.ContainsFunc(n, isControl) {
+		fe.add("file_name", "must be a "+ext+" file name of at most 255 characters, without / or \\")
+	}
+	if in.FileSize < 1 || in.FileSize > maxBytes {
+		fe.add("file_size", fmt.Sprintf("must be between 1 and %d bytes", maxBytes))
 	}
 	if !sha256Hex.MatchString(in.SHA256) {
 		fe.add("sha256", "must be 64 hexadecimal characters")
 	}
 	if in.Tools != nil && !validTools(*in.Tools) {
 		fe.add("tools", "must be a non-empty list of distinct tools: gitleaks, opengrep, trivy, checkov")
+	}
+	if !image {
+		if in.Target != nil {
+			fe.add("target", "is only for image scans")
+		}
+		if in.ImageRef != nil {
+			fe.add("image_ref", "is only for image scans")
+		}
+		return fe
+	}
+	// Images are scanned by Trivy alone: the other scanners read source code,
+	// and only Gitleaks output is redacted (secrets in images aren't scanned).
+	if in.Tools != nil && (len(*in.Tools) != 1 || (*in.Tools)[0] != "trivy") {
+		fe.add("tools", "image scans run trivy only")
+	}
+	if in.Target == nil || len(*in.Target) > maxTarget || !ImageTarget.MatchString(*in.Target) {
+		fe.add("target", "must be an image repository without tag or digest, such as ghcr.io/acme/api")
+	}
+	if r := in.ImageRef; r != nil && (*r == "" || utf8.RuneCountInString(*r) > maxImageRef || !validText(*r) || strings.ContainsFunc(*r, isControl)) {
+		fe.add("image_ref", fmt.Sprintf("must be an image reference of at most %d characters", maxImageRef))
 	}
 	return fe
 }
@@ -82,6 +135,10 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		if in.Tools != nil {
 			tools = *in.Tools
 		}
+		kind, target := KindSource, ""
+		if in.Kind == KindImage {
+			kind, target, tools = KindImage, *in.Target, []string{"trivy"}
+		}
 		if s.cfg.RateLimitPerHour > 0 {
 			if err := r.LockScanRate(ctx, a.UserID); err != nil {
 				return err
@@ -97,10 +154,14 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		}
 		id := ids.New()
 		key := ObjectKey(a.OrgID, id)
+		if kind == KindImage {
+			key = ImageObjectKey(a.OrgID, id)
+		}
 		sum := strings.ToLower(in.SHA256)
 		ns := NewScan{
 			ID: id, OrgID: a.OrgID, ProjectID: projectID, CreatedBy: a.UserID,
 			FileName: in.FileName, FileSize: in.FileSize, SHA256: sum, ObjectKey: key, Tools: tools,
+			Kind: kind, Target: target, ImageRef: in.ImageRef,
 		}
 		if a.Token != nil {
 			ns.ViaToken = &a.Token.ID
@@ -114,6 +175,7 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		}
 		if err := s.audit(ctx, r, a, "scan.created", "scan", id.String(), map[string]any{
 			"project_id": projectID.String(), "file_name": in.FileName, "file_size": in.FileSize, "sha256": sum,
+			"kind": kind, "target": target,
 		}); err != nil {
 			return err
 		}

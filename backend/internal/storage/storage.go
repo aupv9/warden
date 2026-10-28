@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -191,6 +192,62 @@ func checksumB64(hexSum string) (string, error) {
 	}
 	raw, _ := hex.DecodeString(hexSum)
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// Put stores body at key from the server side (artifacts Warden produces, such
+// as SBOMs). The length is sent and signed, and with ChecksumHeader the store
+// verifies the SHA-256 too.
+func (c *Client) Put(ctx context.Context, key string, body []byte, sha256Hex, contentType string) error {
+	if err := validKey(key); err != nil {
+		return err
+	}
+	in := &s3.PutObjectInput{
+		Bucket:        aws.String(c.bucket),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(body),
+		ContentLength: aws.Int64(int64(len(body))),
+		ContentType:   aws.String(contentType),
+	}
+	if c.cfg.ChecksumHeader {
+		sum, err := checksumB64(sha256Hex)
+		if err != nil {
+			return err
+		}
+		in.ChecksumSHA256 = aws.String(sum)
+	}
+	if _, err := c.s3.PutObject(ctx, in); err != nil {
+		return fmt.Errorf("storage: put: %w", err)
+	}
+	return nil
+}
+
+// downloadName is what a presigned download may be saved as: no quotes,
+// separators or control characters can reach the Content-Disposition header.
+var downloadName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// PresignGet returns a URL valid for ttl that downloads key as an attachment
+// named filename with the given content type, whatever the object's own
+// metadata says: content derived from scanned code is never rendered inline.
+func (c *Client) PresignGet(ctx context.Context, key string, ttl time.Duration, filename, contentType string) (string, error) {
+	if err := validKey(key); err != nil {
+		return "", err
+	}
+	if ttl <= 0 || ttl > MaxPresignTTL {
+		return "", fmt.Errorf("storage: ttl must be in (0, %s]", MaxPresignTTL)
+	}
+	if !downloadName.MatchString(filename) {
+		return "", fmt.Errorf("storage: invalid download name %q", filename)
+	}
+	req, err := c.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket:                     aws.String(c.bucket),
+		Key:                        aws.String(key),
+		ResponseContentDisposition: aws.String(`attachment; filename="` + filename + `"`),
+		ResponseContentType:        aws.String(contentType),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", fmt.Errorf("storage: presign: %w", err)
+	}
+	return req.URL, nil
 }
 
 func isNotFound(err error) bool {

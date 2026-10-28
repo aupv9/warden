@@ -30,7 +30,7 @@ func assignWorld(rules string, members [][]any) (Input, []dbtest.Step, uuid.UUID
 	steps := []dbtest.Step{
 		{Prefix: "SELECT status FROM scan", Rows: row("running")},
 		{Prefix: "SELECT issue_seq FROM project", Rows: row(0)},
-		{Prefix: "SELECT sla_days FROM organization", Rows: row([]byte(`{}`))},
+		{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{}`), []byte(`{}`))},
 		{Prefix: "SELECT id, fingerprint"},
 		{Prefix: "SELECT assign_rules FROM project", Rows: row([]byte(rules))},
 		{Prefix: "SELECT pm.user_id FROM project_member", Rows: members},

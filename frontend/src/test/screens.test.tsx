@@ -74,7 +74,8 @@ describe("every screen renders with mock data", () => {
     const t = text(await render(`${org()}/projects`));
     expect(t).toContain("Web storefront");
     expect(t).toContain("No scan yet");
-    expect(t).toMatch(/2 Critical/);
+    // WEB: two code issues and (v0.3) Log4Shell from the image scan.
+    expect(t).toMatch(/3 Critical/);
     expect(t).toContain("Exceptions to review");
   });
 
@@ -375,5 +376,170 @@ describe("every screen renders with mock data", () => {
     expect(t).toContain("You're not in an organization yet");
     expect(t).toContain("warden-admin org create");
     expect(t).toContain(db.me.email);
+  });
+
+  // ---- v0.3 ----
+
+  it("scans: image scans in the history, the SBOM download, image rejections, the Source/Image switch", async () => {
+    const base = `${org()}/projects/${web().id}/scans`;
+    const html = await render(base);
+    const t = text(html);
+    expect(t).toContain("api-1.4.2.tar");
+    expect(t).toMatch(/Image ghcr\.io\/acme\/api:1\.4\.2/);
+    expect(t).toContain("more than one image");
+    expect(html).toMatch(/<div class="segmented kind-switch" role="group" aria-label="What to scan">/);
+    expect(html).toMatch(/<button type="button" aria-pressed="true">Source code<\/button>/);
+    expect(html).toContain('accept=".zip,application/zip"');
+
+    const image = db.scans.find((s) => s.file_name === "api-1.4.2.tar")!;
+    const panel = text(await render(`${base}?scan=${image.id}`));
+    expect(panel).toContain("Download SBOM (CycloneDX)");
+    expect(panel).toContain("412 components · 1.2 MB");
+    expect(panel).toContain("Issues tracked under ghcr.io/acme/api");
+    // A source scan has its SBOM too; a partial scan whose Trivy timed out has none.
+    const partial = db.scans.find((s) => s.status === "partial")!;
+    expect(text(await render(`${base}?scan=${partial.id}`))).not.toContain("Download SBOM");
+    const viewIssues = await render(`${base}?scan=${image.id}`);
+    expect(viewIssues).toContain(`href="/orgs/${db.ORG_ID}/projects/${web().id}/issues?target=ghcr.io%2Facme%2Fapi"`);
+
+    const rejected = db.scans.find((s) => s.error_code === "IMAGE_MULTIPLE")!;
+    const r = text(await render(`${base}?scan=${rejected.id}`));
+    expect(r).toContain("Image rejected");
+    expect(r).toMatch(/The archive holds more than one image ?\. Save one image per file/);
+    expect(r).toContain("IMAGE_MULTIPLE");
+    expect(r).toContain("Upload a new .tar");
+  });
+
+  it("issue list: KEV and EPSS on rows, the KEV and Licenses views with counts, the EPSS sort", async () => {
+    const html = await render(`${org()}/issues`);
+    const t = text(html);
+    const active = db.issues.filter((i) => ["open", "assigned", "in_progress", "reopened"].includes(i.status));
+    expect(t).toMatch(new RegExp(`Exploited \\(KEV\\) , ${active.filter((i) => i.kev).length} issues`));
+    expect(t).toMatch(new RegExp(`Licenses , ${active.filter((i) => i.rule_id.startsWith("license:")).length} issues`));
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/issues?kev=true"`);
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/issues?kind=license"`);
+    // The KEV mark has an accessible name; EPSS reads as a percentage.
+    expect(t).toContain("Known exploited (CISA KEV)");
+    expect(t).toContain("EPSS 94%");
+    expect(html).toContain('<option value="-epss">Exploit probability</option>');
+
+    const kev = await render(`${org()}/issues?kev=true&sort=-epss`);
+    expect(kev).toMatch(/<a[^>]*aria-current="true"[^>]*>Exploited \(KEV\)/);
+    expect(text(kev)).toContain(`${active.filter((i) => i.kev).length} issues match`);
+    expect(text(kev)).not.toContain("SQL built from request parameters");
+
+    const lic = text(await render(`${org()}/issues?kind=license`));
+    expect(lic).toContain("@acme/legacy-charts uses GPL-3.0-only (restricted)");
+    expect(lic).not.toContain("log4j-core");
+
+    const filtered = text(await render(`${org()}/issues?source=image&target=ghcr.io%2Facme%2Fapi&epss_min=0.5`));
+    expect(filtered).toContain("Image is ghcr.io/acme/api");
+    expect(filtered).toContain("EPSS ≥ 50%");
+    expect(filtered).toContain("Source is Container images");
+    expect(filtered).toContain("2 issues match");
+  });
+
+  it("issue detail: KEV block, EPSS, CVE linked to NVD, image location", async () => {
+    const log4shell = db.issues.find((i) => i.rule_id === "CVE-2021-44228")!;
+    const html = await render(`${org()}/issues/${log4shell.id}`);
+    const t = text(html);
+    expect(t).toContain("Known exploited (CISA KEV)");
+    expect(t).toContain("added to the catalog on Dec 10, 2021");
+    expect(t).toContain("Used in ransomware campaigns");
+    expect(html).toContain('<a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noopener noreferrer">CISA KEV catalog');
+    expect(t).toContain("94% chance of exploitation in the next 30 days (FIRST EPSS) , higher than 99.9% of scored CVEs");
+    expect(html).toContain('<a href="https://nvd.nist.gov/vuln/detail/CVE-2021-44228" target="_blank" rel="noopener noreferrer">CVE-2021-44228');
+    expect(t).toContain("Image ghcr.io/acme/api · app/lib/log4j-core-2.14.1.jar · org.apache.logging.log4j:log4j-core 2.14.1 → upgrade to 2.17.1");
+    expect(t).toContain("They don't change the severity or the SLA.");
+  });
+
+  it("issue detail: malformed CVE ids from scanner output are never links", async () => {
+    const base = db.issues.find((i) => i.rule_id === "CVE-2023-4911")!;
+    const hostile = { ...base, cve: ["CVE-2023-4911", 'CVE-2023-1"><img src=x onerror=alert(1)>', "javascript:alert(1)", "CVE-2023-4911/../../x"] };
+    const html = await render(`${org()}/issues/${base.id}`, (qc) => qc.setQueryData(qk.issue(db.ORG_ID, base.id), hostile));
+    expect(html.match(/href="https:\/\/nvd\.nist\.gov\/vuln\/detail\/[^"]*"/g)).toEqual(['href="https://nvd.nist.gov/vuln/detail/CVE-2023-4911"']);
+    expect(html).not.toContain("<img");
+    expect(html).not.toMatch(/href="javascript:/);
+    expect(text(html)).toContain("javascript:alert(1)");
+  });
+
+  it("issue detail: a license issue shows the license, not an upgrade", async () => {
+    const gpl = db.issues.find((i) => i.rule_id === "license:GPL-3.0-only")!;
+    const t = text(await render(`${org()}/issues/${gpl.id}`));
+    expect(t).toMatch(/License GPL-3\.0-only \( ?restricted ?\) in @acme\/legacy-charts 2\.1\.0/);
+    expect(t).not.toContain("no fixed version yet");
+    expect(t).not.toContain("Exploitation");
+  });
+
+  it("org settings: the license policy form for a security lead, vulnerability data for everyone", async () => {
+    const html = await render(`${org()}/settings`);
+    const t = text(html);
+    expect(t).toContain("License policy");
+    expect(t).toContain("Apply recommended preset");
+    expect(t).toContain("License data depends on the lockfile.");
+    expect(html.match(/<select id="license-cat-[a-z]+"/g)).toHaveLength(7);
+    expect(html).toMatch(/<select id="license-cat-forbidden"[^>]*>.*<option value="block" selected="">Block · High issue/s);
+    expect(t).toContain("SSPL-1.0");
+    expect(html).toContain('aria-label="Remove SSPL-1.0 from Deny"');
+    expect(t).toContain("2 of 100");
+    expect(html).toMatch(/<button type="submit"[^>]*disabled=""[^>]*>Save license policy/);
+    expect(t).toContain("Vulnerability data");
+    expect(t).toContain("CISA KEV catalog");
+    expect(t).toContain("1,484 CVEs");
+    expect(t).toContain("Out of date");
+    expect(t).toMatch(/Out of date or missing: FIRST EPSS scores ?\./);
+    expect(t).toContain("make mirror");
+  });
+
+  it("org settings: members read the license policy; it says Off until it is set", async () => {
+    const t = text(await render(`/orgs/${db.ORG2_ID}/settings`));
+    expect(t).toContain("License policy");
+    expect(t).toMatch(/Off\. No license issues are created/);
+    expect(t).toContain("Only security leads can change the license policy");
+    expect(t).not.toContain("Save license policy");
+    expect(t).toContain("Vulnerability data");
+  });
+
+  it("overview: a Known exploited tile linking to the KEV view", async () => {
+    const html = await render(`${org()}/overview`);
+    expect(html).toMatch(new RegExp(`<a class="stat-label" href="/orgs/${db.ORG_ID}/issues\\?kev=true"[^>]*>Known exploited</a>`));
+    expect(text(html)).toContain("Open, in CISA KEV");
+  });
+
+  it("mock API follows the v0.3 contract: license policy rules, SBOM 404, image scan creation", async () => {
+    const { mockFetch } = await import("../api/mock/server");
+    const call = async (method: string, path: string, body?: unknown) => {
+      const r = await mockFetch(`/api/v1${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { status: r.status, json: (await r.json()) as { data: Record<string, unknown> | null; error: { code: string; metadata?: { fields?: Record<string, string> } } | null } };
+    };
+    const lp = `/orgs/${db.ORG_ID}/license-policy`;
+    const before = db.licensePolicies[db.ORG_ID]!;
+    try {
+      expect((await call("GET", `/orgs/${db.ORG2_ID}/license-policy`)).json.data?.enabled).toBe(false);
+      expect((await call("PUT", `/orgs/${db.ORG2_ID}/license-policy`, { categories: before.categories, deny: [], allow: [] })).status).toBe(403);
+      const bad = await call("PUT", lp, { categories: { ...before.categories, unknown: "maybe" }, deny: ["MIT", "not an id"], allow: ["mit"] });
+      expect(bad.status).toBe(422);
+      expect(bad.json.error?.metadata?.fields).toEqual({ "categories.unknown": expect.any(String), "deny[1]": expect.any(String), "allow[0]": "also in deny" });
+      const ok = await call("PUT", lp, { categories: before.categories, deny: [], allow: ["MIT"] });
+      expect(ok.json.data).toMatchObject({ enabled: true, deny: [], allow: ["MIT"] });
+    } finally {
+      db.licensePolicies[db.ORG_ID] = before;
+    }
+
+    const noSbom = db.scans.find((s) => s.status === "partial")!;
+    expect((await call("GET", `/orgs/${db.ORG_ID}/scans/${noSbom.id}/sbom`)).status).toBe(404);
+    const image = db.scans.find((s) => s.file_name === "api-1.4.2.tar")!;
+    const link = await call("GET", `/orgs/${db.ORG_ID}/scans/${image.id}/sbom`);
+    expect(link.json.data).toMatchObject({ format: "cyclonedx-json", components: 412, url: expect.stringMatching(/^https:\/\//) });
+
+    const scans = `/orgs/${db.ORG_ID}/projects/${web().id}/scans`;
+    const sha = "a".repeat(64);
+    const badImage = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api:1", tools: ["gitleaks"] });
+    expect(badImage.json.error?.metadata?.fields).toEqual({ target: expect.any(String), tools: expect.any(String) });
+    const created = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api", image_ref: "ghcr.io/acme/api:2" });
+    expect(created.status).toBe(201);
+    const made = (created.json.data as { scan: { id: string; kind: string; tools: string[]; target: string } }).scan;
+    expect(made).toMatchObject({ kind: "image", tools: ["trivy"], target: "ghcr.io/acme/api" });
+    db.scans.splice(db.scans.findIndex((s) => s.id === made.id), 1);
   });
 });

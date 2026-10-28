@@ -4,6 +4,8 @@ import { qk } from "../keys";
 import type {
   AddOrgMemberBody,
   ItemList,
+  LicensePolicy,
+  LicensePolicyInput,
   Org,
   OrgMember,
   OrgRole,
@@ -11,6 +13,7 @@ import type {
   SignInPolicyInput,
   SignInSettings,
   UpdatePolicyBody,
+  VulnData,
 } from "../types";
 
 const base = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}`;
@@ -63,6 +66,37 @@ export function useUpdateSignInPolicy(orgId: string) {
         qc.invalidateQueries({ queryKey: qk.me }),
       ]);
     },
+  });
+}
+
+// ---- v0.3: license policy and vulnerability data ----
+
+/** Any member reads the license policy; it is off until a security lead sets it. */
+export function useLicensePolicy(orgId: string) {
+  return useQuery({
+    queryKey: qk.licensePolicy(orgId),
+    queryFn: ({ signal }) => api<LicensePolicy>(`${base(orgId)}/license-policy`, { signal }),
+  });
+}
+
+/** Security leads only (configure_policy). It applies from the next scan, so nothing else needs
+ *  refetching. */
+export function useUpdateLicensePolicy(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LicensePolicyInput) => api<LicensePolicy>(`${base(orgId)}/license-policy`, { method: "PUT", body }),
+    onSuccess: (policy) => {
+      qc.setQueryData(qk.licensePolicy(orgId), policy);
+    },
+  });
+}
+
+/** Freshness of the Trivy DB, CISA KEV and FIRST EPSS (any member). */
+export function useVulnData(orgId: string) {
+  return useQuery({
+    queryKey: qk.vulnData(orgId),
+    queryFn: ({ signal }) => api<VulnData>(`${base(orgId)}/vuln-data`, { signal }),
+    staleTime: 5 * 60_000,
   });
 }
 

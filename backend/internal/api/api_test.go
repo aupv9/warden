@@ -24,6 +24,15 @@ type fakeObjects struct {
 	sizes      map[string]int64
 	presignErr error
 	headErr    error
+	gets       []string // key|filename|content type of each PresignGet
+}
+
+func (o *fakeObjects) PresignGet(_ context.Context, key string, ttl time.Duration, filename, contentType string) (string, error) {
+	if o.presignErr != nil {
+		return "", o.presignErr
+	}
+	o.gets = append(o.gets, key+"|"+filename+"|"+contentType)
+	return "https://s3.test/" + key + "?ttl=" + ttl.String(), nil
 }
 
 func (o *fakeObjects) PresignPut(_ context.Context, key string, size int64, sum string, _ time.Duration) (string, map[string]string, error) {
