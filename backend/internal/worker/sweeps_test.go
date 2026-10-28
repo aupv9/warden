@@ -23,7 +23,7 @@ import (
 func sweepEnv(t *testing.T, steps ...dbtest.Step) (*Env, *dbtest.DB, *fakeStore, *[]uuid.UUID, []uuid.UUID) {
 	orgs := []uuid.UUID{uuid.New(), uuid.New()}
 	all := append([]dbtest.Step{{Prefix: "SELECT id FROM organization", Rows: [][]any{{orgs[0]}, {orgs[1]}}},
-		{Prefix: "SELECT id, sbom_key FROM scan"}}, steps...)
+		{Prefix: "SELECT id, sbom_key, sbom_spdx_key FROM scan"}}, steps...)
 	db := dbtest.Loose(t, all...)
 	store := &fakeStore{objects: map[string][]byte{}}
 	var scoped []uuid.UUID
@@ -93,7 +93,7 @@ func TestPurgeExpiredSBOMs(t *testing.T) {
 	env, db, store, _, _ := sweepEnv(t,
 		dbtest.Step{Prefix: "UPDATE scan SET status = 'cancelled'"},
 		dbtest.Step{Prefix: "SELECT id, object_key, tools FROM scan"},
-		dbtest.Step{Prefix: "SELECT id, sbom_key FROM scan", Rows: [][]any{{a, "sboms/o/a.cdx.json"}, {b, "sboms/o/b.cdx.json"}},
+		dbtest.Step{Prefix: "SELECT id, sbom_key, sbom_spdx_key FROM scan", Rows: [][]any{{a, "sboms/o/a.cdx.json", "sboms/o/a.spdx.json"}, {b, "sboms/o/b.cdx.json", nil}},
 			Args: func(args []any) error {
 				if !args[0].(time.Time).Equal(time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)) {
 					t.Errorf("cutoff %v", args[0])
@@ -105,19 +105,22 @@ func TestPurgeExpiredSBOMs(t *testing.T) {
 	if err := env.PurgeExpiredSources(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.deleted) != 4 || store.deleted[0] != "sboms/o/a.cdx.json" {
+	// Per org (the fake returns the same rows for each): a's SPDX and CycloneDX files, then b's only file.
+	if len(store.deleted) != 6 || store.deleted[0] != "sboms/o/a.spdx.json" || store.deleted[1] != "sboms/o/a.cdx.json" ||
+		store.deleted[2] != "sboms/o/b.cdx.json" {
 		t.Fatalf("%v", store.deleted)
 	}
 	c := db.Calls("UPDATE scan SET sbom_key = NULL")
 	if len(c) != 4 || c[0].Args[0] != a || c[0].Args[1] != "sboms/o/a.cdx.json" ||
-		!strings.Contains(c[0].SQL, "sbom_size = NULL, sbom_sha256 = NULL, sbom_components = NULL, sbom_expires_at = NULL") {
+		!strings.Contains(c[0].SQL, "sbom_size = NULL, sbom_sha256 = NULL, sbom_components = NULL, sbom_expires_at = NULL, "+
+			"sbom_spdx_key = NULL, sbom_spdx_size = NULL, sbom_spdx_sha256 = NULL") {
 		t.Fatalf("%v", c)
 	}
 
 	env, db, store, _, _ = sweepEnv(t,
 		dbtest.Step{Prefix: "UPDATE scan SET status = 'cancelled'"},
 		dbtest.Step{Prefix: "SELECT id, object_key, tools FROM scan"},
-		dbtest.Step{Prefix: "SELECT id, sbom_key FROM scan", Rows: [][]any{{a, "sboms/o/a.cdx.json"}}},
+		dbtest.Step{Prefix: "SELECT id, sbom_key, sbom_spdx_key FROM scan", Rows: [][]any{{a, "sboms/o/a.cdx.json", nil}}},
 	)
 	store.delErr = errors.New("s3 down")
 	if err := env.PurgeExpiredSources(context.Background()); err == nil || len(db.Calls("UPDATE scan SET sbom_key")) != 0 {
@@ -126,7 +129,7 @@ func TestPurgeExpiredSBOMs(t *testing.T) {
 	env, _, _, _, _ = sweepEnv(t,
 		dbtest.Step{Prefix: "UPDATE scan SET status = 'cancelled'"},
 		dbtest.Step{Prefix: "SELECT id, object_key, tools FROM scan"},
-		dbtest.Step{Prefix: "SELECT id, sbom_key FROM scan", Err: errors.New("down")},
+		dbtest.Step{Prefix: "SELECT id, sbom_key, sbom_spdx_key FROM scan", Err: errors.New("down")},
 	)
 	if err := env.PurgeExpiredSources(context.Background()); err == nil {
 		t.Fatal("error swallowed")

@@ -34,6 +34,10 @@ var tokenRoutes = map[string][]string{
 	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/sbom": {service.ScopeScanWrite, service.ScopeIssuesRead},
 	"GET " + Prefix + "/orgs/:org_id/issues":              {service.ScopeIssuesRead},
 	"GET " + Prefix + "/orgs/:org_id/issues/:issue_id":    {service.ScopeIssuesRead},
+	// The project's own inventory and targets; the org-wide component search
+	// spans projects, so no token may call it.
+	"GET " + Prefix + "/orgs/:org_id/projects/:project_id/components": {service.ScopeIssuesRead},
+	"GET " + Prefix + "/orgs/:org_id/projects/:project_id/targets":    {service.ScopeIssuesRead},
 }
 
 func errTokenScope() error {

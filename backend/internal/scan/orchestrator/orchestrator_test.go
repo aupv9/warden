@@ -295,7 +295,8 @@ const trivyReport = `{"Results":[{"Target":"app/package-lock.json","Class":"lang
 func TestTrivyArtifacts(t *testing.T) {
 	data, sha := zipBytes(t)
 	d := newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
-	d.trivyOut = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"a"}]}`}
+	d.trivyOut = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"a"}]}`,
+		"sbom.spdx.json": `{"spdxVersion":"SPDX-2.3","name":"/src","packages":[{"name":"a"},{"name":"b"}]}`}
 	j := newJob(sha, "trivy")
 	j.ProjectKey = "WEB"
 	out, err := Execute(context.Background(), j, d)
@@ -305,16 +306,26 @@ func TestTrivyArtifacts(t *testing.T) {
 	if len(out.Licenses) != 1 || out.Licenses[0].FilePath != "package-lock.json" || out.Licenses[0].License != "GPL-3.0-only" {
 		t.Fatalf("%+v", out.Licenses)
 	}
+	if len(out.Packages) != 1 || out.Packages[0].FilePath != "package-lock.json" || out.Packages[0].Ecosystem != "unknown" {
+		t.Fatalf("%+v", out.Packages)
+	}
 	if out.SBOM == nil || out.SBOM.Components != 1 || !strings.Contains(string(out.SBOM.Data), `"name":"WEB"`) ||
 		!strings.Contains(string(out.SBOM.Data), j.ScanID) {
 		t.Fatalf("%+v", out.SBOM)
 	}
+	if out.SPDX == nil || out.SPDX.Components != 2 || !strings.Contains(string(out.SPDX.Data), `"name":"WEB"`) ||
+		!strings.Contains(string(out.SPDX.Data), `"documentNamespace":"urn:uuid:`+j.ScanID+`"`) {
+		t.Fatalf("%+v", out.SPDX)
+	}
 	assertCleaned(t, d, j)
 
-	// A bad SBOM costs only the SBOM.
+	// A bad SBOM costs only that SBOM; a report without packages empties the
+	// inventory (non-nil) rather than keeping it.
 	d = newDeps(t, data, map[string]sandbox.ToolStatus{"trivy": sandbox.Succeeded})
-	d.trivyOut = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"SPDX"}`}
-	if out, err := Execute(context.Background(), newJob(sha, "trivy"), d); err != nil || out.Status != Completed || out.SBOM != nil || len(out.Licenses) != 1 {
+	d.trivyOut = map[string]string{"trivy.json": `{"Results":[]}`, "sbom.cdx.json": `{"bomFormat":"SPDX"}`,
+		"sbom.spdx.json": `{"spdxVersion":"SPDX-3.0"}`}
+	if out, err := Execute(context.Background(), newJob(sha, "trivy"), d); err != nil || out.Status != Completed || out.SBOM != nil ||
+		out.SPDX != nil || out.Packages == nil || len(out.Packages) != 0 {
 		t.Fatal(out, err)
 	}
 	// Without a valid JSON report Trivy's results are incomplete: the tool fails.

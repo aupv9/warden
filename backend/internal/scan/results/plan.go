@@ -67,6 +67,9 @@ type Plan struct {
 	NeedsConfirmation bool
 	ToolCounts        map[string]int // findings per succeeded tool
 	Stats             Stats
+	// Components: how the component inventory changed; nil when it was kept
+	// (Trivy didn't succeed).
+	Components *ComponentStats
 }
 
 // SucceededTools are the tools whose results are complete for this scan. Only
