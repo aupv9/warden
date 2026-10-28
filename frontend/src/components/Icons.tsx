@@ -186,6 +186,17 @@ export function IssuesIcon({ size = 15 }: P) {
   );
 }
 
+/** v0.4: a package (the component inventory). */
+export function PackageIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+      <path d="M4 7.5l8 4.5 8-4.5" />
+      <path d="M12 12v9" />
+    </Svg>
+  );
+}
+
 export function ProjectsIcon({ size = 15 }: P) {
   return (
     <Svg size={size}>

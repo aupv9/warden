@@ -34,6 +34,7 @@ import {
 import { issueActions, workflowSteps } from "../lib/issueActions";
 import type { IssueAction } from "../lib/issueActions";
 import { formatEpss, isVulnIssue, KEV_CATALOG_URL, licenseOf, nvdUrl, percentileText } from "../lib/intel";
+import { maliciousAdvisory, MALICIOUS_REMEDIATION } from "../lib/malicious";
 import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
 import { showToast } from "../lib/toast";
@@ -247,6 +248,7 @@ function IssueView({
 
       <div className="detail-grid">
         <div className="stack detail-main">
+          <MaliciousCard issue={issue} />
           <ExploitCard issue={issue} />
           <WhereCard issue={issue} />
           {issue.description && (
@@ -257,6 +259,8 @@ function IssueView({
           <Card title="How to fix" titleId={`${titleId}-fix`}>
             {issue.remediation ? (
               <p className="prose">{issue.remediation}</p>
+            ) : maliciousAdvisory(issue) ? (
+              <p className="prose">{MALICIOUS_REMEDIATION}</p>
             ) : (
               <p className="muted">The scanner gave no fix advice for this rule.</p>
             )}
@@ -355,12 +359,69 @@ function ExploitCard({ issue }: { issue: Issue }) {
   );
 }
 
+/** v0.4: an OSV malicious-package advisory lists this package version. Shown first: unlike a
+ *  vulnerability, there is no safe version of the same release to upgrade to. The OSV link is
+ *  built only from a well-formed MAL id (lib/malicious.ts); package names stay text. */
+function MaliciousCard({ issue }: { issue: Issue }) {
+  const advisory = maliciousAdvisory(issue);
+  if (!advisory) return null;
+  const titleId = `malicious-${issue.id}`;
+  return (
+    <Card title="Malicious package" titleId={titleId} className="malicious-card">
+      <div className="stack" style={{ gap: 12 }}>
+        <div className="kev-block mal-block">
+          <span className="tag mal-tag" aria-hidden="true">
+            Malicious
+          </span>
+          <div className="stack" style={{ gap: 4 }}>
+            <strong>
+              {issue.package_name ? (
+                <>
+                  <span className="mono">
+                    {issue.package_name} {issue.package_version}
+                  </span>{" "}
+                  is listed as malicious
+                </>
+              ) : (
+                "This package version is listed as malicious"
+              )}
+            </strong>
+            <span>
+              Installing it can run the attacker's code wherever it was installed: developer machines, CI runners and the images built
+              from them.
+            </span>
+            <span>
+              Advisory{" "}
+              {advisory.url ? (
+                <a href={advisory.url} target="_blank" rel="noopener noreferrer" className="mono">
+                  {advisory.id}
+                  <span className="visually-hidden"> on OSV (opens in a new tab)</span>
+                </a>
+              ) : (
+                <span className="mono">{advisory.id}</span>
+              )}
+            </span>
+          </div>
+        </div>
+        <p className="mal-fix">
+          <strong>{MALICIOUS_REMEDIATION}</strong> Treat secrets the build or the installing machines could read as exposed.
+        </p>
+        <p className="faint small">
+          The advisory raised this issue as Critical. It moves to Fixed when the package is gone from the next scan; advisories never
+          close an issue.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 function WhereCard({ issue }: { issue: Issue }) {
   const lines = issue.snippet ? issue.snippet.replace(/\n$/, "").split("\n") : [];
   const first = issue.start_line ?? 1;
   const last = issue.end_line ?? issue.start_line ?? 0;
   const where = issue.file_path ?? issue.package_name ?? "";
   const license = licenseOf(issue);
+  const malicious = !!maliciousAdvisory(issue);
   return (
     <Card
       title="Where"
@@ -424,7 +485,9 @@ function WhereCard({ issue }: { issue: Issue }) {
             <span className="mono">
               {issue.package_name} {issue.package_version}
             </span>
-            {issue.fixed_version ? (
+            {malicious ? (
+              <span className="muted"> · remove this version</span>
+            ) : issue.fixed_version ? (
               <>
                 {" "}
                 → upgrade to <span className="mono">{issue.fixed_version}</span>
@@ -470,6 +533,7 @@ function DetailsCard({ issue }: { issue: Issue }) {
   const org = useOrg(orgId);
   const sla = issue.severity !== "info" ? org.data?.sla_days[issue.severity] : undefined;
   const license = licenseOf(issue);
+  const advisory = maliciousAdvisory(issue);
   const scanLink = (scan: { id: string; created_at: string }) => (
     <Link to={`/orgs/${orgId}/projects/${issue.project_id}/scans?scan=${encodeURIComponent(scan.id)}`}>
       Scan of {formatDateTime(scan.created_at)}
@@ -509,6 +573,21 @@ function DetailsCard({ issue }: { issue: Issue }) {
         <dd>{TOOL_LABELS[issue.tool]}</dd>
         <dt>Rule</dt>
         <dd className="mono">{issue.rule_id}</dd>
+        {advisory && (
+          <>
+            <dt>Advisory</dt>
+            <dd className="mono">
+              {advisory.url ? (
+                <a href={advisory.url} target="_blank" rel="noopener noreferrer">
+                  {advisory.id}
+                  <span className="visually-hidden"> on OSV (opens in a new tab)</span>
+                </a>
+              ) : (
+                advisory.id
+              )}
+            </dd>
+          </>
+        )}
         {issue.cwe.length > 0 && (
           <>
             <dt>CWE</dt>
@@ -596,7 +675,9 @@ export function describeEvent(e: IssueEvent): { who: string; what: string } {
   const who = e.actor ? userName(e.actor) : "";
   switch (e.type) {
     case "created":
-      return { who: "Created", what: "from a scan" };
+      // v0.4: an issue opened by a malicious-package advisory without a scan carries the
+      // server's note ("Found by malicious-package advisory MAL-… (no scan)") instead.
+      return { who: "Created", what: e.note ? "" : "from a scan" };
     case "status_changed":
       return { who: who || "Status", what: `${who ? "changed status " : "changed "}from ${statusText(e.from_value)} to ${statusText(e.to_value)}` };
     case "assigned":

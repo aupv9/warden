@@ -9,6 +9,7 @@ import { Card } from "../components/Card";
 import { BarRows, Legend, NewFixedChart, StackedBar, TrendPanels } from "../components/Charts";
 import { Select } from "../components/Field";
 import { PageHeader, Segmented } from "../components/PageHeader";
+import { AlertIcon } from "../components/Icons";
 import { ErrorState, Skeleton, SkeletonBlock } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { SEVERITY_LABELS } from "../lib/format";
@@ -71,6 +72,10 @@ export function OverviewPage() {
           )}
         </div>
 
+        {/* v0.4: a malicious package is never a trend to watch: it is said first, above the charts. */}
+        {(counts.data?.malicious ?? 0) > 0 && (
+          <MaliciousBanner count={counts.data!.malicious} scope={projectName} to={issueListHref(orgId, { ...DEFAULT_FILTERS, kind: "malicious", project: projectId })} />
+        )}
         {metrics.isError ? (
           <ErrorState error={metrics.error} onRetry={() => void metrics.refetch()} what="the overview" />
         ) : !metrics.data ? (
@@ -93,6 +98,26 @@ export function OverviewPage() {
             />
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function MaliciousBanner({ count, scope, to }: { count: number; scope?: string; to: string }) {
+  return (
+    <div className="banner banner-error malicious-banner" role="status">
+      <AlertIcon />
+      <div className="stack" style={{ gap: 4 }}>
+        <strong>
+          {`${count === 1 ? "1 malicious-package issue is open" : `${count} malicious-package issues are open`}${scope ? ` in ${scope}` : ""}.`}
+        </strong>
+        <span>
+          OSV advisories list package versions your scans found as malicious. Remove each one and rotate any credentials the build had
+          access to.
+        </span>
+        <span>
+          <Link to={to}>View malicious-package issues</Link>
+        </span>
       </div>
     </div>
   );

@@ -1,6 +1,18 @@
 import type { ReactNode } from "react";
 import type { IssueStatus, ScanStatus, Severity, ToolStatus } from "../api/types";
 import { SCAN_STATUS_LABELS, SEVERITY_LABELS, STATUS_LABELS, TOOL_STATUS_LABELS } from "../lib/format";
+import { MALICIOUS_LABEL } from "../lib/malicious";
+
+/** v0.4: a red "Malicious" tag (an OSV malicious-package advisory), with its full accessible
+ *  name; the word carries the meaning, the colour is a second cue. */
+export function MaliciousTag() {
+  return (
+    <span className="tag mal-tag" title={MALICIOUS_LABEL}>
+      <span aria-hidden="true">Malicious</span>
+      <span className="visually-hidden">{MALICIOUS_LABEL}</span>
+    </span>
+  );
+}
 
 type Tone = "default" | "success" | "accent" | "danger" | "warn";
 

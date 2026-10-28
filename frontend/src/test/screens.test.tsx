@@ -299,7 +299,7 @@ describe("every screen renders with mock data", () => {
     expect(t).toContain("Issue assigned to you");
     expect(t).toContain("Scan finished");
     expect(t).toContain("Save preferences");
-    expect(html).toContain('aria-label="Notifications, 3 unread"');
+    expect(html).toContain('aria-label="Notifications, 5 unread"');
     expect(html).toContain('role="switch"');
   });
 
@@ -541,5 +541,233 @@ describe("every screen renders with mock data", () => {
     const made = (created.json.data as { scan: { id: string; kind: string; tools: string[]; target: string } }).scan;
     expect(made).toMatchObject({ kind: "image", tools: ["trivy"], target: "ghcr.io/acme/api" });
     db.scans.splice(db.scans.findIndex((s) => s.id === made.id), 1);
+  });
+});
+
+describe("v0.4 screens: component inventory, malicious packages, SPDX", () => {
+  const org = () => `/orgs/${db.ORG_ID}`;
+  const labs = () => `/orgs/${db.ORG2_ID}`;
+  const web = () => db.projects[0]!;
+  const call = async (method: string, path: string) => {
+    const { mockFetch } = await import("../api/mock/server");
+    const r = await mockFetch(`/api/v1${path}`, { method });
+    return { status: r.status, json: (await r.json()) as { data: { items?: Record<string, unknown>[]; next_cursor?: string | null } & Record<string, unknown>; error: { code: string } | null } };
+  };
+
+  it("components page: the sidebar entry, the table, the malicious tag, the filters", async () => {
+    const html = await render(`${org()}/components`);
+    const t = text(html);
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/components"`);
+    expect(t).toContain("Components");
+    expect(t).toContain("acme-ui-icons");
+    expect(t).toContain("Malicious package (OSV advisory)");
+    expect(html).toContain('aria-label="Ecosystem"');
+    expect(html).toContain('aria-label="Project"');
+    expect(html).toMatch(/<button type="button" class="toggle-chip" aria-pressed="false">/);
+    // Archived projects (LEG's jquery) and another org's components (LAB's PyPI) are left out.
+    expect(t).not.toContain("jquery");
+    expect(t).not.toContain("acme-dataloader");
+    // A row is a button that opens "Used in" (a disclosure, not a link).
+    expect(html).toMatch(/<button type="button" class="row-button mono comp-name"[^>]*aria-expanded="false"[^>]*>axios/);
+    expect(t).toMatch(/Showing 50 components/);
+
+    const mal = text(await render(`${org()}/components?malicious=true`));
+    expect(mal).toContain("acme-ui-icons");
+    expect(mal).not.toContain("axios");
+    const version = text(await render(`${org()}/components?q=${encodeURIComponent("zod 3.25.76")}`));
+    expect(version).toContain("zod");
+    expect(version).not.toContain("axios");
+    const none = text(await render(`${org()}/components?q=nothing-is-called-this&ecosystem=PyPI`));
+    expect(none).toContain("No components match these filters");
+    expect(none).toContain("Name starts with “nothing-is-called-this”");
+  });
+
+  it("component names, paths and purls are text, never markup or links", async () => {
+    const hostile = {
+      ...db.inventory[0]!,
+      name: '<img src=x onerror=alert(1)>',
+      version: '1.0.0"><script>alert(1)</script>',
+      purl: "javascript:alert(1)",
+      path: "<a href=//evil.example>lockfile</a>",
+      licenses: ["<b>MIT</b>"],
+    };
+    db.inventory.push(hostile);
+    try {
+      const html = await render(`${org()}/components?q=${encodeURIComponent("<img")}`);
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain("<script>");
+      expect(html).not.toContain("<b>MIT");
+      expect(html).not.toMatch(/href="javascript:/);
+      expect(text(html)).toContain("&lt;img src=x onerror=alert(1)&gt;");
+      const tab = await render(`${org()}/projects/${web().id}/components?q=${encodeURIComponent("<img")}`);
+      expect(tab).not.toContain("<img");
+      expect(tab).not.toContain('<a href=//evil.example');
+      expect(tab).not.toMatch(/href="\/\/evil/);
+    } finally {
+      db.inventory.splice(db.inventory.indexOf(hostile), 1);
+    }
+  });
+
+  it("a project's Components tab: per target, with the target filter from GET …/targets", async () => {
+    const base = `${org()}/projects/${web().id}`;
+    const html = await render(`${base}/components`);
+    const t = text(html);
+    expect(html).toContain(`href="${base}/components"`);
+    expect(t).toContain("org.apache.logging.log4j:log4j-core");
+    expect(t).toContain("Source code");
+    expect(html).toMatch(/<select[^>]*aria-label="Target"/);
+    expect(html).toContain('<option value="(source)">Source code</option>');
+    expect(html).toContain('<option value="ghcr.io/acme/api">ghcr.io/acme/api</option>');
+    const image = text(await render(`${base}/components?target=ghcr.io%2Facme%2Fapi`));
+    expect(image).toContain("libssl3");
+    expect(image).not.toContain("react-dom");
+    const source = text(await render(`${base}/components?target=%28source%29`));
+    expect(source).toContain("react-dom");
+    expect(source).not.toContain("libssl3");
+  });
+
+  it("issue list: the Image filter lists the project's image targets; the Malicious view and tag", async () => {
+    const base = `${org()}/projects/${web().id}`;
+    // The phone sheet isn't rendered on the server; the chip for a target in the URL is.
+    const chip = text(await render(`${base}/issues?target=ghcr.io%2Facme%2Fapi`));
+    expect(chip).toContain("Image is ghcr.io/acme/api");
+
+    const html = await render(`${org()}/issues`);
+    const t = text(html);
+    expect(t).toMatch(/Malicious , 1 issues/);
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/issues?kind=malicious"`);
+    const mal = await render(`${org()}/issues?kind=malicious`);
+    expect(mal).toMatch(/<a[^>]*aria-current="true"[^>]*>Malicious/);
+    expect(text(mal)).toContain("acme-ui-icons 3.1.4 is a malicious package (MAL-2026-1873)");
+    expect(text(mal)).toContain("Malicious package (OSV advisory)");
+    expect(text(mal)).toContain("1 issue match");
+    // Vulnerabilities exclude malicious packages and license issues.
+    const vulns = text(await render(`${org()}/issues?kind=vulnerability`));
+    expect(vulns).not.toContain("is a malicious package");
+    expect(vulns).toContain("log4j-core");
+  });
+
+  it("issue page: the Malicious package card, the OSV link only for a MAL id, the remediation", async () => {
+    const issue = db.issues.find((i) => i.rule_id === "malicious:MAL-2026-1873")!;
+    const html = await render(`${org()}/issues/${issue.id}`);
+    const t = text(html);
+    expect(t).toContain("Malicious package");
+    expect(t).toContain("Remove this version and rotate any credentials the build had access to.");
+    expect(html).toContain('<a href="https://osv.dev/vulnerability/MAL-2026-1873" target="_blank" rel="noopener noreferrer"');
+    expect(t).toContain("remove this version");
+    expect(t).not.toContain("no fixed version yet");
+    expect(t).not.toContain("Exploitation");
+
+    const hostile = { ...issue, rule_id: 'malicious:MAL-2026-1"><img src=x>/../../x' };
+    const bad = await render(`${org()}/issues/${issue.id}`, (qc) => qc.setQueryData(qk.issue(db.ORG_ID, issue.id), hostile));
+    expect(bad).not.toContain("osv.dev");
+    expect(bad).not.toContain("<img");
+    expect(text(bad)).toContain("Remove this version and rotate any credentials");
+  });
+
+  it("issue page: an issue opened by an advisory without a scan says so", async () => {
+    const lab = db.issues.find((i) => i.rule_id === "malicious:MAL-2026-2290")!;
+    const t = text(await render(`${labs()}/issues/${lab.id}`));
+    expect(t).toContain("Found by malicious-package advisory MAL-2026-2290 (no scan)");
+    expect(t).not.toContain("from a scan");
+  });
+
+  it("license issues read the category from license_category, not the title", async () => {
+    const gpl = db.issues.find((i) => i.rule_id === "license:GPL-3.0-only")!;
+    const retitled = { ...gpl, title: "@acme/legacy-charts uses GPL-3.0-only", license_category: "reciprocal" as const };
+    const t = text(await render(`${org()}/issues/${gpl.id}`, (qc) => qc.setQueryData(qk.issue(db.ORG_ID, gpl.id), retitled)));
+    expect(t).toMatch(/License GPL-3\.0-only \( ?reciprocal ?\)/);
+  });
+
+  it("overview: a banner when malicious-package issues are open, none otherwise", async () => {
+    const html = await render(`${labs()}/overview`);
+    const t = text(html);
+    expect(t).toContain("1 malicious-package issue is open.");
+    expect(html).toContain(`href="/orgs/${db.ORG2_ID}/issues?kind=malicious"`);
+    // In Acme Engineering, scoped to WEB (no malicious package there): no banner.
+    expect(text(await render(`${org()}/overview?project=${web().id}`))).not.toContain("malicious-package issue");
+  });
+
+  it("scans: CycloneDX and SPDX downloads; a scan from before v0.4 offers CycloneDX only", async () => {
+    const base = `${org()}/projects/${web().id}/scans`;
+    const image = db.scans.find((s) => s.file_name === "api-1.4.2.tar")!;
+    const panel = text(await render(`${base}?scan=${image.id}`));
+    expect(panel).toContain("Download SBOM (CycloneDX)");
+    expect(panel).toContain("Download SBOM (SPDX)");
+    expect(panel).toContain("CycloneDX and SPDX JSON · 412 components · 1.2 MB (CycloneDX)");
+    const old = db.scans.find((s) => s.file_name === "storefront-2.2.zip")!;
+    const oldPanel = text(await render(`${base}?scan=${old.id}`));
+    expect(oldPanel).toContain("Download SBOM (CycloneDX)");
+    expect(oldPanel).not.toContain("SPDX");
+  });
+
+  it("vulnerability data lists the OSV feeds with their unsupported counts; preferences list the new type", async () => {
+    const t = text(await render(`${org()}/settings`));
+    expect(t).toContain("OSV malicious packages · npm");
+    expect(t).toContain("OSV malicious packages · crates.io");
+    expect(t).toContain("214,802 advisories");
+    expect(t).toContain("37 advisories skipped: version ranges not supported");
+    expect(t).toContain("never closes or hides one");
+    const prefs = text(await render(`${org()}/preferences`));
+    expect(prefs).toContain("Malicious package found");
+    expect(prefs).toMatch(/6 ?of ?8 ?emailed/);
+  });
+
+  it("mock API follows the v0.4 contract: components, usage, targets, visibility, SBOM formats", async () => {
+    const list = await call("GET", `/orgs/${db.ORG_ID}/components?limit=200`);
+    expect(list.status).toBe(200);
+    const items = list.json.data.items!;
+    expect(Object.keys(items[0]!).sort()).toEqual(["ecosystem", "licenses", "malicious", "name", "open_issues", "projects", "purl", "targets", "version"]);
+    const axios = items.find((c) => c.name === "axios")!;
+    expect(axios).toMatchObject({ projects: 2, targets: 2, malicious: false });
+    expect(items.find((c) => c.name === "lodash" && c.version === "4.17.15")).toMatchObject({ open_issues: 1 });
+    expect((await call("GET", `/orgs/${db.ORG_ID}/components?ecosystem=${encodeURIComponent("a/b")}`)).status).toBe(422);
+    expect((await call("GET", `/orgs/${db.ORG_ID}/components?q=${"a".repeat(129)}`)).status).toBe(422);
+    // PyPI names are normalised for the prefix search.
+    const py = await call("GET", `/orgs/${db.ORG2_ID}/components?q=pyyaml`);
+    expect(py.json.data.items!.map((c) => c.name)).toEqual(["PyYAML"]);
+
+    const usage = await call("GET", `/orgs/${db.ORG_ID}/components/usage?ecosystem=npm&name=zod&version=3.25.76`);
+    expect(usage.json.data.items!.map((u) => u.project_key)).toEqual(["PAY", "WEB"]);
+    expect((await call("GET", `/orgs/${db.ORG_ID}/components/usage?ecosystem=npm&name=zod`)).status).toBe(422);
+
+    const targets = await call("GET", `/orgs/${db.ORG_ID}/projects/${web().id}/targets`);
+    expect(targets.json.data.items).toEqual([
+      expect.objectContaining({ target: "", kind: "source" }),
+      expect.objectContaining({ target: "ghcr.io/acme/api", kind: "image" }),
+    ]);
+    // Another org's project looks missing.
+    expect((await call("GET", `/orgs/${db.ORG2_ID}/projects/${web().id}/targets`)).status).toBe(404);
+    const src = await call("GET", `/orgs/${db.ORG_ID}/projects/${web().id}/components?target=&limit=200`);
+    expect(src.json.data.items!.every((c) => c.target === "")).toBe(true);
+
+    // A member sees only their projects (INFRA has no role for the caller).
+    const eng = db.me.orgs.find((o) => o.id === db.ORG_ID)!;
+    const role = eng.role;
+    eng.role = "member";
+    try {
+      const pay = db.projects[1]!;
+      const before = pay.my_role;
+      pay.my_role = null;
+      try {
+        const m = await call("GET", `/orgs/${db.ORG_ID}/components?malicious=true`);
+        expect(m.json.data.items).toEqual([]);
+      } finally {
+        pay.my_role = before;
+      }
+    } finally {
+      eng.role = role;
+    }
+
+    const image = db.scans.find((s) => s.file_name === "api-1.4.2.tar")!;
+    const spdx = await call("GET", `/orgs/${db.ORG_ID}/scans/${image.id}/sbom?format=spdx`);
+    expect(spdx.json.data).toMatchObject({ format: "spdx-json", url: expect.stringMatching(/\.spdx\.json\?/) });
+    expect((await call("GET", `/orgs/${db.ORG_ID}/scans/${image.id}/sbom?format=xml`)).status).toBe(422);
+    const old = db.scans.find((s) => s.file_name === "storefront-2.2.zip")!;
+    expect((await call("GET", `/orgs/${db.ORG_ID}/scans/${old.id}/sbom?format=spdx`)).status).toBe(404);
+    expect((await call("GET", `/orgs/${db.ORG_ID}/scans/${old.id}/sbom`)).status).toBe(200);
+
+    const counts = await call("GET", `/orgs/${db.ORG2_ID}/issues/counts`);
+    expect(counts.json.data).toMatchObject({ malicious: 1, active: 1 });
   });
 });

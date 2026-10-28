@@ -35,6 +35,11 @@ export const qk = {
   // v0.3
   licensePolicy: (orgId: string) => ["org", orgId, "license-policy"] as const,
   vulnData: (orgId: string) => ["org", orgId, "vuln-data"] as const,
+  // v0.4
+  components: (orgId: string, query: QueryParams) => ["org", orgId, "components", query] as const,
+  componentUsage: (orgId: string, query: QueryParams) => ["org", orgId, "components", "usage", query] as const,
+  projectComponents: (orgId: string, projectId: string, query: QueryParams) => ["org", orgId, "projects", projectId, "components", query] as const,
+  projectTargets: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId, "targets"] as const,
   // Notifications belong to the user, not to an org.
   notificationsAll: ["notifications"] as const,
   unreadCount: ["notifications", "unread-count"] as const,
