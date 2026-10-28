@@ -1,13 +1,17 @@
 // Package intel parses the exploit-intelligence feeds that scripts/sync-mirror.sh
 // puts in the mirror: the CISA Known Exploited Vulnerabilities catalog (JSON),
-// FIRST EPSS scores (csv.gz), and the Trivy DB's metadata.json.
+// FIRST EPSS scores (csv.gz), the Trivy DB's metadata.json, and OSV's
+// malicious-package advisories (one all.zip per ecosystem, osv.go).
 //
 // The files come from the internet, so the parsers treat them as hostile: every
 // size, count and string is capped while reading (before anything is held in
 // memory), every CVE id must match the regex the database checks, scores must
 // be in [0, 1] and dates must be plausible. A file with a single bad record is
 // rejected as a whole, so the loader keeps the previous data rather than
-// loading part of a feed that someone may have tampered with.
+// loading part of a feed that someone may have tampered with. The OSV zips
+// hold hundreds of thousands of advisories: there one invalid advisory is
+// skipped and counted, and the file is rejected when the archive itself, or
+// more than 1% of its advisories, is invalid (osv.go).
 package intel
 
 import (

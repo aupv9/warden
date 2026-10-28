@@ -57,20 +57,29 @@ type Input struct {
 	Findings map[string][]sarif.Finding
 	// Licenses: Trivy's package licenses (FilePath set); the org's license
 	// policy, read in the processing transaction, decides which are issues.
-	Licenses   []trivyjson.License
+	Licenses []trivyjson.License
+	// Packages: every package Trivy reported (FilePath set), nil when Trivy
+	// didn't succeed. They replace the (project, target)'s component
+	// inventory and are matched against malicious-package advisories.
+	Packages   []trivyjson.Package
 	GuardRatio float64
 	Now        time.Time
 	// SBOM is recorded on the scan with the results, or not at all.
 	SBOM *SBOM
 }
 
-// SBOM is the stored SBOM of a scan (scan.sbom_* columns).
+// SBOM is the stored SBOM of a scan (scan.sbom_* columns): the CycloneDX
+// file and, if it was stored too, the SPDX one (SPDXKey "" when not).
 type SBOM struct {
 	Key        string
 	Size       int64
 	SHA256     string
 	Components int
 	ExpiresAt  time.Time
+
+	SPDXKey    string
+	SPDXSize   int64
+	SPDXSHA256 string
 }
 
 // SLA is organization.sla_days: days to fix, by severity (info has none).
@@ -126,7 +135,11 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	}
 	findings := in.Findings
 	if SucceededTools(in.Runs)["trivy"] {
-		if lic := LicenseFindings(in.Licenses, policy); len(lic) > 0 {
+		mal, err := MaliciousFindings(ctx, db, in.Packages)
+		if err != nil {
+			return Plan{}, err
+		}
+		if lic := append(LicenseFindings(in.Licenses, policy), mal...); len(lic) > 0 {
 			findings = map[string][]sarif.Finding{}
 			maps.Copy(findings, in.Findings)
 			findings["trivy"] = append(slices.Clone(findings["trivy"]), lic...)
@@ -148,6 +161,11 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	}
 	if err := a.apply(ctx, plan); err != nil {
 		return Plan{}, err
+	}
+	if in.Packages != nil && SucceededTools(in.Runs)["trivy"] && (in.Status == "completed" || in.Status == "partial") {
+		if plan.Components, err = replaceComponents(ctx, db, in); err != nil {
+			return Plan{}, err
+		}
 	}
 	return plan, nil
 }
@@ -179,6 +197,8 @@ type applier struct {
 	// members who are active users and still in the org.
 	rules    []autoassign.Rule
 	eligible map[uuid.UUID]bool
+	// createNote is the note of a new issue's created event (Inject).
+	createNote string
 }
 
 // loadAssignRules reads the project's rules (and, if there are any, who they
@@ -271,6 +291,9 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 			return err
 		}
 	}
+	if err := notifyMalicious(ctx, a.db, a.in, p); err != nil {
+		return err
+	}
 	for tool, n := range p.ToolCounts {
 		if _, err := a.db.Exec(ctx, `UPDATE scan_tool_run SET findings_count = $3 WHERE scan_id = $1 AND tool = $2`,
 			a.in.ScanID, tool, n); err != nil {
@@ -283,8 +306,14 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 		return fmt.Errorf("finish scan: %w", err)
 	}
 	if s := a.in.SBOM; s != nil {
+		var spdxSize *int64
+		if s.SPDXKey != "" {
+			spdxSize = &s.SPDXSize
+		}
 		if _, err := a.db.Exec(ctx, `UPDATE scan SET sbom_key = $2, sbom_size = $3, sbom_sha256 = $4, sbom_components = $5,
-			sbom_expires_at = $6 WHERE id = $1`, a.in.ScanID, s.Key, s.Size, s.SHA256, s.Components, s.ExpiresAt); err != nil {
+			sbom_expires_at = $6, sbom_spdx_key = $7, sbom_spdx_size = $8, sbom_spdx_sha256 = $9 WHERE id = $1`,
+			a.in.ScanID, s.Key, s.Size, s.SHA256, s.Components, s.ExpiresAt,
+			nullable(s.SPDXKey), spdxSize, nullable(s.SPDXSHA256)); err != nil {
 			return fmt.Errorf("record sbom: %w", err)
 		}
 	}
@@ -315,16 +344,18 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 	}
 	_, err := a.db.Exec(ctx, `INSERT INTO issue (id, org_id, project_id, number, fingerprint, tool, rule_id, title,
 		description, remediation, severity, status, file_path, start_line, end_line, snippet, cwe, cve,
-		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id, target)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25, $26)`,
+		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id, target,
+		license_category)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25, $26,
+		$27)`,
 		id, a.in.OrgID, a.in.ProjectID, number, n.Fingerprint, f.Tool, f.RuleID, f.Title,
 		nullable(f.Description), nullable(f.Remediation), string(f.Severity), nullable(f.FilePath), f.StartLine, f.EndLine,
 		nullable(f.Snippet), f.CWE, f.CVE, nullable(f.PackageName), nullable(f.PackageVersion), nullable(f.FixedVersion),
-		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target)
+		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target, nullable(f.LicenseCategory))
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}
-	if err := a.event(ctx, id, EventCreated, nil, ptr(string(issuestate.Open)), ""); err != nil {
+	if err := a.event(ctx, id, EventCreated, nil, ptr(string(issuestate.Open)), a.createNote); err != nil {
 		return err
 	}
 	if rule > 0 {
@@ -344,10 +375,12 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 
 func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error {
 	f, id := s.Finding, s.Issue.ID
-	// Location and snippet follow the code; this isn't a user-visible edit, so
-	// version and updated_at stay put.
+	// Location and snippet follow the code (and the license category, Trivy's
+	// classification); this isn't a user-visible edit, so version and
+	// updated_at stay put.
 	if _, err := a.db.Exec(ctx, `UPDATE issue SET last_seen_scan_id = $2, file_path = $3, start_line = $4, end_line = $5,
-		snippet = $6 WHERE id = $1`, id, a.in.ScanID, nullable(f.FilePath), f.StartLine, f.EndLine, nullable(f.Snippet)); err != nil {
+		snippet = $6, license_category = $7 WHERE id = $1`, id, a.in.ScanID, nullable(f.FilePath), f.StartLine, f.EndLine,
+		nullable(f.Snippet), nullable(f.LicenseCategory)); err != nil {
 		return fmt.Errorf("update issue: %w", err)
 	}
 	sev := s.Issue.Severity

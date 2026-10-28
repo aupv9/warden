@@ -59,7 +59,9 @@ type fakeServer struct {
 	sbom     []byte
 	sbomSum  string
 	sbomAuth string
-	created  map[string]any // the last create request
+	// sbomFormat: the ?format= of the last SBOM request.
+	sbomFormat string
+	created    map[string]any // the last create request
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -155,6 +157,7 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		f.failKEV = r.URL.Query().Get("fail_on_kev")
 		f.reply(w, 200, f.gate, "")
 	case r.Method == "GET" && r.URL.Path == scan+"/sbom" && f.sbom != nil:
+		f.sbomFormat = r.URL.Query().Get("format")
 		sum := f.sbomSum
 		if sum == "" {
 			h := sha256.Sum256(f.sbom)
@@ -226,8 +229,8 @@ func TestSBOMOut(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "bom.cdx.json")
 	_ = os.WriteFile(dest, []byte("old"), 0o600) // replaced
 	r := f.run(t, f.token, testDeps(), "--sbom-out", dest)
-	if r.code != exitPass || !strings.Contains(r.stdout, "SBOM (CycloneDX, 2 components) saved to "+dest) {
-		t.Fatalf("%+v", r)
+	if r.code != exitPass || !strings.Contains(r.stdout, "SBOM (CycloneDX, 2 components) saved to "+dest) || f.sbomFormat != "cyclonedx" {
+		t.Fatalf("%+v %q", r, f.sbomFormat)
 	}
 	got, _ := os.ReadFile(dest)
 	st, _ := os.Stat(dest)
@@ -250,8 +253,32 @@ func TestSBOMOut(t *testing.T) {
 	}
 	// No SBOM (Trivy didn't run): an error, not a silent pass.
 	f.sbom = nil
-	if r := f.run(t, f.token, testDeps(), "--sbom-out", other); r.code != exitError || !strings.Contains(r.stderr, "has no SBOM") {
+	if r := f.run(t, f.token, testDeps(), "--sbom-out", other); r.code != exitError || !strings.Contains(r.stderr, "has no CycloneDX SBOM") {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestSBOMFormat(t *testing.T) {
+	f := newFakeServer(t)
+	f.sbom = []byte(`{"spdxVersion":"SPDX-2.3"}`)
+	dest := filepath.Join(t.TempDir(), "bom.spdx.json")
+	r := f.run(t, f.token, testDeps(), "--sbom-out", dest, "--sbom-format", "spdx")
+	if r.code != exitPass || !strings.Contains(r.stdout, "SBOM (SPDX, 2 components) saved to "+dest) || f.sbomFormat != "spdx" {
+		t.Fatalf("%+v %q", r, f.sbomFormat)
+	}
+	if got, _ := os.ReadFile(dest); !bytes.Equal(got, f.sbom) {
+		t.Fatalf("%q", got)
+	}
+	f.sbom = nil
+	if r := f.run(t, f.token, testDeps(), "--sbom-out", dest, "--sbom-format", "spdx"); r.code != exitError ||
+		!strings.Contains(r.stderr, "has no SPDX SBOM") {
+		t.Fatalf("%+v", r)
+	}
+	for _, args := range [][]string{{"--sbom-format", "spdx"}, {"--sbom-out", dest, "--sbom-format", "SPDX"},
+		{"--sbom-out", dest, "--sbom-format", ""}} {
+		if r := f.run(t, f.token, testDeps(), args...); r.code != exitError || !strings.Contains(r.stderr, "--sbom-format:") {
+			t.Fatalf("%v: %+v", args, r)
+		}
 	}
 }
 

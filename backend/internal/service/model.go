@@ -214,12 +214,26 @@ type Scan struct {
 	SHA256    string    `json:"-"`
 }
 
+// ScanSBOM: the CycloneDX file (Size is its size) and, when Trivy's SPDX
+// conversion was stored too, the SPDX file (SPDXKey "" when not).
 type ScanSBOM struct {
-	Components int    `json:"components"`
-	Size       int64  `json:"size"`
-	Key        string `json:"-"`
-	SHA256     string `json:"-"`
+	Components int      `json:"components"`
+	Size       int64    `json:"size"`
+	Formats    []string `json:"formats"`
+	Key        string   `json:"-"`
+	SHA256     string   `json:"-"`
+	SPDXKey    string   `json:"-"`
+	SPDXSize   int64    `json:"-"`
+	SPDXSHA256 string   `json:"-"`
 }
+
+// SBOM download formats (?format=) and the formats they are served as.
+const (
+	SBOMCycloneDX     = "cyclonedx"
+	SBOMSPDX          = "spdx"
+	SBOMCycloneDXJSON = "cyclonedx-json"
+	SBOMSPDXJSON      = "spdx-json"
+)
 
 type Upload struct {
 	Method    string            `json:"method"`
@@ -257,8 +271,9 @@ type IssueSummary struct {
 	// highest score). They only rank issues: severity and status never change.
 	KEV  bool     `json:"kev"`
 	EPSS *float64 `json:"epss"`
+	// LicenseCategory is the Trivy category of a license-policy issue.
+	LicenseCategory *string `json:"license_category"`
 }
-
 type ScanRef struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt Time      `json:"created_at"`

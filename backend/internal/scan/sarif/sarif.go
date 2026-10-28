@@ -67,7 +67,10 @@ type Finding struct {
 	PackageName    string            `json:"package_name,omitempty"`
 	PackageVersion string            `json:"package_version,omitempty"`
 	FixedVersion   string            `json:"fixed_version,omitempty"`
-	Raw            map[string]any    `json:"-"`
+	// LicenseCategory is the Trivy category of a license-policy finding
+	// (results.LicenseFindings); never set from SARIF.
+	LicenseCategory string         `json:"license_category,omitempty"`
+	Raw             map[string]any `json:"-"`
 }
 
 // Line returns the start line, or 0 when unknown (used for fingerprint ordering).

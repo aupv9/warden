@@ -670,11 +670,19 @@
                   },
                   "size": {
                     "type": "integer"
+                  },
+                  "formats": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SbomFormat"
+                    },
+                    "minItems": 1
                   }
                 },
                 "required": [
                   "components",
-                  "size"
+                  "size",
+                  "formats"
                 ],
                 "additionalProperties": false
               },
@@ -682,7 +690,7 @@
                 "type": "null"
               }
             ],
-            "description": "Present when the scan produced a CycloneDX SBOM that hasn't expired (see GET .../sbom)."
+            "description": "Present when the scan produced an SBOM that hasn't expired (see GET .../sbom). size is the CycloneDX file's."
           }
         },
         "required": [
@@ -853,6 +861,23 @@
             "minimum": 0,
             "maximum": 1,
             "description": "Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days)."
+          },
+          "license_category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "forbidden",
+              "restricted",
+              "reciprocal",
+              "notice",
+              "permissive",
+              "unencumbered",
+              "unknown",
+              null
+            ],
+            "description": "Trivy license category, for license-policy issues."
           }
         },
         "required": [
@@ -875,7 +900,8 @@
           "updated_at",
           "target",
           "kev",
-          "epss"
+          "epss",
+          "license_category"
         ],
         "additionalProperties": false
       },
@@ -1096,6 +1122,23 @@
           "kev_ransomware": {
             "type": "boolean",
             "description": "KEV marks a CVE as known to be used in ransomware campaigns."
+          },
+          "license_category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "forbidden",
+              "restricted",
+              "reciprocal",
+              "notice",
+              "permissive",
+              "unencumbered",
+              "unknown",
+              null
+            ],
+            "description": "Trivy license category, for license-policy issues."
           }
         },
         "required": [
@@ -1135,7 +1178,8 @@
           "epss",
           "epss_percentile",
           "kev_added",
-          "kev_ransomware"
+          "kev_ransomware",
+          "license_category"
         ],
         "additionalProperties": false
       },
@@ -1423,7 +1467,8 @@
               "exception.decided",
               "scan.finished",
               "sla.due_soon",
-              "sla.overdue"
+              "sla.overdue",
+              "component.malicious"
             ]
           },
           "title": {
@@ -1480,7 +1525,8 @@
               "exception.decided",
               "scan.finished",
               "sla.due_soon",
-              "sla.overdue"
+              "sla.overdue",
+              "component.malicious"
             ]
           },
           "email": {
@@ -1701,6 +1747,10 @@
           "licenses": {
             "type": "integer",
             "description": "Active license-policy issues."
+          },
+          "malicious": {
+            "type": "integer",
+            "description": "Active malicious-package issues."
           }
         },
         "required": [
@@ -1709,7 +1759,8 @@
           "past_sla",
           "secrets",
           "kev",
-          "licenses"
+          "licenses",
+          "malicious"
         ],
         "additionalProperties": false
       },
@@ -2072,7 +2123,7 @@
           "items": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 7,
+            "maxItems": 8,
             "items": {
               "$ref": "#/components/schemas/NotificationPref"
             }
@@ -2543,10 +2594,7 @@
             "format": "date-time"
           },
           "format": {
-            "type": "string",
-            "enum": [
-              "cyclonedx-json"
-            ]
+            "$ref": "#/components/schemas/SbomFormat"
           },
           "size": {
             "type": "integer"
@@ -2715,11 +2763,8 @@
         "properties": {
           "name": {
             "type": "string",
-            "enum": [
-              "trivy_db",
-              "kev",
-              "epss"
-            ]
+            "pattern": "^(trivy_db|kev|epss|osv_mal:[A-Za-z.]+)$",
+            "description": "osv_mal:<ecosystem> is the OSV malicious-package feed for one ecosystem."
           },
           "updated_at": {
             "type": [
@@ -2746,6 +2791,13 @@
           "stale": {
             "type": "boolean",
             "description": "updated_at missing or older than 7 days."
+          },
+          "unsupported": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "OSV only: advisories skipped because their version ranges aren't supported."
           }
         },
         "required": [
@@ -2753,7 +2805,8 @@
           "updated_at",
           "loaded_at",
           "records",
-          "stale"
+          "stale",
+          "unsupported"
         ],
         "additionalProperties": false
       },
@@ -2771,6 +2824,203 @@
           "sources"
         ],
         "additionalProperties": false
+      },
+      "Ecosystem": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+        "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+      },
+      "ComponentSummary": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "$ref": "#/components/schemas/Ecosystem"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "purl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "licenses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SPDX ids seen for this component."
+          },
+          "projects": {
+            "type": "integer",
+            "description": "Visible projects whose current scans contain it."
+          },
+          "targets": {
+            "type": "integer",
+            "description": "Distinct (project, target) pairs."
+          },
+          "open_issues": {
+            "type": "integer",
+            "description": "Active Trivy issues on this package and version in those projects."
+          },
+          "malicious": {
+            "type": "boolean",
+            "description": "Listed by an OSV malicious-package advisory."
+          }
+        },
+        "required": [
+          "ecosystem",
+          "name",
+          "version",
+          "purl",
+          "licenses",
+          "projects",
+          "targets",
+          "open_issues",
+          "malicious"
+        ],
+        "additionalProperties": false
+      },
+      "ComponentUsage": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_key": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string",
+            "description": "Image repository, or empty for source code."
+          },
+          "path": {
+            "type": "string",
+            "description": "Lockfile or image layer target where Trivy found it."
+          },
+          "scan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scanned_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "project_id",
+          "project_key",
+          "project_name",
+          "target",
+          "path",
+          "scan_id",
+          "scanned_at",
+          "first_seen"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectComponent": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "$ref": "#/components/schemas/Ecosystem"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "purl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "licenses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "open_issues": {
+            "type": "integer"
+          },
+          "malicious": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ecosystem",
+          "name",
+          "version",
+          "purl",
+          "licenses",
+          "target",
+          "path",
+          "first_seen",
+          "open_issues",
+          "malicious"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectTarget": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Image repository, or empty for source code."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScanKind"
+          },
+          "last_scan_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "open_issues": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target",
+          "kind",
+          "last_scan_at",
+          "open_issues"
+        ],
+        "additionalProperties": false
+      },
+      "SbomFormat": {
+        "type": "string",
+        "enum": [
+          "cyclonedx-json",
+          "spdx-json"
+        ]
       }
     }
   },
@@ -5813,10 +6063,11 @@
               "type": "string",
               "enum": [
                 "vulnerability",
-                "license"
+                "license",
+                "malicious"
               ]
             },
-            "description": "Trivy issues only: dependency vulnerabilities or license-policy issues."
+            "description": "Trivy issues only: dependency vulnerabilities, license-policy issues, or malicious packages (OSV MAL- advisories)."
           },
           {
             "name": "kev",
@@ -8036,7 +8287,7 @@
           "scans"
         ],
         "operationId": "getScanSbom",
-        "summary": "Download link for the scan's CycloneDX SBOM",
+        "summary": "Download link for the scan's SBOM (CycloneDX or SPDX)",
         "responses": {
           "200": {
             "description": "OK",
@@ -8103,9 +8354,34 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
-        "description": "Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention)."
+        "description": "Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention). Also 404 when the requested format wasn't produced.",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "cyclonedx",
+                "spdx"
+              ],
+              "default": "cyclonedx"
+            }
+          }
+        ]
       }
     },
     "/orgs/{org_id}/license-policy": {
@@ -8381,7 +8657,645 @@
             }
           }
         },
-        "description": "The Trivy DB, CISA KEV and FIRST EPSS come from the mirror (make mirror). KEV and EPSS only rank issues; they never change severity or status."
+        "description": "The Trivy DB, CISA KEV, FIRST EPSS and OSV malicious-package feeds come from the mirror (make mirror). KEV and EPSS only rank issues; OSV advisories may create or reopen Critical issues, never close or hide one."
+      }
+    },
+    "/orgs/{org_id}/components": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listComponents",
+        "summary": "Search the org's component inventory",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ComponentSummary"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Built from each (project, target)'s latest completed or partial scan where Trivy succeeded. Org admins and security leads see every project; others see the projects they are members of. Archived projects are left out.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Component name prefix (case-insensitive; PyPI names are normalised)."
+          },
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+              "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Exact version."
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "malicious",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    },
+    "/orgs/{org_id}/components/usage": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listComponentUsage",
+        "summary": "Where a component is used",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ComponentUsage"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Built from each (project, target)'s latest completed or partial scan where Trivy succeeded. Org admins and security leads see every project; others see the projects they are members of. Archived projects are left out.",
+        "parameters": [
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+              "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/components": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listProjectComponents",
+        "summary": "The project's current components",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProjectComponent"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Needs view access to the project; API tokens need issues:read on that project.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Component name prefix (case-insensitive; PyPI names are normalised)."
+          },
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+              "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+            }
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "description": "Image repository; empty string for source code."
+          },
+          {
+            "name": "malicious",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/targets": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "listProjectTargets",
+        "summary": "Source and image targets scanned in the project",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProjectTarget"
+                          }
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "One row per target with at least one scan or issue; source code is the empty target. Needs view access to the project; API tokens need issues:read on that project."
       }
     }
   }

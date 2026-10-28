@@ -7,11 +7,34 @@ import { ErrorState, SkeletonBlock } from "../../components/States";
 import { useOrgCtx } from "../../layout/OrgLayout";
 import { formatDateTime, relativeTime } from "../../lib/format";
 
-const SOURCE_TEXT: Record<string, { name: string; what: string; unit: string }> = {
+interface SourceText {
+  name: string;
+  what: string;
+  unit: string;
+}
+
+const SOURCE_TEXT: Record<string, SourceText> = {
   trivy_db: { name: "Trivy vulnerability database", what: "Which package versions have known vulnerabilities.", unit: "" },
   kev: { name: "CISA KEV catalog", what: "CVEs known to be exploited in the wild.", unit: "CVEs" },
   epss: { name: "FIRST EPSS scores", what: "The chance each CVE is exploited in the next 30 days.", unit: "scored CVEs" },
 };
+
+const OSV_NAME = /^osv_mal:([A-Za-z.]+)$/;
+
+/** v0.4: `osv_mal:<ecosystem>` is one row per ecosystem; anything else unknown keeps its raw name. */
+export function sourceText(name: string): SourceText {
+  const known = SOURCE_TEXT[name];
+  if (known) return known;
+  const osv = OSV_NAME.exec(name);
+  if (osv) {
+    return {
+      name: `OSV malicious packages · ${osv[1]}`,
+      what: "Package versions OSV lists as malicious (typosquats, hijacked releases).",
+      unit: "advisories",
+    };
+  }
+  return { name, what: "", unit: "records" };
+}
 
 /** Org Settings → Vulnerability data (read-only, every member): how fresh the mirror's feeds
  *  are. Stale data means missed CVEs and an outdated KEV/EPSS ranking. */
@@ -23,7 +46,7 @@ export function VulnDataCard({ now = new Date() }: { now?: Date }) {
     <Card title="Vulnerability data" titleId="vuln-data-h">
       <p className="card-intro-plain muted">
         Warden scans offline, from a mirror your operator keeps up to date. KEV and EPSS only rank issues: they never change an issue's
-        severity or status.
+        severity or status. An OSV malicious-package advisory opens or reopens a Critical issue; it never closes or hides one.
       </p>
       {data.isPending ? (
         <SkeletonBlock label="the vulnerability data" lines={3} />
@@ -37,7 +60,7 @@ export function VulnDataCard({ now = new Date() }: { now?: Date }) {
               <span>
                 <strong>
                   Out of date or missing:{" "}
-                  {stale.length === data.data.sources.length ? "all the vulnerability data" : stale.map((s) => SOURCE_TEXT[s.name]?.name ?? s.name).join(" and ")}.
+                  {stale.length === data.data.sources.length ? "all the vulnerability data" : stale.map((s) => sourceText(s.name).name).join(" and ")}.
                 </strong>{" "}
                 New CVEs aren't found and the ranking gets old. Ask your operator to run <code>make mirror</code> daily.
               </span>
@@ -59,7 +82,7 @@ export function VulnDataCard({ now = new Date() }: { now?: Date }) {
 }
 
 function SourceRow({ source: s, now }: { source: VulnDataSource; now: Date }) {
-  const text = SOURCE_TEXT[s.name] ?? { name: s.name, what: "", unit: "records" };
+  const text = sourceText(s.name);
   return (
     <li className={s.stale ? "vuln-source is-stale" : "vuln-source"}>
       <div className="vuln-source-name">
@@ -78,6 +101,11 @@ function SourceRow({ source: s, now }: { source: VulnDataSource; now: Date }) {
             {s.records !== null && `${s.records.toLocaleString("en-US")} ${text.unit}`.trim()}
             {s.records !== null && s.loaded_at && " · "}
             {s.loaded_at && `loaded ${relativeTime(s.loaded_at, now)}`}
+          </span>
+        )}
+        {s.unsupported !== null && s.unsupported !== undefined && s.unsupported > 0 && (
+          <span className="faint small">
+            {`${s.unsupported.toLocaleString("en-US")} ${s.unsupported === 1 ? "advisory" : "advisories"} skipped: version ranges not supported`}
           </span>
         )}
       </div>

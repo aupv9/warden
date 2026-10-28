@@ -71,6 +71,24 @@ export function Popover({
     return () => window.removeEventListener("resize", place);
   }, [open, fixed]);
 
+  // A panel anchored near the right edge (a filter menu whose editor is wider than its list)
+  // would overflow the viewport and scroll the whole page sideways: nudge it back inside, and
+  // again whenever its size changes.
+  useLayoutEffect(() => {
+    const el = panel.current;
+    if (!open || fixed || !el || typeof ResizeObserver === "undefined") return;
+    const fit = () => {
+      el.style.translate = "";
+      const r = el.getBoundingClientRect();
+      const over = r.right - (document.documentElement.clientWidth - 8);
+      el.style.translate = over > 0 ? `${-Math.min(over, Math.max(0, r.left - 8))}px 0` : "";
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, fixed]);
+
   useEffect(() => {
     if (!open) return;
     const first = panel.current?.querySelector<HTMLElement>(

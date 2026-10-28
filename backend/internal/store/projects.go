@@ -166,7 +166,8 @@ const scanSelect = `SELECT s.id, s.org_id, s.project_id, s.status::text, s.file_
 	s.error_code, s.stats, s.created_at, s.queued_at, s.started_at, s.finished_at,
 	coalesce(s.object_key, ''), coalesce(s.sha256, ''), u.id, u.email::text, u.display_name,
 	vt.id, vt.name, vt.prefix::text, s.kind, s.target, s.image_ref,
-	CASE WHEN s.sbom_expires_at > now() THEN s.sbom_key END, s.sbom_size, s.sbom_sha256, s.sbom_components
+	CASE WHEN s.sbom_expires_at > now() THEN s.sbom_key END, s.sbom_size, s.sbom_sha256, s.sbom_components,
+	s.sbom_spdx_key, s.sbom_spdx_size, s.sbom_spdx_sha256
 	FROM scan s JOIN app_user u ON u.id = s.created_by LEFT JOIN api_token vt ON vt.id = s.via_token`
 
 func scanScan(row pgx.CollectableRow) (service.Scan, error) {
@@ -177,17 +178,25 @@ func scanScan(row pgx.CollectableRow) (service.Scan, error) {
 		sbomKey, sbomSum *string
 		sbomSize         *int64
 		sbomComponents   *int
+		spdxKey, spdxSum *string
+		spdxSize         *int64
 	)
 	err := row.Scan(&s.ID, &s.OrgID, &s.ProjectID, &s.Status, &s.FileName, &s.FileSize, &s.Tools,
 		&s.ErrorCode, &s.Stats, &s.CreatedAt, &s.QueuedAt, &s.StartedAt, &s.FinishedAt,
 		&s.ObjectKey, &s.SHA256, &s.CreatedBy.ID, &s.CreatedBy.Email, &s.CreatedBy.DisplayName, &vtID, &vtName, &vtPrefix,
-		&s.Kind, &s.Target, &s.ImageRef, &sbomKey, &sbomSize, &sbomSum, &sbomComponents)
+		&s.Kind, &s.Target, &s.ImageRef, &sbomKey, &sbomSize, &sbomSum, &sbomComponents, &spdxKey, &spdxSize, &spdxSum)
 	if vtID != nil && vtName != nil && vtPrefix != nil {
 		s.ViaToken = &service.TokenRef{ID: *vtID, Name: *vtName, Prefix: *vtPrefix}
 	}
-	// An expired SBOM (awaiting the purge job) reads as none.
+	// An expired SBOM (awaiting the purge job) reads as none; the SPDX file
+	// shares its expiry and exists only alongside it.
 	if sbomKey != nil && sbomSize != nil && sbomSum != nil && sbomComponents != nil {
-		s.SBOM = &service.ScanSBOM{Key: *sbomKey, Size: *sbomSize, SHA256: *sbomSum, Components: *sbomComponents}
+		s.SBOM = &service.ScanSBOM{Key: *sbomKey, Size: *sbomSize, SHA256: *sbomSum, Components: *sbomComponents,
+			Formats: []string{service.SBOMCycloneDXJSON}}
+		if spdxKey != nil && spdxSize != nil && spdxSum != nil {
+			s.SBOM.SPDXKey, s.SBOM.SPDXSize, s.SBOM.SPDXSHA256 = *spdxKey, *spdxSize, *spdxSum
+			s.SBOM.Formats = append(s.SBOM.Formats, service.SBOMSPDXJSON)
+		}
 	}
 	if s.Tools == nil {
 		s.Tools = []string{}
