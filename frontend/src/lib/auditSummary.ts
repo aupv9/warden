@@ -127,6 +127,18 @@ export function auditTargetSummary(e: Pick<AuditEntry, "action" | "target_type" 
       const text = licensePolicySummary(to);
       return text ? `License policy: ${text}` : fallback;
     }
+    // v0.4 wave 2: name, kind, url_hint and events only; the audit data never holds the URL or secret.
+    case "webhook.created":
+    case "webhook.updated":
+    case "webhook.deleted":
+    case "webhook.secret_rotated": {
+      const name = str(d, "name");
+      if (!name) return fallback;
+      const kind = str(d, "kind");
+      const fields = Array.isArray(d.fields) ? d.fields.filter((x): x is string => typeof x === "string") : [];
+      const what = kind === "slack" ? "Slack channel" : kind === "generic" ? "Webhook" : "Webhook";
+      return [`${what} “${name}”`, str(d, "url_hint"), fields.length ? `changed ${fields.join(", ")}` : null].filter(Boolean).join(" · ");
+    }
     case "user.relinked": {
       const how = str(d, "via") === "sign-in" ? "at sign-in" : "by the operator";
       return `${fallback} moved to a new sign-in identity ${how}`;

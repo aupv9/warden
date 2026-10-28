@@ -8,6 +8,13 @@ export interface SnippetParams {
   orgId: string;
   projectId: string;
   failOn?: "critical" | "high" | "medium" | "low";
+  /** v0.4 wave 2: `--comment auto`, one summary comment on the pull / merge request, updated in
+   *  place. The CI system's own token posts it (GitHub: the job's GITHUB_TOKEN; GitLab: a project
+   *  access token in WARDEN_GITLAB_TOKEN); Warden keeps no GitHub or GitLab credentials. */
+  comment?: boolean;
+  /** v0.4 wave 2: a second, nightly job on the default branch with the full history and
+   *  `warden scan --history` (secrets in git history). */
+  history?: boolean;
 }
 
 // The CLI comes from the Warden release archives, checked against the release checksums (and,
@@ -20,26 +27,13 @@ function scanArgs(p: SnippetParams): string[] {
   return [`--url ${p.url}`, `--org ${p.orgId}`, `--project ${p.projectId}`, `--fail-on ${p.failOn ?? "high"}`];
 }
 
-export function githubActionsSnippet(p: SnippetParams): string {
+/** The nightly history job's schedule (GitHub). Not on the hour, when shared runners are busiest. */
+export const HISTORY_CRON = "23 2 * * *";
+
+function githubInstallSteps(fetchAll: boolean): string[] {
   return [
-    "# .github/workflows/warden.yml",
-    "name: Warden",
-    "on:",
-    "  push:",
-    "    branches: [main]",
-    "  pull_request: # pull requests from forks get no secrets, so they aren't scanned",
-    "",
-    "permissions:",
-    "  contents: read",
-    "",
-    "jobs:",
-    "  scan:",
-    "    runs-on: ubuntu-24.04",
-    "    env:",
-    `      WARDEN_VERSION: ${CLI_VERSION} # the release that matches your Warden server`,
-    "    steps:",
     `      - uses: ${CHECKOUT}`,
-    "        with: { persist-credentials: false }",
+    fetchAll ? "        with: { persist-credentials: false, fetch-depth: 0 } # the full history" : "        with: { persist-credentials: false }",
     "      - name: Install the Warden CLI (checksum and provenance verified)",
     "        env:",
     "          GH_TOKEN: ${{ github.token }}",
@@ -50,26 +44,66 @@ export function githubActionsSnippet(p: SnippetParams): string {
     '          sha256sum -c --ignore-missing "warden_${WARDEN_VERSION}_checksums.txt"',
     '          gh attestation verify "$a.tar.gz" -R aupv9/warden',
     '          tar -xzf "$a.tar.gz" --strip-components=1 "$a/warden"',
+  ];
+}
+
+export function githubActionsSnippet(p: SnippetParams): string {
+  const lines = [
+    "# .github/workflows/warden.yml",
+    "name: Warden",
+    "on:",
+    "  push:",
+    "    branches: [main]",
+    "  pull_request: # pull requests from forks get no secrets, so they aren't scanned",
+    ...(p.history ? ["  schedule:", `    - cron: "${HISTORY_CRON}" # nightly, on the default branch: secrets in the git history`] : []),
+    "",
+    "permissions:",
+    "  contents: read",
+    "",
+    "jobs:",
+    "  scan:",
+    ...(p.history ? ["    if: github.event_name != 'schedule'"] : []),
+    "    runs-on: ubuntu-24.04",
+    ...(p.comment
+      ? ["    permissions:", "      contents: read", "      pull-requests: write # --comment: one summary comment on the pull request"]
+      : []),
+    "    env:",
+    `      WARDEN_VERSION: ${CLI_VERSION} # the release that matches your Warden server`,
+    "    steps:",
+    ...githubInstallSteps(false),
     "      - name: Scan and check the gate",
     "        env:",
     "          # Repository secret: Settings > Secrets and variables > Actions.",
     "          WARDEN_TOKEN: ${{ secrets.WARDEN_TOKEN }}",
+    ...(p.comment ? ["          # The job's own token, used only to write the comment; Warden never sees it.", "          GITHUB_TOKEN: ${{ github.token }}"] : []),
     "        run: >-",
     '          "$RUNNER_TEMP/warden" scan',
     ...scanArgs(p).map((a) => `          ${a}`),
-  ].join("\n");
+    ...(p.comment ? ["          --comment auto"] : []),
+  ];
+  if (p.history) {
+    lines.push(
+      "",
+      "  history:",
+      "    if: github.event_name == 'schedule'",
+      "    runs-on: ubuntu-24.04",
+      "    env:",
+      `      WARDEN_VERSION: ${CLI_VERSION}`,
+      "    steps:",
+      ...githubInstallSteps(true),
+      "      - name: Scan the git history for secrets",
+      "        env:",
+      "          WARDEN_TOKEN: ${{ secrets.WARDEN_TOKEN }}",
+      "        run: >-",
+      '          "$RUNNER_TEMP/warden" scan --history',
+      ...scanArgs(p).map((a) => `          ${a}`),
+    );
+  }
+  return lines.join("\n");
 }
 
-export function gitlabCiSnippet(p: SnippetParams): string {
+function gitlabInstall(): string[] {
   return [
-    "# .gitlab-ci.yml",
-    "warden:",
-    "  stage: test",
-    "  image: alpine:3.22 # pin by digest",
-    "  # WARDEN_TOKEN: Settings > CI/CD > Variables, with Masked and Protected on.",
-    "  variables:",
-    `    WARDEN_VERSION: ${CLI_VERSION} # the release that matches your Warden server`,
-    "  script:",
     "    - apk add --no-cache git curl",
     '    - git config --global --add safe.directory "$CI_PROJECT_DIR"',
     '    - a="warden_${WARDEN_VERSION}_linux_amd64"',
@@ -77,11 +111,57 @@ export function gitlabCiSnippet(p: SnippetParams): string {
     '    - curl -fsSLO "$base/$a.tar.gz" && curl -fsSLO "$base/warden_${WARDEN_VERSION}_checksums.txt"',
     '    - grep " $a.tar.gz\\$" "warden_${WARDEN_VERSION}_checksums.txt" | sha256sum -c -',
     '    - tar -xzf "$a.tar.gz" --strip-components=1 "$a/warden"',
-    `    - ./warden scan ${scanArgs(p).join(" ")}`,
+  ];
+}
+
+export function gitlabCiSnippet(p: SnippetParams): string {
+  const lines = [
+    "# .gitlab-ci.yml",
+    "warden:",
+    "  stage: test",
+    "  image: alpine:3.22 # pin by digest",
+    "  # WARDEN_TOKEN: Settings > CI/CD > Variables, with Masked and Protected on.",
+    ...(p.comment
+      ? [
+          "  # WARDEN_GITLAB_TOKEN: a project access token with the api scope, stored as a Masked variable",
+          "  # (CI_JOB_TOKEN can't write merge request notes). Used only for --comment.",
+        ]
+      : []),
+    "  variables:",
+    `    WARDEN_VERSION: ${CLI_VERSION} # the release that matches your Warden server`,
+    "  script:",
+    ...gitlabInstall(),
+    `    - ./warden scan ${scanArgs(p).join(" ")}${p.comment ? " --comment auto" : ""}`,
     "  rules:",
+    ...(p.history ? ['    - if: $CI_PIPELINE_SOURCE == "schedule"', "      when: never"] : []),
     "    # Protected variables only reach protected branches and tags.",
     '    - if: $CI_COMMIT_REF_PROTECTED == "true"',
-  ].join("\n");
+    ...(p.comment
+      ? [
+          "    # Merge request pipelines, for the comment. They get Protected variables only when the",
+          "    # source branch is protected: protect it, or turn Protected off for both tokens.",
+          '    - if: $CI_PIPELINE_SOURCE == "merge_request_event"',
+        ]
+      : []),
+  ];
+  if (p.history) {
+    lines.push(
+      "",
+      "warden-history:",
+      "  stage: test",
+      "  image: alpine:3.22 # pin by digest",
+      "  variables:",
+      `    WARDEN_VERSION: ${CLI_VERSION}`,
+      "    GIT_DEPTH: 0 # the full history",
+      "  script:",
+      ...gitlabInstall(),
+      `    - ./warden scan --history ${scanArgs(p).join(" ")}`,
+      "  rules:",
+      "    # A pipeline schedule (Build > Pipeline schedules) on the default branch, e.g. nightly.",
+      '    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH',
+    );
+  }
+  return lines.join("\n");
 }
 
 /** Where the UI is served is where the API is (same origin). */
