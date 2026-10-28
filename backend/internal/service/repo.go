@@ -82,6 +82,8 @@ const (
 const (
 	KindVulnerability = "vulnerability"
 	KindLicense       = "license"
+	// KindMalicious: OSV malicious-package issues (rule malicious:<MAL-id>).
+	KindMalicious = "malicious"
 )
 
 // IssueCursor positions an issue list for one sort.
@@ -105,7 +107,7 @@ type IssueQuery struct {
 	AssigneeID   *uuid.UUID
 	Tool         string
 	PastSLA      bool
-	// Kind: "", KindVulnerability or KindLicense.
+	// Kind: "", KindVulnerability, KindLicense or KindMalicious.
 	Kind string
 	// KEV: only issues with a CVE in KEV. EPSSMin: only issues with a CVE
 	// scored at least this.

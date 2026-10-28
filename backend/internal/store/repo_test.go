@@ -340,7 +340,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 
 func issueRow(id, proj, scan uuid.UUID, withDetail bool) []any {
 	row := []any{id, "WEB-1", proj, "t", "high", "open", "opengrep", "r", nil, nil, nil, nil, nil,
-		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97}
+		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97, nil}
 	if withDetail {
 		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB",
 			0.99, "2024-03-01", true)
