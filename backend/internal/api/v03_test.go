@@ -20,7 +20,8 @@ func TestScanSBOM(t *testing.T) {
 	// The scan says it has one.
 	r := e.do("GET", "/scans/"+web.String(), viewer, nil)
 	e.expect(r, 200, "")
-	if s := r.obj()["sbom"].(map[string]any); s["components"] != 175.0 || s["size"] != 1234.0 || len(s) != 2 ||
+	if s := r.obj()["sbom"].(map[string]any); s["components"] != 175.0 || s["size"] != 1234.0 || len(s) != 3 ||
+		len(s["formats"].([]any)) != 1 || s["formats"].([]any)[0] != "cyclonedx-json" ||
 		r.obj()["kind"] != "source" || r.obj()["target"] != "" || r.obj()["image_ref"] != nil {
 		t.Fatal(r.body)
 	}

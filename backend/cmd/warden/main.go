@@ -4,14 +4,14 @@
 //	export WARDEN_TOKEN=wdn_...        # an API token with scope scan:write
 //	warden scan --url https://warden.example --org ORG_ID --project PROJECT_ID \
 //	    [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--fail-on-kev] [--timeout 30m] \
-//	    [--sbom-out bom.cdx.json]
+//	    [--sbom-out bom.cdx.json [--sbom-format cyclonedx|spdx]]
 //	warden scan ... --image ghcr.io/acme/api:1.2           # docker save, then an image scan
 //	warden scan ... --image-tar api.tar --target ghcr.io/acme/api [--image-ref ghcr.io/acme/api:1.2]
 //
-// --sbom-out saves the scan's CycloneDX SBOM (Trivy must be among the tools),
-// after checking it against the SHA-256 the server recorded. --fail-on-kev also
-// fails the gate on any issue whose CVE is on CISA's Known Exploited
-// Vulnerabilities list, whatever its severity.
+// --sbom-out saves the scan's SBOM, CycloneDX or (--sbom-format spdx) SPDX
+// JSON (Trivy must be among the tools), after checking it against the SHA-256
+// the server recorded. --fail-on-kev also fails the gate on any issue whose
+// CVE is on CISA's Known Exploited Vulnerabilities list, whatever its severity.
 //
 // Exit status: 0 the gate passed, 1 the gate failed (blocking issues), 2 any
 // error (bad arguments, network, authentication, the scan failed or timed out,
@@ -50,7 +50,7 @@ const (
 	exitError      = 2
 
 	usage = `usage: warden scan --url URL --org ORG_ID --project PROJECT_ID [--dir DIR] [--tools a,b] [--fail-on high]
-                   [--fail-on-kev] [--timeout 30m] [--sbom-out FILE]
+                   [--fail-on-kev] [--timeout 30m] [--sbom-out FILE [--sbom-format cyclonedx|spdx]]
                    [--image REF | --image-tar FILE --target REPO [--image-ref REF]]
 The API token is read from $WARDEN_TOKEN.`
 )
@@ -116,6 +116,7 @@ type options struct {
 	failOn       string
 	failOnKEV    bool
 	sbomOut      string
+	sbomFormat   string // cyclonedx or spdx
 	// Image scans: image (docker save it) or imageTar, with target and imageRef.
 	image, imageTar  string
 	target, imageRef string
@@ -139,7 +140,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	failOn := fs.String("fail-on", "high", "critical|high|medium|low")
 	timeout := fs.Duration("timeout", 30*time.Minute, "give up (and cancel the scan) after this long")
 	failOnKEV := fs.Bool("fail-on-kev", false, "also fail on any issue whose CVE is known exploited (CISA KEV)")
-	sbomOut := fs.String("sbom-out", "", "save the scan's CycloneDX SBOM to this file")
+	sbomOut := fs.String("sbom-out", "", "save the scan's SBOM to this file")
+	sbomFormat := fs.String("sbom-format", "cyclonedx", "SBOM format for --sbom-out: cyclonedx|spdx")
 	image := fs.String("image", "", "scan this container image (docker save) instead of --dir")
 	imageTar := fs.String("image-tar", "", "scan this docker save tarball instead of --dir")
 	target := fs.String("target", "", "image repository without tag (required with --image-tar)")
@@ -148,7 +150,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stderr, usage)
 		return exitError
 	}
-	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, timeout: *timeout, stdout: stdout, stderr: stderr,
+	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, sbomFormat: *sbomFormat, timeout: *timeout, stdout: stdout, stderr: stderr,
 		image: *image, imageTar: *imageTar, target: *target, imageRef: *imageRef}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -168,6 +170,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	case "critical", "high", "medium", "low":
 	default:
 		problems = append(problems, "--fail-on: must be critical, high, medium or low")
+	}
+	switch {
+	case o.sbomFormat != "cyclonedx" && o.sbomFormat != "spdx":
+		problems = append(problems, "--sbom-format: must be cyclonedx or spdx")
+	case set["sbom-format"] && o.sbomOut == "":
+		problems = append(problems, "--sbom-format: needs --sbom-out")
 	}
 	if o.timeout <= 0 {
 		problems = append(problems, "--timeout: must be positive")

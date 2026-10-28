@@ -18,7 +18,7 @@ func (h handlers) scanSBOM(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.ScanSBOM(c.Request.Context(), actor(c), id)
+	out, err := h.svc.ScanSBOM(c.Request.Context(), actor(c), id, c.Query("format"))
 	reply(c, false, out, err)
 }
 

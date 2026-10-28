@@ -110,7 +110,7 @@ func TestImageTrivy(t *testing.T) {
 	if tmp := a[slices.Index(a, "--tmpfs")+1]; tmp != "/tmp:rw,noexec,nosuid,size=1g,mode=1777" {
 		t.Fatal(tmp)
 	}
-	if spec.Name != "trivy" || spec.Timeout != 15*time.Minute || len(spec.Artifacts) != 2 ||
+	if spec.Name != "trivy" || spec.Timeout != 15*time.Minute || len(spec.Artifacts) != 3 ||
 		!strings.Contains(spec.Command[2], "trivy image --input /src/image.tar --scanners vuln,license --list-all-pkgs") ||
 		!strings.Contains(spec.Command[2], "--offline-scan") || strings.Contains(spec.Command[2], "trivy fs") {
 		t.Fatal(spec.Command)
@@ -128,13 +128,15 @@ func TestTrivyScript(t *testing.T) {
 	for _, want := range []string{"set -eu;", "trivy fs /src ", "--scanners vuln,license", "--list-all-pkgs", "--offline-scan",
 		"--skip-db-update", "--format json --output /out/trivy.json",
 		"trivy convert --format sarif --output /out/result.sarif /out/trivy.json",
-		"trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json"} {
+		"trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json",
+		"{ trivy convert --format spdx-json --output /out/sbom.spdx.json /out/trivy.json || rm -f /out/sbom.spdx.json; }"} {
 		if !strings.Contains(c[2], want) {
 			t.Errorf("script lacks %q: %s", want, c[2])
 		}
 	}
 	a := Tools["trivy"].Artifacts
-	if a[ArtifactTrivyJSON].File != "trivy.json" || a[ArtifactSBOM].MaxBytes != 64<<20 {
+	if a[ArtifactTrivyJSON].File != "trivy.json" || a[ArtifactSBOM].MaxBytes != 64<<20 ||
+		a[ArtifactSPDX].File != "sbom.spdx.json" || a[ArtifactSPDX].MaxBytes != 64<<20 {
 		t.Fatal(a)
 	}
 }

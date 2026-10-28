@@ -80,7 +80,9 @@ type Outcome struct {
 	// (FilePath set), for the component inventory and the malicious-package match.
 	Packages []trivyjson.Package
 	// SBOM: Trivy's CycloneDX SBOM, stamped; nil when there is none.
-	SBOM     *sbom.Stamped
+	SBOM *sbom.Stamped
+	// SPDX: Trivy's SPDX SBOM, stamped; nil when there is none.
+	SPDX     *sbom.Stamped
 	Warnings []string
 }
 
@@ -198,7 +200,13 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		out.Findings[run.Tool] = fs
 		if run.Tool == "trivy" && rep != nil {
 			out.Licenses, out.Packages = rep.Licenses, rep.Packages
-			out.SBOM = stampSBOM(job, run.Artifacts[sandbox.ArtifactSBOM])
+			// Non-nil even when empty: Trivy succeeded, so the inventory
+			// becomes empty rather than kept (nil means Trivy didn't report).
+			if out.Packages == nil {
+				out.Packages = []trivyjson.Package{}
+			}
+			out.SBOM = stampArtifact(job, "SBOM", run.Artifacts[sandbox.ArtifactSBOM], sbom.Stamp)
+			out.SPDX = stampArtifact(job, "SPDX SBOM", run.Artifacts[sandbox.ArtifactSPDX], sbom.StampSPDX)
 		}
 	}
 	out.Status = FinalStatus(runs)
@@ -328,27 +336,28 @@ func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string) ([]sarif
 	return fs, rep, nil
 }
 
-// stampSBOM returns the scan's SBOM ready to store, or nil. A missing or
-// invalid SBOM costs only the SBOM: the scan's results don't depend on it.
-func stampSBOM(job Job, path string) *sbom.Stamped {
+// stampArtifact returns one of the scan's SBOMs (what names it in logs) ready
+// to store, or nil. A missing or invalid SBOM costs only that SBOM: the scan's
+// results don't depend on it.
+func stampArtifact(job Job, what, path string, stamp func(raw []byte, name, scanID string) (*sbom.Stamped, error)) *sbom.Stamped {
 	if path == "" {
-		slog.Warn("trivy wrote no SBOM (or one over the size cap)", "scan_id", job.ScanID)
+		slog.Warn("trivy wrote no "+what+" (or one over the size cap)", "scan_id", job.ScanID)
 		return nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		slog.Warn("read SBOM", "scan_id", job.ScanID, "err", err)
+		slog.Warn("read "+what, "scan_id", job.ScanID, "err", err)
 		return nil
 	}
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, sbom.MaxBytes+1))
 	if err == nil {
 		var s *sbom.Stamped
-		if s, err = sbom.Stamp(raw, job.ProjectKey, job.ScanID); err == nil {
+		if s, err = stamp(raw, job.ProjectKey, job.ScanID); err == nil {
 			return s
 		}
 	}
-	slog.Warn("SBOM rejected", "scan_id", job.ScanID, "err", err)
+	slog.Warn(what+" rejected", "scan_id", job.ScanID, "err", err)
 	return nil
 }
 
