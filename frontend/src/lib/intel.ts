@@ -1,5 +1,6 @@
 import type { IssueSummary, LicenseCategory } from "../api/types";
 import { LICENSE_CATEGORIES } from "../api/types";
+import { isMaliciousIssue } from "./malicious";
 
 // v0.3 helpers for what an issue says about exploitation (CISA KEV, FIRST EPSS), licenses and
 // image targets. KEV and EPSS only rank issues: they never change severity or status, so the
@@ -38,24 +39,23 @@ export function isLicenseIssue(i: Pick<IssueSummary, "tool" | "rule_id">): boole
   return i.tool === "trivy" && i.rule_id.startsWith("license:");
 }
 
-/** Dependency vulnerabilities: every other Trivy issue. */
+/** Dependency vulnerabilities: every Trivy issue that is neither a license-policy issue nor
+ *  (v0.4) a malicious package. Only these carry KEV and EPSS. */
 export function isVulnIssue(i: Pick<IssueSummary, "tool" | "rule_id">): boolean {
-  return i.tool === "trivy" && !isLicenseIssue(i);
+  return i.tool === "trivy" && !isLicenseIssue(i) && !isMaliciousIssue(i);
 }
 
-const CATEGORY_IN_TITLE = new RegExp(`\\((${LICENSE_CATEGORIES.join("|")})\\)\\s*$`);
-
 /**
- * The license of a license issue: the SPDX id from the rule id, and the Trivy category when
- * the server's title ends with it ("pkg uses GPL-3.0-only (restricted)"). The contract has no
- * category field, so a title in another shape simply shows no category.
+ * The license of a license issue: the SPDX id from the rule id, and (v0.4) the Trivy category
+ * from `license_category`. A value outside the seven categories shows no category; the title
+ * is never parsed.
  */
-export function licenseOf(i: Pick<IssueSummary, "tool" | "rule_id" | "title">): { spdx: string; category: LicenseCategory | null } | null {
+export function licenseOf(i: Pick<IssueSummary, "tool" | "rule_id" | "license_category">): { spdx: string; category: LicenseCategory | null } | null {
   if (!isLicenseIssue(i)) return null;
   const spdx = i.rule_id.slice("license:".length);
   if (!spdx) return null;
-  const m = CATEGORY_IN_TITLE.exec(i.title);
-  return { spdx, category: m ? (m[1] as LicenseCategory) : null };
+  const c = i.license_category;
+  return { spdx, category: c && LICENSE_CATEGORIES.includes(c) ? c : null };
 }
 
 /** OCI repository name without tag or digest, as the contract's `target` pattern. */

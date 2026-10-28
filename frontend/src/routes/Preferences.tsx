@@ -34,7 +34,7 @@ export function PreferencesPage() {
             the issue key, title, severity and a link, never code, comments or secrets.
           </p>
           {prefs.isPending ? (
-            <SkeletonRows label="notification preferences" rows={7} />
+            <SkeletonRows label="notification preferences" rows={NOTIFICATION_TYPES.length} />
           ) : prefs.isError ? (
             <ErrorState error={prefs.error} onRetry={() => void prefs.refetch()} what="your preferences" />
           ) : (

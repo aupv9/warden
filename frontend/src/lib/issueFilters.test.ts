@@ -186,6 +186,15 @@ describe("saved views", () => {
     expect(currentView({ ...DEFAULT_FILTERS, kind: "license" })).toBe("licenses");
     expect(currentView({ ...DEFAULT_FILTERS, kind: "vulnerability" })).toBeNull();
   });
+
+  it("v0.4: a Malicious view for malicious-package issues (kind=malicious)", () => {
+    expect(issueFiltersToSearch(applyView(DEFAULT_FILTERS, "malicious")).toString()).toBe("kind=malicious");
+    expect(currentView({ ...DEFAULT_FILTERS, kind: "malicious" })).toBe("malicious");
+    expect(parseIssueFilters(new URLSearchParams("kind=malicious")).kind).toBe("malicious");
+    expect(parseIssueFilters(new URLSearchParams("kind=MALICIOUS")).kind).toBe("");
+    expect(issueFiltersToApiQuery(parseIssueFilters(new URLSearchParams("kind=malicious")))).toMatchObject({ kind: "malicious" });
+    expect(describeFilters({ ...DEFAULT_FILTERS, kind: "malicious" })).toContain("Malicious packages");
+  });
 });
 
 describe("split view links", () => {
