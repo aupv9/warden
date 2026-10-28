@@ -46,6 +46,12 @@ const (
 	EventAssigned        = "assigned"
 )
 
+// ReopenNote is the note of the status_changed event a scan writes when it
+// reopens an issue. The scan gate's blocking_new reads it back
+// (store.ScanNewIssues): issue_event has no scan column, and the note names
+// the scan exactly.
+func ReopenNote(scanID uuid.UUID) string { return "found again in scan " + scanID.String() }
+
 type Input struct {
 	OrgID, ProjectID, ScanID uuid.UUID
 	Status                   string // final scan status: completed or partial
@@ -396,7 +402,7 @@ func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error 
 	}
 	if s.Reopen {
 		due := a.sla.DueAt(sev, now)
-		changed, err := a.transition(ctx, s.Issue, issuestate.Reopened, due, "found again in scan "+a.in.ScanID.String())
+		changed, err := a.transition(ctx, s.Issue, issuestate.Reopened, due, ReopenNote(a.in.ScanID))
 		if err != nil {
 			return err
 		}
