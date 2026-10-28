@@ -283,6 +283,7 @@ type Repo interface {
 	VulnRepo
 	SignInRepo
 	LicensePolicyRepo // licenses.go
+	ComponentRepo     // components.go (v0.4)
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }

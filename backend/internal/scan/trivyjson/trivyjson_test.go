@@ -279,15 +279,15 @@ func TestParsePackages(t *testing.T) {
 }
 
 func TestParsePackagesSanitized(t *testing.T) {
-	b := report(M{"Target": "t‮", "Class": "os-pkgs", "Type": "alpine\x00", "Packages": []any{
-		M{"Name": "bad‮name\x1b", "Version": "1\x00", "Identifier": M{"PURL": "pkg:apk/alpine/x‮@1"}},
+	b := report(M{"Target": "t\u202e", "Class": "os-pkgs", "Type": "alpine\x00", "Packages": []any{
+		M{"Name": "bad\u202ename\x1b", "Version": "1\x00", "Identifier": M{"PURL": "pkg:apk/alpine/x\u202e@1"}},
 	}})
 	r := parse(t, b)
 	if len(r.Packages) != 1 {
 		t.Fatal(r.Packages)
 	}
 	p := r.Packages[0]
-	if strings.ContainsAny(p.Name+p.Version+p.Target, "\x00\x1b‮") || p.PURL != "" || p.Ecosystem != "unknown" {
+	if strings.ContainsAny(p.Name+p.Version+p.Target, "\x00\x1b\u202e") || p.PURL != "" || p.Ecosystem != "unknown" {
 		t.Fatalf("%+v", p)
 	}
 }

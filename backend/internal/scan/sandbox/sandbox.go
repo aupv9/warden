@@ -60,17 +60,20 @@ const trivyFlags = "--scanners vuln,license --list-all-pkgs --cache-dir /data --
 
 // trivyScript runs one Trivy scan and derives from its JSON report the SARIF
 // (vulnerabilities and licenses; the SARIF parser keeps only vulnerabilities)
-// and a CycloneDX SBOM. It is a constant: nothing from the upload is
-// interpolated. A failed SBOM conversion loses only the SBOM, not the results.
+// and the CycloneDX and SPDX SBOMs. It is a constant: nothing from the upload
+// is interpolated. A failed SBOM conversion loses only that SBOM (a partial
+// file is removed), not the results.
 func trivyScript(scan string) string {
 	return "set -eu; trivy " + scan + " " + trivyFlags +
 		" && trivy convert --format sarif --output /out/result.sarif /out/trivy.json" +
-		" && { trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json || rm -f /out/sbom.cdx.json; }"
+		" && { trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json || rm -f /out/sbom.cdx.json; }" +
+		" && { trivy convert --format spdx-json --output /out/sbom.spdx.json /out/trivy.json || rm -f /out/sbom.spdx.json; }"
 }
 
 var trivyArtifacts = map[string]ArtifactSpec{
 	ArtifactTrivyJSON: {File: "trivy.json", MaxBytes: 256 << 20},
 	ArtifactSBOM:      {File: "sbom.cdx.json", MaxBytes: 64 << 20},
+	ArtifactSPDX:      {File: "sbom.spdx.json", MaxBytes: 64 << 20},
 }
 
 // Tools is the fixed scanner set. Uploaded code can't configure its own scan: every
