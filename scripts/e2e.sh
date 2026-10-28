@@ -102,7 +102,9 @@ ok "org $ORG, project $PRJ"
 
 # --- Fixture repository --------------------------------------------------------
 step "Source scan"
-MAL_PKG="${E2E_MAL_PKG:-}" MAL_VER="${E2E_MAL_VERSION:-}"
+# A package version OSV lists as malicious (MAL-2025-41555); npm has removed it,
+# so it exists only as text in the lockfile below.
+MAL_PKG="${E2E_MAL_PKG-eslint-ts-view}" MAL_VER="${E2E_MAL_VERSION-2.12.1}"
 REPO="$WORK/repo"
 mkdir -p "$REPO"
 deps='"lodash":"4.17.15","gpl-thing":"1.0.0"'
@@ -165,7 +167,7 @@ check "API token reads project components" bash -c "curl -fsS -H \"Authorization
 step "Malicious packages"
 osv=$(api sec GET "/orgs/$ORG/vuln-data" | jq -r '[.sources[] | select(.name == "osv_mal:npm" and .loaded_at != null)] | length')
 if [ -z "$MAL_PKG" ]; then
-  skip "set E2E_MAL_PKG and E2E_MAL_VERSION to a MAL-listed npm package to test detection"
+  skip "E2E_MAL_PKG is empty"
 elif [ "$osv" != 1 ]; then
   skip "OSV npm feed not loaded (make mirror, then restart the worker)"
 else
