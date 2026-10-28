@@ -18,7 +18,8 @@ export type Perm =
   | "decide_exception"
   | "configure_policy"
   | "view_dashboard"
-  | "view_audit_log";
+  | "view_audit_log"
+  | "manage_integrations";
 
 export const MATRIX: Record<Perm, Role[]> = {
   manage_users: ["org_admin"],
@@ -33,6 +34,7 @@ export const MATRIX: Record<Perm, Role[]> = {
   configure_policy: ["security_lead"],
   view_dashboard: ["org_admin", "security_lead", "owner", "developer", "viewer"],
   view_audit_log: ["org_admin", "security_lead"],
+  manage_integrations: ["org_admin", "security_lead"],
 };
 
 /** rbac: developers may update only issues assigned to them. */
@@ -51,6 +53,7 @@ export const PERM_LABELS: Record<Perm, string> = {
   configure_policy: "Configure policy",
   view_dashboard: "View dashboard",
   view_audit_log: "View audit log",
+  manage_integrations: "Manage integrations",
 };
 
 export const MATRIX_ROLES: Role[] = ["org_admin", "security_lead", "owner", "developer", "viewer"];

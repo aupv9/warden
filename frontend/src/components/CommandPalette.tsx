@@ -93,6 +93,9 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       { id: "p-exceptions", group: "Pages", label: "Exceptions", to: `${base}/exceptions` },
       { id: "p-members", group: "Pages", label: "Members", to: `${base}/members` },
       ...(can("view_audit_log", org.role) ? [{ id: "p-audit", group: "Pages" as const, label: "Audit log", to: `${base}/audit-log` }] : []),
+      ...(can("manage_integrations", org.role)
+        ? [{ id: "p-integrations", group: "Pages" as const, label: "Integrations (webhooks and Slack)", to: `${base}/integrations` }]
+        : []),
     ];
     const found: Item[] = searchIssues
       ? flattenPages(issues.data?.pages).map((i) => ({

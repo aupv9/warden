@@ -47,6 +47,25 @@ export type C37 = Fits<S["SbomFormat"], T.SbomFormat>;
 export type C38 = Fits<T.Ecosystem, S["Ecosystem"]>;
 export type C39 = Fits<T.NotificationType, S["NotificationPref"]["type"]>;
 export type C40 = Fits<S["NotificationPref"]["type"], T.NotificationType>;
+// v0.4 wave 2
+type Ops = import("./schema").operations;
+export type C41 = Fits<S["ScanKind"], T.ScanKind>;
+export type C42 = Fits<T.Limits, S["Limits"]>;
+export type C43 = Fits<T.IssueCommit, NonNullable<S["Issue"]["commit"]>>;
+export type C44 = Fits<T.WebhookKind, S["WebhookKind"]>;
+export type C45 = Fits<S["WebhookKind"], T.WebhookKind>;
+export type C46 = Fits<T.WebhookEventType, S["WebhookEventType"]>;
+export type C47 = Fits<S["WebhookEventType"], T.WebhookEventType>;
+export type C48 = Fits<T.Webhook, S["Webhook"]>;
+export type C49 = Fits<T.CreatedWebhook, S["CreatedWebhook"]>;
+export type C50 = Fits<T.WebhookSecret, S["WebhookSecret"]>;
+export type C51 = Fits<T.WebhookDelivery, S["WebhookDelivery"]>;
+export type C52 = Fits<S["WebhookDelivery"]["type"], T.WebhookDeliveryType>;
+export type C53 = Fits<NonNullable<S["WebhookDelivery"]["error"]>, T.WebhookDeliveryError>;
+export type C54 = Fits<T.WebhookList, Ops["listWebhooks"]["responses"][200]["content"]["application/json"]["data"]>;
+export type C55 = Fits<T.Page<T.WebhookDelivery>, Ops["listWebhookDeliveries"]["responses"][200]["content"]["application/json"]["data"]>;
+export type C56 = Fits<T.WebhookDelivery, Ops["testWebhook"]["responses"][202]["content"]["application/json"]["data"]>;
+export type C57 = Fits<T.WebhookSecret, Ops["rotateWebhookSecret"]["responses"][200]["content"]["application/json"]["data"]>;
 // Every sort and issue-list filter value the UI sends is one the server accepts.
 type IssueListQuery = NonNullable<import("./schema").operations["listIssues"]["parameters"]["query"]>;
 export type Q1 = Fits<NonNullable<IssueListQuery["sort"]>, T.IssueSort>;
@@ -75,3 +94,8 @@ export type R9 = Fits<S["MarkReadRequest"], T.MarkReadBody>;
 export type R10 = Fits<S["OrgPolicyRequest"], T.UpdatePolicyBody>;
 export type R11 = Fits<S["SignInPolicyRequest"], T.SignInPolicyInput>;
 export type R12 = Fits<S["LicensePolicyRequest"], T.LicensePolicyInput>;
+// v0.4 wave 2
+export type R13 = Fits<S["CreateWebhookRequest"], T.CreateWebhookBody>;
+export type R14 = Fits<S["UpdateWebhookRequest"], T.UpdateWebhookBody>;
+type DeliveriesQuery = NonNullable<Ops["listWebhookDeliveries"]["parameters"]["query"]>;
+export type Q7 = Fits<keyof DeliveriesQuery, "limit" | "cursor">;

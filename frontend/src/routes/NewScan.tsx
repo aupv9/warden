@@ -4,7 +4,7 @@ import { errorMessage, fieldErrors, waitText } from "../api/errors";
 import { useUploadScan } from "../api/hooks/scans";
 import { isApiError } from "../api/client";
 import { TOOLS } from "../api/types";
-import type { Limits, Scan, ScanKind, Tool } from "../api/types";
+import type { Limits, Scan, ScanKind, Tool, UploadKind } from "../api/types";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { CopyButton } from "../components/CopyButton";
@@ -15,16 +15,18 @@ import { formatBytes, formatMb, TOOL_KIND, TOOL_LABELS } from "../lib/format";
 import { withDefaults } from "../lib/scanErrors";
 import { IMAGE_REF_MAX, isImageTarget, splitImageRef } from "../lib/intel";
 import { validateArchive, validateImageArchive, validateImageRef, validateImageTarget } from "../lib/upload";
+import { Link } from "react-router";
 import { useProjectCtx } from "./projectCtx";
 
 export function useLimits(): Limits {
   return withDefaults(useOrgCtx().me.limits);
 }
 
-export const KIND_LABELS: Record<ScanKind, string> = { source: "Source code", image: "Container image" };
+export const KIND_LABELS: Record<ScanKind, string> = { source: "Source code", image: "Container image", history: "Git history" };
 
-/** What the file picker accepts per kind (the checks in lib/upload.ts decide). */
-const ACCEPT: Record<ScanKind, string> = { source: ".zip,application/zip", image: ".tar,application/x-tar" };
+/** What the file picker accepts per kind (the checks in lib/upload.ts decide). History scans
+ *  (a git bundle) come only from the CLI: a browser can't build a bundle. */
+const ACCEPT: Record<UploadKind, string> = { source: ".zip,application/zip", image: ".tar,application/x-tar" };
 
 function ToolChecks({ tools, setTools, disabled }: { tools: Tool[]; setTools: (t: Tool[]) => void; disabled?: boolean }) {
   return (
@@ -96,8 +98,8 @@ export function NewScan({
   onStarted,
 }: {
   pickerRef: RefObject<HTMLInputElement | null>;
-  kind: ScanKind;
-  setKind: (k: ScanKind) => void;
+  kind: UploadKind;
+  setKind: (k: UploadKind) => void;
   onStarted: (scan: Scan) => void;
 }) {
   const { orgId } = useOrgCtx();
@@ -122,7 +124,7 @@ export function NewScan({
   const targetError = (showErrors ? validateImageTarget(target) : null) ?? server.target;
   const refError = validateImageRef(imageRef) ?? server.image_ref;
 
-  function switchKind(next: ScanKind) {
+  function switchKind(next: UploadKind) {
     if (next === kind || locked) return;
     upload.reset();
     setFile(null);
@@ -444,6 +446,12 @@ export function NewScan({
             )}
           </div>
         </div>
+        {/* v0.4 wave 2: history scans can't be made here (a browser can't build a git bundle). */}
+        <p className="faint small history-note">
+          Secrets in git history are scanned from CI with <code>warden scan --history</code>, which needs the full history (
+          <code>fetch-depth: 0</code> on GitHub, <code>GIT_DEPTH: 0</code> on GitLab).{" "}
+          <Link to={`/orgs/${orgId}/projects/${project.id}/settings#ci-setup`}>Set it up in CI setup</Link>.
+        </p>
       </div>
     </Card>
   );
