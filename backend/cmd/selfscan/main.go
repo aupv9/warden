@@ -4,6 +4,7 @@
 //
 //	go -C backend run ./cmd/selfscan -root .. -fail-on high
 //	go -C backend run ./cmd/selfscan -root .. -zip sample.zip   # push any archive through
+//	go -C backend run ./cmd/selfscan -root .. -bundle repo.bundle   # a history scan: Gitleaks over every commit
 package main
 
 import (
@@ -17,9 +18,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/pack"
+	"github.com/aupv9/warden/backend/internal/scan/bundlecheck"
 	"github.com/aupv9/warden/backend/internal/scan/gate"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
@@ -40,6 +43,9 @@ func main() {
 type options struct {
 	root, runtime, mirror, reports, baseline, zipPath, failOn string
 	tools                                                     []string
+	// bundlePath: a history scan of this git bundle (Gitleaks only).
+	bundlePath string
+	maxCommits int
 }
 
 func run() (int, error) {
@@ -53,6 +59,8 @@ func run() (int, error) {
 	flag.StringVar(&o.baseline, "baseline", "", "baseline (default ROOT/.warden/baseline.json)")
 	flag.StringVar(&tools, "tools", strings.Join(sandbox.ToolNames, ","), "comma-separated scanners")
 	flag.StringVar(&o.zipPath, "zip", "", "scan this archive instead of the Warden repo")
+	flag.StringVar(&o.bundlePath, "bundle", "", "history scan of this git bundle (Gitleaks in git mode) instead of the Warden repo")
+	flag.IntVar(&o.maxCommits, "max-commits", historyMaxCommits, "with -bundle: the newest commits Gitleaks reads (scan.history_max_commits)")
 	flag.Parse()
 
 	failOn, err := severity.Parse(o.failOn)
@@ -75,6 +83,12 @@ func run() (int, error) {
 	def(&o.mirror, ".cache/mirror")
 	def(&o.reports, "reports/selfscan")
 	def(&o.baseline, ".warden/baseline.json")
+	if o.bundlePath != "" {
+		if o.zipPath != "" {
+			return 2, fmt.Errorf("-bundle and -zip: give one")
+		}
+		tools = "gitleaks"
+	}
 	for _, t := range strings.Split(tools, ",") {
 		if t == "" {
 			continue
@@ -120,21 +134,30 @@ func run() (int, error) {
 }
 
 func scan(o options, failOn severity.Severity, images map[string]string, scanID, scanDir string) (int, error) {
-	zipPath := filepath.Join(scanDir, "src.zip")
-	var err error
-	if o.zipPath != "" {
-		err = copyFile(o.zipPath, zipPath)
+	specs := sandbox.Tools
+	if o.bundlePath != "" {
+		if err := prepareBundle(o.bundlePath, scanDir); err != nil {
+			return 1, err
+		}
+		specs = map[string]sandbox.ToolSpec{"gitleaks": sandbox.HistoryTool(sandbox.HistoryLimits{
+			MaxBytes: historyMaxBytes, MaxCommits: o.maxCommits, ScanTimeout: 30 * time.Minute})}
 	} else {
-		_, err = pack.Repo(o.root, zipPath, "warden/")
+		zipPath := filepath.Join(scanDir, "src.zip")
+		var err error
+		if o.zipPath != "" {
+			err = copyFile(o.zipPath, zipPath)
+		} else {
+			_, err = pack.Repo(o.root, zipPath, "warden/")
+		}
+		if err != nil {
+			return 2, err
+		}
+		res, err := zipcheck.Extract(zipPath, filepath.Join(scanDir, "src"), zipcheck.DefaultLimits())
+		if err != nil {
+			return 1, err
+		}
+		fmt.Printf("==> extracted %d files (%d bytes); %d warnings\n", res.Files, res.TotalBytes, len(res.Warnings))
 	}
-	if err != nil {
-		return 2, err
-	}
-	res, err := zipcheck.Extract(zipPath, filepath.Join(scanDir, "src"), zipcheck.DefaultLimits())
-	if err != nil {
-		return 1, err
-	}
-	fmt.Printf("==> extracted %d files (%d bytes); %d warnings\n", res.Files, res.TotalBytes, len(res.Warnings))
 
 	key, err := orchestrator.NewHMACKey()
 	if err != nil {
@@ -151,7 +174,7 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 	var wg sync.WaitGroup
 	for i, t := range o.tools {
 		wg.Go(func() {
-			runs[i] = sandbox.Run(context.Background(), sandbox.Tools[t], sandbox.RunConfig{
+			runs[i] = sandbox.Run(context.Background(), specs[t], sandbox.RunConfig{
 				ScanID: scanID, ScanDir: scanDir, Image: images[t], Runtime: o.runtime, MirrorDir: o.mirror,
 			})
 		})
@@ -192,6 +215,7 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 		if code, err = gate.Run(gate.Options{
 			Inputs: inputs, FailOn: failOn, Baseline: o.baseline,
 			SourceRoot: filepath.Join(scanDir, "src"), JSONOut: filepath.Join(o.reports, "findings.json"),
+			History: o.bundlePath != "",
 		}, os.Stdout); err != nil {
 			return 2, err
 		}
@@ -201,6 +225,34 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 		return 1, nil
 	}
 	return code, nil
+}
+
+// The server's defaults (scan.history_upload_max_mb, history_max_commits).
+const (
+	historyMaxBytes   = 1024 << 20
+	historyMaxCommits = 50_000 // the -max-commits default
+)
+
+// prepareBundle checks the bundle as the worker does (bundlecheck: never
+// unpacked) and mounts it read-only at src/repo.bundle.
+func prepareBundle(p, scanDir string) error {
+	r, err := bundlecheck.Check(p, bundlecheck.Limits{MaxBytes: historyMaxBytes})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("==> bundle v%d (%s): %d refs, %d objects\n", r.Version, r.ObjectFormat, r.Refs, r.Objects)
+	src := filepath.Join(scanDir, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		return err
+	}
+	dest := filepath.Join(src, "repo.bundle")
+	if err := copyFile(p, dest); err != nil {
+		return err
+	}
+	if err := os.Chmod(dest, 0o444); err != nil {
+		return err
+	}
+	return os.Chmod(src, 0o555)
 }
 
 type lockEntry struct {

@@ -128,7 +128,9 @@ func issueWhere(a *args, q service.IssueQuery) string {
 	case "code":
 		w = append(w, `i.target = ''`)
 	case "image":
-		w = append(w, `i.target <> ''`)
+		w = append(w, `i.target <> '' AND i.target <> `+a.add(service.HistoryTarget))
+	case "history":
+		w = append(w, `i.target = `+a.add(service.HistoryTarget))
 	}
 	if q.Target != "" {
 		w = append(w, `i.target = `+a.add(q.Target))
@@ -217,7 +219,8 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 	q := `SELECT ` + issueSummaryCols("$2") + `, i.description, i.remediation, i.snippet, i.end_line, i.cwe, i.cve,
 			fs.id, fs.created_at, ls.id, ls.created_at,
 			(SELECT count(*) FROM occurrence o WHERE o.issue_id = i.id), i.version, i.assignee_id, i.number, p.key,
-			vi.epss_percentile, to_char(vi.kev_added, 'YYYY-MM-DD'), coalesce(vi.kev_ransomware, false)` +
+			vi.epss_percentile, to_char(vi.kev_added, 'YYYY-MM-DD'), coalesce(vi.kev_ransomware, false),
+			i.commit_sha, i.committed_at, i.commit_count` +
 		issueFrom + ` JOIN scan fs ON fs.id = i.first_seen_scan_id JOIN scan ls ON ls.id = i.last_seen_scan_id
 		WHERE i.id = $1`
 	if forUpdate {
@@ -227,14 +230,20 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 		iss           service.Issue
 		aID           *uuid.UUID
 		aEmail, aName *string
+		commitSHA     *string
+		committedAt   *service.Time
+		commitCount   *int
 	)
 	dest := append(summaryDest(&iss.IssueSummary, &aID, &aEmail, &aName),
 		&iss.Description, &iss.Remediation, &iss.Snippet, &iss.EndLine, &iss.CWE, &iss.CVE,
 		&iss.FirstSeenScan.ID, &iss.FirstSeenScan.CreatedAt, &iss.LastSeenScan.ID, &iss.LastSeenScan.CreatedAt,
 		&iss.Occurrences, &iss.Version, &iss.AssigneeID, &iss.Number, &iss.ProjectKey,
-		&iss.EPSSPercentile, &iss.KEVAdded, &iss.KEVRansomware)
+		&iss.EPSSPercentile, &iss.KEVAdded, &iss.KEVRansomware, &commitSHA, &committedAt, &commitCount)
 	err := r.tx.QueryRow(ctx, q, issueID, now).Scan(dest...)
 	iss.Assignee = userRef(aID, aEmail, aName)
+	if commitSHA != nil && commitCount != nil {
+		iss.Commit = &service.IssueCommit{SHA: *commitSHA, CommittedAt: committedAt, Count: *commitCount}
+	}
 	return iss, mapErr(err)
 }
 

@@ -80,7 +80,8 @@ type Settings struct {
 	PublicBaseURL string
 	// DigestHour is the UTC hour of the daily SLA digest.
 	DigestHour int
-	// Limits are the archive limits (scan.upload_max_mb, unzip_max_mb, unzip_max_files).
+	// Limits are the archive limits (scan.upload_max_mb, unzip_max_mb,
+	// unzip_max_files) and the image and history ones.
 	Limits orchestrator.Limits
 	// SBOMRetention: stored SBOMs are deleted this long after their scan.
 	SBOMRetention time.Duration
@@ -154,7 +155,8 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 func ScanLimits(s config.ScanSection) orchestrator.Limits {
 	return orchestrator.Limits{Zip: zipcheck.Limits{
 		MaxZipBytes: int64(s.UploadMaxMB) << 20, MaxTotalBytes: int64(s.UnzipMaxMB) << 20, MaxEntries: s.UnzipMaxFiles,
-	}, ImageMaxBytes: int64(s.ImageUploadMaxMB) << 20}
+	}, ImageMaxBytes: int64(s.ImageUploadMaxMB) << 20,
+		HistoryMaxBytes: int64(s.HistoryUploadMaxMB) << 20, HistoryMaxCommits: s.HistoryMaxCommits}
 }
 
 // OrgKey derives the organization's secret-fingerprint key from the master key:

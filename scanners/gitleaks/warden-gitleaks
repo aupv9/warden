@@ -1,8 +1,77 @@
 #!/bin/sh
+# Runs Gitleaks in the sandbox and hands its SARIF to warden-redact. The mode
+# is an argument the sandbox sets (sandbox.Tools, sandbox.HistoryTool), never
+# anything from the upload:
+#
+#   warden-gitleaks                  source scans: the files under /src
+#   warden-gitleaks history MAX      history scans: the newest MAX commits of the
+#                                    bundle /src/repo.bundle (checked by bundlecheck)
+#
+# Exit 3: the bundle's history is incomplete (a shallow clone's bundle, which
+# has no prerequisites but lacks the boundary's parents); exit 4: git refused
+# the bundle. The worker reports them as BUNDLE_INCOMPLETE and BUNDLE_INVALID.
 set -eu
-gitleaks dir /src \
-  --config /data/gitleaks.toml \
-  --gitleaks-ignore-path /opt/warden/noignore \
-  --report-format sarif --report-path /tmp/raw.sarif \
-  --exit-code 0 --no-banner --log-level warn
+
+# Warden's config only; no ignore file or config from the upload.
+leaks() {
+  gitleaks "$@" \
+    --config /data/gitleaks.toml \
+    --gitleaks-ignore-path /opt/warden/noignore \
+    --report-format sarif --report-path /tmp/raw.sarif \
+    --exit-code 0 --no-banner --log-level warn
+}
+
+case "${1:-}" in
+"")
+  leaks dir /src
+  ;;
+history)
+  max=${2:-}
+  case "$max" in '' | *[!0-9]*) echo "warden-gitleaks: bad commit limit" >&2; exit 2 ;; esac
+  # Nothing configures git but this script: no system or global config, a
+  # fresh repository, no hooks. A bundle carries only refs and objects (no
+  # config, hooks or attributes); diff drivers and textconv would need config.
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME=/tmp LC_ALL=C GIT_TERMINAL_PROMPT=0
+  repo=/tmp/repo.git
+  git init -q --bare "$repo"
+  set -- '+refs/*:refs/*'
+  # A detached HEAD may point at a commit no branch has.
+  if git -C "$repo" bundle list-heads /src/repo.bundle HEAD 2>/dev/null | grep -q .; then
+    set -- "$@" '+HEAD:refs/warden/HEAD'
+  fi
+  # git's messages can quote ref names from the bundle: keep them out of the
+  # logs, print only ours.
+  rc=0
+  git -C "$repo" -c transfer.fsckObjects=true -c core.hooksPath=/dev/null \
+    fetch -q --no-tags --no-write-fetch-head /src/repo.bundle "$@" 2>/tmp/fetch.err || rc=$?
+  case $rc in
+  0) ;;
+  1 | 128)
+    if grep -q 'did not send all necessary objects' /tmp/fetch.err; then
+      echo "warden-gitleaks: the bundle's history is incomplete" >&2
+      exit 3
+    fi
+    echo "warden-gitleaks: git refused the bundle" >&2
+    exit 4
+    ;;
+  *)
+    echo "warden-gitleaks: git fetch failed ($rc)" >&2
+    exit "$rc"
+    ;;
+  esac
+  rm -f /tmp/fetch.err
+  total=$(git -C "$repo" rev-list --all --count)
+  scanned=$total truncated=false
+  if [ "$total" -gt "$max" ]; then
+    scanned=$max truncated=true
+  fi
+  # git log's default order is newest first, so a cut keeps the newest commits.
+  leaks git "$repo" --log-opts="--all --max-count=$max"
+  printf '{"commits":%d,"truncated":%s}\n' "$scanned" "$truncated" >/out/history.json
+  ;;
+*)
+  echo "warden-gitleaks: unknown mode" >&2
+  exit 2
+  ;;
+esac
 exec warden-redact -key-file /run/warden/hmac /tmp/raw.sarif /out/result.sarif

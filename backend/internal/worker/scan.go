@@ -168,7 +168,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		plan, err = results.Process(fin, db, results.Input{
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
 			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, Packages: out.Packages, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
-			SBOM: stored,
+			SBOM: stored, History: history(out.History),
 		})
 		if err != nil {
 			return err
@@ -199,6 +199,14 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		log.Info("component inventory replaced", "added", c.Added, "kept", c.Kept, "removed", c.Removed, "skipped", c.Skipped)
 	}
 	return nil
+}
+
+// history maps the orchestrator's history report onto the processor's.
+func history(h *orchestrator.History) *results.History {
+	if h == nil {
+		return nil
+	}
+	return &results.History{Commits: h.Commits, Truncated: h.Truncated}
 }
 
 func errorCode(err error, timedOut bool) string {

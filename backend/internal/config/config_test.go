@@ -34,7 +34,8 @@ func TestDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.App.Name != "warden" || c.Server.Port != 8010 || c.Scan.Timeout != 30*time.Minute ||
-		c.OIDC.Audience != "warden-api" || c.Scan.SandboxRuntime != "runsc" || c.Scan.SBOMRetention != 8760*time.Hour || c.Scan.ImageUploadMaxMB != 2048 {
+		c.OIDC.Audience != "warden-api" || c.Scan.SandboxRuntime != "runsc" || c.Scan.SBOMRetention != 8760*time.Hour || c.Scan.ImageUploadMaxMB != 2048 ||
+		c.Scan.HistoryUploadMaxMB != 1024 || c.Scan.HistoryMaxCommits != 50_000 {
 		t.Fatalf("%+v", c)
 	}
 }
@@ -45,12 +46,13 @@ func TestEnvOverridesNestedKeys(t *testing.T) {
 	t.Setenv("WARDEN_SCAN__TIMEOUT", "45m")
 	t.Setenv("WARDEN_DATABASE__DSN", "postgres://a@b/c")
 	t.Setenv("WARDEN_OIDC__ISSUER", "https://sso.example.com/realms/x")
+	t.Setenv("WARDEN_SCAN__HISTORY_MAX_COMMITS", "1000")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.Server.Port != 9999 || c.Scan.Timeout != 45*time.Minute || c.Database.DSN != "postgres://a@b/c" ||
-		c.OIDC.Issuer != "https://sso.example.com/realms/x" {
+		c.OIDC.Issuer != "https://sso.example.com/realms/x" || c.Scan.HistoryMaxCommits != 1000 {
 		t.Fatalf("%+v", c)
 	}
 }
