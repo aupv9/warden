@@ -19,19 +19,20 @@ import (
 // secret is the spec's public example, assembled here so no secret-shaped
 // literal sits in the repository.
 func TestSignMatchesStandardWebhooksVector(t *testing.T) {
+	id := "msg_" + "p5jXN8AQM9" + "LWM0D4loKWxJek"
 	secret, err := base64.StdEncoding.DecodeString("MfKQ9r8GKYqr" + "TwjUPD8ILPZIo2LaLaSw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Sign(secret, "msg_p5jXN8AQM9LWM0D4loKWxJek", 1614265330, []byte(`{"test": 2432232314}`))
+	got := Sign(secret, id, 1614265330, []byte(`{"test": 2432232314}`))
 	if got != "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=" {
 		t.Fatal(got)
 	}
 	// Any change to id, timestamp or body changes it.
 	for _, other := range []string{
-		Sign(secret, "msg_p5jXN8AQM9LWM0D4loKWxJel", 1614265330, []byte(`{"test": 2432232314}`)),
-		Sign(secret, "msg_p5jXN8AQM9LWM0D4loKWxJek", 1614265331, []byte(`{"test": 2432232314}`)),
-		Sign(secret, "msg_p5jXN8AQM9LWM0D4loKWxJek", 1614265330, []byte(`{"test": 2432232315}`)),
+		Sign(secret, id[:len(id)-1]+"l", 1614265330, []byte(`{"test": 2432232314}`)),
+		Sign(secret, id, 1614265331, []byte(`{"test": 2432232314}`)),
+		Sign(secret, id, 1614265330, []byte(`{"test": 2432232315}`)),
 	} {
 		if other == got {
 			t.Fatal("signature ignores a part")
