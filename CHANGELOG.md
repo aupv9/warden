@@ -31,10 +31,29 @@ All notable changes to Warden are listed here. The format follows
 - `warden-admin org add-member` and `warden-admin user relink` (`--sub`, or `--next-sign-in`
   within a window of up to 7 days) for moving accounts to another identity provider. Accounts
   are still never linked by email automatically.
+- Container image scans: upload a `docker save` tarball (or `warden scan --image REF`); it is
+  validated without being unpacked and scanned by Trivy only. Issues are tracked per image
+  repository, so image and source scans never auto-fix each other's issues.
+- A CycloneDX SBOM for every scan that runs Trivy, downloadable from the scan (5-minute
+  link) or with `warden scan --sbom-out`; kept for `WARDEN_SCAN__SBOM_RETENTION` (1 year).
+- Org license policy (off by default): per Trivy license category allow / review (Medium) /
+  block (High), plus Deny and Allow lists of SPDX ids.
+- CISA KEV and FIRST EPSS from the mirror (`make mirror`), loaded hourly by the worker:
+  KEV and EPSS on issues, filters and a sort in the issue list, "Exploited (KEV)" and
+  "Licenses" views, `fail_on_kev` on the gate (`warden scan --fail-on-kev`), and a
+  "Vulnerability data" card that shows how fresh the feeds are.
 
 ### Changed
 
 - CI blocks un-baselined High self-scan findings on every pull request, not only on tags.
+- Trivy writes one JSON report; the SARIF and the SBOM are converted from it. Vulnerability
+  fingerprints are unchanged.
+
+### Fixed
+
+- `WARDEN_SCAN__UNZIP_MAX_MB` and `WARDEN_SCAN__UNZIP_MAX_FILES` were ignored (the worker
+  always used 1 GB and 100,000 files), and source archives were capped at 200 MB whatever
+  `WARDEN_SCAN__UPLOAD_MAX_MB` said.
 - The auto-close guard applies only when a scan would fix 5 or more issues, so a small
   project fixing its only finding gets it closed.
 

@@ -1,8 +1,9 @@
-# Warden web UI: design spec (v0.2)
+# Warden web UI: design spec (v0.3)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
-projects, an Overview page and the MFA rule; see "v0.2 screens" below. The images below are screenshots of the app running on its
+projects, an Overview page and the MFA rule; see "v0.2 screens" below. v0.3 adds image scans,
+SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -119,6 +120,25 @@ navigation items or the bell; 01 and 03 are current.
 
 ### 22. Phone (v0.2)
 <img src="design/26-phone-overview.png" alt="Phone: Overview with the severity panels stacked" width="260"> <img src="design/27-phone-notifications.png" alt="Phone: notifications popover from the top bar" width="260">
+
+### 23. Image scan and SBOM (v0.3)
+![Scans tab: a finished image scan with its target and the SBOM box](design/28-image-scan-sbom.png)
+![New scan card in Container image mode](design/29-new-image-scan.png)
+
+### 24. Known exploited issues (v0.3)
+![Issue list on the Exploited (KEV) view, sorted by exploit probability](design/30-issues-kev.png)
+![Issue detail with the Exploitation card](design/31-issue-kev.png)
+
+### 25. License issue (v0.3)
+![Issue detail of a license-policy issue](design/32-issue-license.png)
+
+### 26. Org settings: license policy and vulnerability data (v0.3)
+![License policy form](design/33-license-policy.png)
+![Vulnerability data card](design/34-vuln-data.png)
+
+### 27. Dark theme and phone (v0.3)
+![Exploited (KEV) view in the dark theme](design/35-dark-issues-kev.png)
+<img src="design/36-phone-issue-kev.png" alt="Phone: issue with the Exploitation card" width="260"> <img src="design/37-phone-new-image-scan.png" alt="Phone: new image scan" width="260">
 
 ## Issue triage
 
@@ -332,6 +352,81 @@ tokens and 300 notifications to check long lists. Sign-in settings: `?mock_role=
 allows only `acme.example`, so adding anyone else shows the domain error;
 `?mock_error=MFA_NOT_ENABLED` makes saves fail with the 409.
 
+## v0.3 screens
+
+### Image scans (Scans tab)
+
+The New scan card has a **Source code / Container image** switch (`aria-pressed`). Image mode
+takes the plain `.tar` from `docker save` (`.tar.gz` and `.zip` are refused) up to
+`limits.image_upload_max_mb` (default 2 GB). "Image repository" is required (the contract
+pattern: lowercase, no tag); pasting `repo:tag` moves the full reference to "Image reference
+(optional)" and announces it. The card shows copyable `docker save -o app.tar IMAGE` and
+`warden scan --image IMAGE`, and says that Warden pulls from no registry, keeps no credentials
+and doesn't scan secrets in images. The scanner is fixed to Trivy; the button reads "Scan image".
+History rows and the scan panel show an **Image** tag with the image reference (or target); the
+panel adds "Issues tracked under <target>", and "View issues" opens the issue list with
+`?target=`. `IMAGE_*` errors count as Rejected.
+
+### SBOM
+
+A completed or partial scan with `sbom` shows a "Software bill of materials" box: "CycloneDX
+JSON · n components · size" and **Download SBOM (CycloneDX)**. Each click calls
+`GET …/sbom` and starts a browser download through a temporary `<a download>`, only for
+absolute http(s) URLs; the file is never fetched or rendered by the app. Then the box shows the
+SHA-256 and a toast confirms. An expired SBOM (404) shows inline: "This scan's SBOM is no longer
+available…".
+
+### Exploit data in the issue list and issue page
+
+- **List:** dependency rows show a red **KEV** tag (accessible name "Known exploited (CISA
+  KEV)") and "EPSS 94%"; license issues a **License** tag; image issues' location starts with
+  the target. Sort "Exploit probability" (`-epss`). Filters: Type (Vulnerabilities /
+  Licenses), Known exploited (an on/off chip), EPSS ≥ 1 / 10 / 50 %, Source (Source code /
+  Container images), Image (text, contract pattern, suggestions from loaded issues). Saved
+  views with counts: **Exploited (KEV)** (`kev=true`) and **Licenses** (`kind=license`). On a
+  phone the filters are in the Filters sheet.
+- **Issue page:** an **Exploitation** card before Where: the KEV block (date added, a
+  ransomware line when KEV says so, a "CISA KEV catalog" link in a new tab with
+  `noopener noreferrer`), then the EPSS percentage with "higher than x% of scored CVEs", and the
+  note that KEV and EPSS help decide what to fix first but don't change the severity or the
+  SLA. CVE ids link to NVD only when they match `^CVE-\d{4}-\d{4,7}$`. License issues read
+  "License <SPDX> (<category>) in <pkg ver>" with no upgrade line; image issues "Image <target> ·
+  <path> · pkg ver → upgrade to fixed". The Details card gains License, Image and Exploitation
+  rows.
+- **Overview:** a fifth tile, **Known exploited** (`IssueCounts.kev`), links to
+  `/issues?kev=true` with the project filter carried over.
+
+### Org settings: license policy
+
+A card under the sign-in cards, with an On/Off dot in its header, a short intro and the note
+that license data depends on the lockfile (npm, Cargo and images have it; `go.mod` and
+`requirements.txt` don't).
+
+- *By category:* seven rows (name, one-line help, a select **Allow / Review · Medium issue /
+  Block · High issue**) and **Apply recommended preset** (forbidden → Block, restricted →
+  Review, the rest Allow; disabled when already applied).
+- *Deny* and *Allow:* SPDX ids as chips with "Remove X from Deny" buttons, an input that takes
+  pasted lists, and "n of 100". Ids are checked against the SPDX pattern; duplicates and a
+  Deny/Allow overlap are refused regardless of case.
+- The form says when the draft turns the policy off. Discard and Save work as in the sign-in
+  form; 422 field errors map to `categories.x`, `deny[i]` and `allow[i]`; the toast says the
+  policy applies from the next scan.
+- People who aren't security leads see it as text: "Off. No license issues are created…", or
+  the categories and lists.
+
+### Org settings: vulnerability data
+
+Every member sees one row per feed (Trivy DB, CISA KEV, FIRST EPSS): Up to date / Out of date /
+Not loaded yet, "Updated <relative> · <absolute>", the record count and when it was loaded.
+Stale rows get a warning tint, and a banner reads "Out of date or missing: … Ask your operator
+to run `make mirror` daily."
+
+### Mock mode (v0.3)
+
+`?mock_vuln=fresh|stale|missing` switches the vulnerability data. Acme Labs' license policy is
+off. Name an image upload `…multiple….tar` or `…invalid….tar` to see a rejection. SBOM links
+are not followed in mock mode.
+
 ## Audit log
 
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
@@ -400,7 +495,7 @@ people can search for it or quote it. Unknown codes fall back to the last row of
 
 ### Scan `error_code`
 
-A scan with status `failed` and a `ZIP_*` or `CHECKSUM_MISMATCH` code is shown as
+A scan with status `failed` and a `ZIP_*`, `IMAGE_*` or `CHECKSUM_MISMATCH` code is shown as
 **Rejected** (the archive was refused before any scanner ran); any other failed scan is
 **Failed**. There is no `rejected` status in the API. History rows use the short text; the scan
 card uses the full text.
@@ -414,13 +509,16 @@ card uses the full text.
 | `ZIP_ENCRYPTED` | password-protected | The archive is password-protected. Upload a .zip without a password. |
 | `ZIP_INVALID` | not a readable .zip | This isn't a readable .zip file. Create the archive again with a standard zip tool. |
 | `ZIP_EMPTY` | no source files | No files were left to scan. Warden skips `node_modules`, `vendor`, `dist`, `build`, `.git` and `.venv`. |
+| `IMAGE_INVALID` | not a docker save archive | The file isn't a docker save archive with one image. Create it with `docker save -o app.tar IMAGE` and upload the .tar as it is, not compressed. |
+| `IMAGE_TOO_LARGE` | image too large | The image is larger than Warden accepts (2 GB, or too many files or layers in the archive). Scan a smaller image, such as the final stage of a multi-stage build. |
+| `IMAGE_MULTIPLE` | more than one image | The archive holds more than one image. Save one image per file: `docker save -o app.tar IMAGE`. |
 | `CHECKSUM_MISMATCH` | file changed in upload | The stored file doesn't match the one you picked, so it was not scanned. Upload it again. |
 | `ALL_SCANNERS_FAILED` | every scanner failed | Every scanner failed, so there are no results. Each scanner's error is listed below. If it happens again, tell your operator. |
 | `TIMEOUT` | took over 30 min | The scan took longer than the 30-minute limit and was stopped. |
 | anything else | failed | The scan failed (`<code>`). Tell your operator; the worker log has the details. |
 
 The numbers are the server defaults (`WARDEN_SCAN__UPLOAD_MAX_MB`, `__UNZIP_MAX_MB`,
-`__UNZIP_MAX_FILES`, `__TIMEOUT`); see Open decisions. A *partial* scan says which scanner
+`__UNZIP_MAX_FILES`, `__IMAGE_UPLOAD_MAX_MB`, `__TIMEOUT`); see Open decisions. A *partial* scan says which scanner
 failed or timed out: "Partial · Trivy timed out".
 
 Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running · *n* of *m* done,
@@ -541,6 +639,11 @@ Below 800 px (screenshots in section 12):
   put in the URL, browser storage or a log (`src/api/tokens.test.ts`). Lists show the prefix
   only. CI snippets read the token from a CI secret and never contain one.
 - **Notification links (v0.2)** are followed only when they are same-origin app paths.
+- **SBOM downloads (v0.3)** go through a temporary `<a download>` to the presigned URL, only
+  when it is an absolute http(s) URL. The app never fetches, parses or renders the SBOM: its
+  content comes from the scanned code.
+- **External links (v0.3):** NVD links are built only from ids matching the CVE pattern; KEV,
+  NVD and identity-provider links open with `rel="noopener noreferrer"`.
 
 ## Visual system
 
@@ -640,6 +743,18 @@ In the design but not in the API contract:
 - Bulk assign across projects: the dialog lists people who are members of every selected
   issue's project. The API doesn't say what happens when the assignee isn't a member of one of
   them; it should skip that issue and count it as skipped.
+
+In v0.3, in the design but not in the API contract:
+
+- License issues have no category field; the UI reads it from the end of the title
+  ("… (restricted)") and shows none if the title has another shape.
+- There is no list of a project's image targets, so the Image filter is free text with
+  suggestions from loaded issues. A small `GET …/targets` would fix that.
+
+## Not in v0.3
+
+Org-wide component search ("which projects use xz 5.6.0?"), SPDX output, pulling images from
+a registry, secrets in image layers, malicious-package advisories.
 
 ## Not in v0.2
 

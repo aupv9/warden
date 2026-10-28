@@ -25,13 +25,17 @@ go under `[Unreleased]` in `CHANGELOG.md`.
   MFA from `amr`/`acr` per `oidc.mfa_*`. Don't add provider-specific paths; Keycloak is only the dev default.
   The provider is server config only; an org's sign-in policy (`internal/service/signin.go`) may only
   tighten it. Never link accounts by email: `warden-admin user relink` is the only way to move a subject.
+- CISA KEV / FIRST EPSS (`internal/intel`, job `load_vuln_intel`) only rank issues: never let them change
+  severity, status or SLA, or hide an issue. Image-scan issues are scoped by `issue.target`; auto-fix
+  must stay per target.
 - Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`).
 
 ## Rules
 - This is a security product, and its own security beats features. Keep the invariants in
   README "Security invariants".
-- Hostile-input code (`zipcheck`, `sarif`, `redact`) must have tests for the attack, not
-  just the happy path.
+- Hostile-input code (`zipcheck`, `imagecheck`, `sarif`, `trivyjson`, `sbom`, `redact`, `intel`) must
+  have tests for the attack, not just the happy path. Only `zipcheck` extracts archives; `imagecheck`
+  validates `docker save` tarballs without unpacking them (Trivy reads them in the sandbox).
 - New scanner flags or images: verify against real scanner output with
   `go -C backend run ./cmd/selfscan -root .. -zip <sample.zip>`, and check that no raw secret
   appears in any SARIF. Pin new images by digest to a release ≥ 2 weeks old.
