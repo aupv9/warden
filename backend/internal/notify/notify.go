@@ -74,6 +74,8 @@ type Payload struct {
 	Decision string `json:"decision,omitempty"`
 	// Date of an SLA digest (YYYY-MM-DD, UTC).
 	Date string `json:"date,omitempty"`
+	// WebhookID of webhook.disabled.
+	WebhookID *uuid.UUID `json:"webhook_id,omitempty"`
 }
 
 // Event is one outbox row to write.

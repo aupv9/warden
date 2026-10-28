@@ -109,7 +109,8 @@ type state struct {
 	Intel      map[string]IntelRow   // vuln_intel by CVE (intel.go)
 	VulnSrc    []service.VulnDataSource
 	nextID     int64
-	ext        extState // v0.2 tables (v02.go)
+	ext        extState     // v0.2 tables (v02.go)
+	hooks      webhookState // v0.4 wave 2 (webhooks.go)
 }
 
 func (s *state) clone() *state {
@@ -132,6 +133,7 @@ func (s *state) clone() *state {
 	c.Intel = maps.Clone(s.Intel)
 	c.VulnSrc = slices.Clone(s.VulnSrc)
 	c.ext = s.ext.clone()
+	c.hooks = s.hooks.clone()
 	return &c
 }
 

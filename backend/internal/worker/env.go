@@ -24,6 +24,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
+	"github.com/aupv9/warden/backend/internal/webhook"
 )
 
 // DB is what job code may do inside a transaction.
@@ -85,6 +86,8 @@ type Settings struct {
 	Limits orchestrator.Limits
 	// SBOMRetention: stored SBOMs are deleted this long after their scan.
 	SBOMRetention time.Duration
+	// Webhooks configure webhook delivery (webhooks.go).
+	Webhooks WebhookSettings
 }
 
 // Env is everything the jobs need; tests substitute fakes.
@@ -139,6 +142,19 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 	if err != nil {
 		return nil, fmt.Errorf("smtp: %w", err)
 	}
+	keys, err := cfg.Keyring()
+	if err != nil {
+		return nil, err
+	}
+	if keys == nil {
+		log.Info("no secrets.key: webhooks are unavailable and existing ones aren't sent")
+	}
+	if len(cfg.Webhook.AllowHosts) > 0 {
+		log.Warn("webhook.allow_hosts may be reached over http and at private addresses; for development only",
+			"hosts", []string(cfg.Webhook.AllowHosts))
+	}
+	hooks := WebhookSettings{Keys: keys, FailureLimit: cfg.Webhook.FailureLimit,
+		Client: webhook.NewClient(webhook.Policy{AllowHosts: cfg.Webhook.AllowHosts}, webhook.ClientOptions{})}
 	return &Env{
 		Tx: PoolTx(pool), Store: store, Sandbox: DockerSandbox{}, Mailer: mailer, Now: time.Now, Log: log,
 		Settings: Settings{
@@ -146,6 +162,7 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 			HMACMaster: master, GuardRatio: s.AutocloseGuardRatio, ScanTimeout: s.Timeout,
 			SourceRetention: s.SourceRetention, AbandonUploadAfter: abandonUploadAfter, StuckAfter: stuckAfter,
 			PublicBaseURL: base, DigestHour: m.DigestHour, Limits: ScanLimits(s), SBOMRetention: s.SBOMRetention,
+			Webhooks: hooks,
 		},
 	}, nil
 }

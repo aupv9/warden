@@ -6,6 +6,7 @@
 //	warden-admin user relink --email them@example.com --sub <new subject>
 //	warden-admin user relink --email them@example.com --next-sign-in [--within 24h]
 //	warden-admin audit verify --org <org id>
+//	warden-admin secrets rotate
 //
 // org set-role and org add-member are the break-glass paths when nobody who can
 // manage members can sign in (for example, an admin lost their second factor,
@@ -15,6 +16,10 @@
 // user relink moves an account to a new identity-provider subject: either a
 // subject the operator knows (the refused sign-in logs it), or the next sign-in
 // with the same verified email within a window (default 24h, at most 7 days).
+//
+// secrets rotate re-encrypts every webhook URL and signing secret under the
+// active secrets.key, so a key moved to secrets.old_keys can then be removed.
+// Run it with the new key active and the old one in old_keys.
 //
 // It connects with the runtime DSN (WARDEN_DATABASE__DSN, role warden_app), not
 // the schema owner's: organization, org_member and app_user have no RLS and the
@@ -46,7 +51,8 @@ const usage = `usage:
   warden-admin org add-member --org ORG_ID --email EMAIL --role org_admin|security_lead|member
   warden-admin user relink --email EMAIL --sub NEW_SUBJECT
   warden-admin user relink --email EMAIL --next-sign-in [--within 24h]
-  warden-admin audit verify --org ORG_ID`
+  warden-admin audit verify --org ORG_ID
+  warden-admin secrets rotate`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -205,6 +211,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "audit log of %s: %d entries, chain intact\n", id, n)
+		return 0
+	case "secrets rotate":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		keys, err := cfg.Keyring()
+		if err != nil || !keys.Available() {
+			fmt.Fprintln(stderr, "secrets rotate needs WARDEN_SECRETS__KEY (the new key) and WARDEN_SECRETS__OLD_KEYS (the old ones)")
+			return 1
+		}
+		d, closeDB, err := open(ctx)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer closeDB()
+		n, unreadable, err := store.ReencryptWebhooks(ctx, d, keys)
+		if err != nil {
+			fmt.Fprintf(stderr, "re-encrypt webhooks: %v (%d done)\n", err, n)
+			return 1
+		}
+		fmt.Fprintf(stdout, "re-encrypted %d webhooks under key %q (audited)\n", n, keys.ActiveID())
+		if len(unreadable) > 0 {
+			fmt.Fprintf(stderr, "%d webhooks are sealed under a key that isn't configured; they stay unreadable until edited or recreated: %v\n",
+				len(unreadable), unreadable)
+			return 1
+		}
 		return 0
 	}
 	fmt.Fprintln(stderr, usage)
