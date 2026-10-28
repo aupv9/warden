@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { Link, useSearchParams } from "react-router";
 import { BAD_DOWNLOAD_URL, IN_PROGRESS, SBOM_GONE, useCancelScan, useScan, useScans, useSbomDownload } from "../api/hooks/scans";
 import { flattenPages } from "../api/paging";
-import type { Limits, SbomFormat, SbomFormatParam, Scan, ScanKind } from "../api/types";
+import type { Limits, SbomFormat, SbomFormatParam, Scan, UploadKind } from "../api/types";
 import { DotMark, Pill, ScanStatusMark, ToolStatusMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
@@ -20,6 +20,7 @@ import {
   TOOL_LABELS,
   userName,
 } from "../lib/format";
+import { commitsText, HISTORY_TARGET } from "../lib/history";
 import { isImageTarget } from "../lib/intel";
 import { isRejected, scanErrorMessages } from "../lib/scanErrors";
 import { can } from "../lib/permissions";
@@ -37,7 +38,7 @@ export function ProjectScansTab() {
   // An archived project takes no new scans (the API answers 409 PROJECT_ARCHIVED).
   const canRun = can("run_scan", org.role, project.my_role) && !archived;
   const picker = useRef<HTMLInputElement>(null);
-  const [kind, setKind] = useState<ScanKind>("source");
+  const [kind, setKind] = useState<UploadKind>("source");
 
   // The right-hand card shows the scan named in ?scan=, else the newest one still in progress.
   const selectedId =
@@ -55,7 +56,7 @@ export function ProjectScansTab() {
   // "Upload a new …" from a rejected scan reopens the picker for the same kind of file. The
   // switch renders first (flushSync) so the picker's `accept` already matches.
   const openPicker = canRun
-    ? (k: ScanKind = "source") => {
+    ? (k: UploadKind = "source") => {
         if (k !== kind) flushSync(() => setKind(k));
         picker.current?.click();
       }
@@ -182,6 +183,17 @@ function ImageLine({ scan: s }: { scan: Scan }) {
   );
 }
 
+/** v0.4 wave 2: a history scan (a git bundle from `warden scan --history`) and how many commits
+ *  Gitleaks read. */
+function HistoryLine({ scan: s }: { scan: Scan }) {
+  return (
+    <span className="scan-image">
+      <Pill>Git history</Pill>
+      {s.history && <span className="muted history-commits">{commitsText(s.history.commits)}</span>}
+    </span>
+  );
+}
+
 function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boolean; onSelect: () => void }) {
   const limits = useLimits();
   const finished = s.status === "completed" || s.status === "partial";
@@ -198,6 +210,7 @@ function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boo
       <td data-label="File" className="mono" style={{ fontSize: 13, wordBreak: "break-all" }}>
         {s.file_name}
         {s.kind === "image" && <ImageLine scan={s} />}
+        {s.kind === "history" && <HistoryLine scan={s} />}
       </td>
       <td data-label="By">
         <span className="nowrap">{userName(s.created_by)}</span>
@@ -241,7 +254,7 @@ function ScanPanel({
 }: {
   scanId: string | undefined;
   canRun: boolean;
-  onUploadNew?: (kind: ScanKind) => void;
+  onUploadNew?: (kind: UploadKind) => void;
   onClear: () => void;
 }) {
   const { orgId } = useOrgCtx();
@@ -281,15 +294,23 @@ function ScanPanel({
   const failedTool = runs.find((r) => r.status === "failed" || r.status === "timeout");
   const errorText = s.error_code ? scanErrorMessages(s.error_code, limits) : undefined;
   const duration = durationBetween(s.started_at ?? s.queued_at ?? s.created_at, s.finished_at);
-  // An image scan's issues are its target's: "View issues" opens them filtered to that image.
+  // An image scan's issues are its target's: "View issues" opens them filtered to that image;
+  // a history scan's are under Git history (?source=history).
   const issuesLink = `/orgs/${orgId}/projects/${project.id}/issues${
-    s.kind === "image" && isImageTarget(s.target) ? `?${new URLSearchParams({ target: s.target })}` : ""
+    s.kind === "image" && isImageTarget(s.target)
+      ? `?${new URLSearchParams({ target: s.target })}`
+      : s.kind === "history"
+        ? `?${new URLSearchParams({ source: "history" })}`
+        : ""
   }`;
+  const history = s.kind === "history";
 
   const title = rejected
     ? s.kind === "image"
       ? "Image rejected"
-      : "Archive rejected"
+      : history
+        ? "Bundle rejected"
+        : "Archive rejected"
     : s.status === "cancelled"
       ? "Scan cancelled"
       : s.status === "failed"
@@ -327,6 +348,20 @@ function ScanPanel({
               ? ` · started ${relativeTime(s.started_at ?? s.created_at)} by ${userName(s.created_by)}`
               : ` · ${formatDuration(duration)} · by ${userName(s.created_by)}`}
         </p>
+        {history && (
+          <div className="scan-image-line small">
+            <span className="scan-image">
+              <Pill>Git history</Pill>
+              {s.history && <span>{commitsText(s.history.commits)} scanned</span>}
+            </span>
+            {s.target === HISTORY_TARGET && <span className="muted">Issues tracked under Git history</span>}
+            {s.history?.truncated && (
+              <p className="warn-text history-truncated">
+                Only the newest {commitsText(s.history.commits)} were scanned (the server's limit).
+              </p>
+            )}
+          </div>
+        )}
         {s.kind === "image" && (
           <p className="scan-image-line small">
             <ImageLine scan={s} />
@@ -398,6 +433,9 @@ function ScanPanel({
         )}
         {s.sbom && (s.status === "completed" || s.status === "partial") && <SbomRow scan={s} sbom={s.sbom} />}
         {rejected && <p className="muted">Nothing was scanned and no issues changed.</p>}
+        {history && (rejected || s.status === "failed" || s.status === "cancelled") && (
+          <p className="muted small">History scans run from CI with warden scan --history; run the job again once it is fixed.</p>
+        )}
         {s.status === "cancelled" && <p className="muted">A cancelled scan doesn't change any issue.</p>}
         <ActionError error={cancel.error} overrides={{ CONFLICT: "This scan already finished." }} />
         <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -416,8 +454,8 @@ function ScanPanel({
               View issues
             </ButtonLink>
           )}
-          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && (
-            <Button variant="primary" onClick={() => onUploadNew(s.kind)}>
+          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && (
+            <Button variant="primary" onClick={() => onUploadNew(s.kind as UploadKind)}>
               {s.kind === "image" ? "Upload a new .tar" : "Upload a new .zip"}
             </Button>
           )}

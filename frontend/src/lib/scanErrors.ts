@@ -12,6 +12,9 @@ export const DEFAULT_LIMITS: Limits = {
   scan_timeout_minutes: 30,
   scans_per_hour: 20,
   image_upload_max_mb: 2048,
+  // v0.4 wave 2. Only used when an older server leaves them out of /me.
+  history_upload_max_mb: 1024,
+  history_max_commits: 100_000,
 };
 
 /** Limits from /me, with the defaults for any field an older server leaves out. */
@@ -69,6 +72,23 @@ export function scanErrorMessages(code: string, limits: Limits = DEFAULT_LIMITS)
         short: "more than one image",
         full: "The archive holds more than one image. Save one image per file: docker save -o app.tar IMAGE.",
       };
+    // v0.4 wave 2: history scans (a `git bundle` from `warden scan --history`), checked without
+    // being unpacked before Gitleaks sees it.
+    case "BUNDLE_INVALID":
+      return {
+        short: "not a git bundle",
+        full: "The file isn't a git bundle Warden can read. Create it with warden scan --history, which runs git bundle create.",
+      };
+    case "BUNDLE_INCOMPLETE":
+      return {
+        short: "shallow clone",
+        full: "The bundle doesn't hold the full history (it was made from a shallow clone). In CI, check out with fetch-depth: 0 (GitHub) or GIT_DEPTH: 0 (GitLab).",
+      };
+    case "BUNDLE_TOO_LARGE":
+      return {
+        short: "history too large",
+        full: "The repository's history is larger than Warden accepts (or has too many branches and tags). Ask your operator about the limit.",
+      };
     case "CHECKSUM_MISMATCH":
       return {
         short: "file changed in upload",
@@ -89,9 +109,14 @@ export function scanErrorMessages(code: string, limits: Limits = DEFAULT_LIMITS)
   }
 }
 
-/** A failed scan whose archive (.zip, or an image .tar in v0.3) was refused before any scanner
- *  ran is shown as "Rejected"; any other failed scan is "Failed". The API has no "rejected" status. */
+/** A failed scan whose archive (.zip, an image .tar in v0.3, a git bundle in v0.4 wave 2) was
+ *  refused before any scanner ran is shown as "Rejected"; any other failed scan is "Failed".
+ *  The API has no "rejected" status. */
 export function isRejected(scan: { status: ScanStatus; error_code: string | null }): boolean {
   const code = scan.error_code;
-  return scan.status === "failed" && !!code && (code.startsWith("ZIP_") || code.startsWith("IMAGE_") || code === "CHECKSUM_MISMATCH");
+  return (
+    scan.status === "failed" &&
+    !!code &&
+    (code.startsWith("ZIP_") || code.startsWith("IMAGE_") || code.startsWith("BUNDLE_") || code === "CHECKSUM_MISMATCH")
+  );
 }

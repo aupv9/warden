@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider } from "react-rou
 import type { RouteObject } from "react-router";
 import { ApiError } from "./api/client";
 import { errorMessage, isForbidden, isToastedActionError, isUnauthorized, supportReference } from "./api/errors";
+import type { ErrorOverrides } from "./api/errors";
 import { AuthGate, sessionEnded } from "./auth/AuthGate";
 import { Toaster } from "./components/Toaster";
 import { NotFoundPage, OrgLayout, OrgNotFound } from "./layout/OrgLayout";
@@ -32,6 +33,7 @@ const MembersPage = lazyRoute(() => import("./routes/Members"), "MembersPage");
 const AuditLogPage = lazyRoute(() => import("./routes/AuditLog"), "AuditLogPage");
 const OrgSettingsPage = lazyRoute(() => import("./routes/OrgSettings"), "OrgSettingsPage");
 const PreferencesPage = lazyRoute(() => import("./routes/Preferences"), "PreferencesPage");
+const IntegrationsPage = lazyRoute(() => import("./routes/Integrations"), "IntegrationsPage");
 
 export function createQueryClient(): QueryClient {
   const qc: QueryClient = new QueryClient({
@@ -42,7 +44,7 @@ export function createQueryClient(): QueryClient {
       },
     }),
     mutationCache: new MutationCache({
-      onError: (err) => {
+      onError: (err, _vars, _result, mutation) => {
         if (isUnauthorized(err)) {
           sessionEnded.dispatchEvent(new Event("ended"));
           return;
@@ -53,10 +55,13 @@ export function createQueryClient(): QueryClient {
         // refetches so the page shows only what the role allows.
         if (!isToastedActionError(err)) return;
         const rateLimited = err instanceof ApiError && err.code === "RATE_LIMITED";
+        // A mutation may word a code itself (meta.errorMessages), e.g. the webhook test's 429.
+        const overrides = (mutation.meta?.errorMessages ?? undefined) as ErrorOverrides | undefined;
+        const custom = err instanceof ApiError && !!overrides?.[err.code];
         showToast({
           tone: rateLimited ? "warning" : "error",
-          title: rateLimited ? "Slow down." : undefined,
-          message: errorMessage(err),
+          title: rateLimited && !custom ? "Slow down." : undefined,
+          message: errorMessage(err, overrides),
           reference: supportReference(err),
         });
         if (isForbidden(err)) void qc.invalidateQueries();
@@ -108,6 +113,8 @@ export const appRoutes: RouteObject[] = [
           { path: "members", element: <MembersPage /> },
           { path: "audit-log", element: <AuditLogPage /> },
           { path: "settings", element: <OrgSettingsPage /> },
+          // v0.4 wave 2: webhooks and Slack (org admins and security leads).
+          { path: "integrations", element: <IntegrationsPage /> },
           // Notification preferences are the user's own (they apply in every org); the page
           // sits under the org so the navigation stays.
           { path: "preferences", element: <PreferencesPage /> },

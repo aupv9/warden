@@ -171,6 +171,21 @@ navigation items or the bell; 01 and 03 are current.
 ![Malicious-package issue in the dark theme](design/49-dark-issue-malicious.png)
 <img src="design/50-phone-used-in.png" alt="Phone: Used in as a full-screen sheet" width="260"> <img src="design/51-phone-issue-malicious.png" alt="Phone: malicious-package issue" width="260"> <img src="design/52-phone-component-filters.png" alt="Phone: component filters in a sheet" width="260">
 
+### 34. Integrations: webhooks and Slack (v0.4 wave 2)
+![Integrations: a Slack channel and a webhook turned off after failed deliveries](design/53-integrations.png)
+![The delivery log beside the list, every state and error in words](design/54-delivery-log.png)
+![Add dialog with the server's URL error under the field](design/55-add-webhook-errors.png)
+![A new webhook's signing secret, shown once](design/56-webhook-secret.png)
+
+### 35. Secrets in git history and CI setup (v0.4 wave 2)
+![Issue page with the Found in git history card](design/57-issue-history.png)
+![Scans tab: a history scan with its commits and the note under New scan](design/58-scan-history.png)
+![CI setup with both switches on](design/59-ci-setup.png)
+
+### 36. Dark theme and phone (v0.4 wave 2)
+![Integrations and the delivery log in the dark theme](design/60-dark-integrations.png)
+<img src="design/61-phone-integrations.png" alt="Phone: Integrations" width="260"> <img src="design/62-phone-delivery-log.png" alt="Phone: delivery log as a full-screen sheet" width="260"> <img src="design/63-phone-issue-history.png" alt="Phone: issue found in git history" width="260">
+
 ## Issue triage
 
 - **Saved views** in the header are presets of the URL filters: Active (default), Assigned to me
@@ -602,7 +617,8 @@ set `WARDEN_SECRETS__KEY` (README "Notifications"), and "Add" is hidden.
   Slack webhooks have no secret: the URL is the credential.
 - **Send test:** queues a `webhook.test` delivery and opens the delivery log, which polls every
   5 s for a minute. 429 shows "You've sent 10 tests in the last hour. Try again later."
-- **Delivery log** (a panel beside the list from 1200 px, a sheet below): newest first, 50 at a
+- **Delivery log** (a panel beside the list from 1200 px, a dialog between 800 and 1200 px, a
+  full-screen sheet on phones, like "Used in"): newest first, 50 at a
   time, "Load older": event type, state (Pending with the next attempt time, Delivered, Failed),
   attempts, HTTP status, and the error in words (`timeout` "No answer within 10 seconds",
   `dns` "The host name didn't resolve", `connect` "Couldn't connect", `tls` "TLS failed",
@@ -621,20 +637,27 @@ The CI setup card gains two switches that change the snippets:
 
 - **Comment on pull requests / merge requests** adds `--comment auto`. GitHub: the job needs
   `permissions: pull-requests: write` and passes `GITHUB_TOKEN`; GitLab: a project access token
-  with `api` scope stored as `WARDEN_GITLAB_TOKEN` (`CI_JOB_TOKEN` can't write notes). The note
+  with `api` scope stored as the masked variable `WARDEN_GITLAB_TOKEN` (`CI_JOB_TOKEN` can't write
+  notes), and a rule on `$CI_PIPELINE_SOURCE == "merge_request_event"`. The note
   says the comment lists counts and the blocking issues (severity, rule, file and line, link),
   marks the new ones (`Gate.blocking_new`), is updated in place on every run, and never contains
   code, descriptions or secrets. Warden itself keeps no GitHub or GitLab credentials.
 - **Scan git history** adds a second job on the default branch (scheduled nightly) with
-  `fetch-depth: 0` / `GIT_DEPTH: 0` and `warden scan --history`.
+  `fetch-depth: 0` / `GIT_DEPTH: 0` and `warden scan --history` (GitHub: an `on: schedule` cron,
+  and the scan job skips scheduled runs; GitLab: a rule on a pipeline schedule for the default
+  branch, which the user creates). Both switches only change the snippet; nothing is saved, and
+  no snippet contains a token (`src/lib/history.test.ts`).
 
 ### Mock mode (v0.4 wave 2)
 
 WEB has a history scan (2,481 commits, not truncated) with two history issues: an AWS access key
-added in 3 commits and a Slack token added in one. Acme Corp has two webhooks: a Slack channel
-(Active, all projects, Critical and above) and a generic webhook turned off after failed
-deliveries, with a delivery log mixing every state and error. `?mock_integrations=unavailable`
-shows the "operator must set the key" note; `?mock_role=member` hides the page.
+added in 3 commits and a Slack token added in one, and an older history scan rejected with
+`BUNDLE_INCOMPLETE`. Acme Engineering has two webhooks: a Slack channel (Active, all projects,
+Critical and above, a log long enough for "Load older") and a generic webhook, "Ticket relay",
+turned off after failed deliveries, with a delivery log mixing every state and error; a test sent
+to it fails a few seconds later, to Slack it is delivered. A created webhook's secret is a plainly
+fake `whsec_…` built at runtime. `?mock_integrations=unavailable` shows the "operator must set the
+key" note; `?mock_role=member` hides the page.
 
 ### Mock mode (v0.4)
 
@@ -878,7 +901,9 @@ Below 800 px (screenshots in section 12):
 - **Webhooks (v0.4):** a webhook's URL is sent once (create, or a replacement on edit) and never
   read back; the list shows `url_hint` as text, never as a link. The signing secret follows the
   API token rules: dialog state only, dropped on close, never in TanStack Query's caches, the URL,
-  browser storage or a log. Commit shas are shown as text, never linked.
+  browser storage or a log. Commit shas are shown as text, never linked. The URL (and on edit a
+  replacement URL) reaches the mutation through a closure, not as mutation variables, which
+  TanStack Query keeps in its cache (`src/api/webhooks.test.ts`).
 
 ## Visual system
 
@@ -998,6 +1023,8 @@ In v0.4, in the design but not in the API contract:
 In v0.4 wave 2, in the design but not in the API contract:
 
 - The delivery log has no filter by state; a busy webhook's failures can scroll out of the first page.
+- `POST …/webhooks` answers 409 `CONFLICT` both for "20 webhooks already" and for "no secrets.key", so
+  the dialog can't say which (the page hides Add in both cases, so this only shows after a race).
 
 ## Not in v0.4
 

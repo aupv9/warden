@@ -4,7 +4,7 @@
 //
 // Try: append ?mock_error=CODE to any page URL (e.g. VERSION_CONFLICT, RATE_LIMITED, NOT_FOUND)
 // to make the next write fail with that code.
-import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS } from "../types";
+import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS, WEBHOOK_EVENT_TYPES } from "../types";
 import type {
   ApiToken,
   AssignRule,
@@ -25,6 +25,8 @@ import type {
   Scan,
   SeverityCounts,
   UpdatePolicyBody,
+  Webhook,
+  WebhookDelivery,
 } from "../types";
 import * as db from "./fixtures";
 
@@ -347,6 +349,88 @@ function projectComponents(orgId: string, p: Project, url: URL) {
   return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
 }
 
+// ---- v0.4 wave 2: webhooks and Slack ----
+
+/** manage_integrations: org admins and security leads. */
+function requireIntegrations(orgId: string): Webhook[] {
+  const role = callerRole(orgId);
+  if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+  return (db.webhooks[orgId] ??= []);
+}
+
+function findWebhook(orgId: string, id: string): Webhook {
+  const w = requireIntegrations(orgId).find((x) => x.id === id);
+  if (!w) throw NOT_FOUND();
+  return w;
+}
+
+const SLACK_PREFIX = "https://hooks.slack.com/services/";
+/** Like the server's checks on a webhook URL: https, no user info, not a private or internal
+ *  address (the mock can't resolve names; it refuses the obvious ones), Slack's prefix. */
+function checkWebhookUrl(kind: Webhook["kind"], raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length < 1 || raw.length > 2048) return "must be a URL of at most 2048 characters";
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return "must be an absolute URL";
+  }
+  if (u.protocol !== "https:") return "must use https";
+  if (u.username || u.password) return "must not contain user info";
+  if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[|metadata\.)|\.internal$|\.local$/i.test(u.hostname)) {
+    return "resolves to a private address";
+  }
+  if (kind === "slack" && !raw.startsWith(SLACK_PREFIX)) return `Slack URLs start with ${SLACK_PREFIX}`;
+  return null;
+}
+
+function checkWebhookFields(orgId: string, b: Record<string, unknown>, fields: Record<string, string>, kind: Webhook["kind"]) {
+  if ("name" in b && (typeof b.name !== "string" || b.name.trim().length < 1 || b.name.length > 80)) fields.name = "1 to 80 characters";
+  if ("url" in b) {
+    const bad = checkWebhookUrl(kind, b.url);
+    if (bad) fields.url = bad;
+  }
+  if ("events" in b) {
+    const ev = b.events;
+    if (!Array.isArray(ev) || ev.length < 1) fields.events = "at least one event";
+    else if (ev.some((e) => !WEBHOOK_EVENT_TYPES.includes(e as never))) fields.events = "unknown event type";
+    else if (new Set(ev).size !== ev.length) fields.events = "duplicate event";
+  }
+  if ("project_ids" in b) {
+    const ids = b.project_ids;
+    if (!Array.isArray(ids) || ids.length > 100) fields.project_ids = "at most 100 projects";
+    else
+      ids.forEach((id, i) => {
+        if (typeof id !== "string" || !db.projects.some((p) => p.id === id && inOrg(orgId, p.id))) fields[`project_ids[${i}]`] = "not a project in this org";
+      });
+  }
+  if ("min_severity" in b && b.min_severity !== null && !SEVERITIES.includes(b.min_severity as never)) fields.min_severity = "unknown severity";
+}
+
+/** A plainly fake signing secret, built at runtime (CLAUDE.md: no secret-shaped fixtures). */
+function mockSigningSecret(): string {
+  return `whsec_${btoa(`mock-signing-secret-${Math.random().toString(36).slice(2, 10)}`)}`;
+}
+
+/** A test delivery is answered a few seconds after it was queued (the relay fails, like its log). */
+function advanceDelivery(orgId: string, webhookId: string, d: WebhookDelivery): WebhookDelivery {
+  const t = (d as WebhookDelivery & { _t?: number })._t;
+  if (t === undefined || d.state !== "pending" || db.now() - t < 3000) return d;
+  const w = db.webhooks[orgId]?.find((x) => x.id === webhookId);
+  const fails = w?.name === "Ticket relay";
+  const at = new Date().toISOString();
+  Object.assign(d, {
+    state: fails ? "failed" : "delivered",
+    attempts: 1,
+    status_code: fails ? 500 : 200,
+    error: fails ? "http_status" : null,
+    last_attempt_at: at,
+    delivered_at: fails ? null : at,
+  });
+  if (w) w.last_delivery = { at, state: d.state, status_code: d.status_code };
+  return d;
+}
+
 function projectTargets(p: Project): { items: ProjectTarget[] } {
   const targets = new Set<string>();
   for (const s of db.scans) if (s.project_id === p.id) targets.add(s.target);
@@ -357,7 +441,7 @@ function projectTargets(p: Project): { items: ProjectTarget[] } {
       const last = db.scans.filter((s) => s.project_id === p.id && s.target === target).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
       return {
         target,
-        kind: (target === "" ? "source" : "image") as ProjectTarget["kind"],
+        kind: (target === "" ? "source" : target === "(history)" ? "history" : "image") as ProjectTarget["kind"],
         last_scan_at: last?.created_at ?? null,
         open_issues: db.issues.filter((i) => i.project_id === p.id && i.target === target && ACTIVE.includes(i.status)).length,
       };
@@ -555,6 +639,138 @@ const routes: [string, RegExp, Handler][] = [
   ["GET", new RegExp(`^${O}/components/usage$`), (m, url) => componentUsage(m[1]!, url)],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/components$`), (m, url) => projectComponents(m[1]!, orgProject(m[1]!, m[2]!), url)],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/targets$`), (m) => projectTargets(orgProject(m[1]!, m[2]!))],
+  // ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
+  ["GET", new RegExp(`^${O}/webhooks$`), (m) => ({ items: requireIntegrations(m[1]!), available: !db.mockFlags.integrationsUnavailable })],
+  [
+    "POST",
+    new RegExp(`^${O}/webhooks$`),
+    (m, _u, body) => {
+      const list = requireIntegrations(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      if (db.mockFlags.integrationsUnavailable || list.length >= 20) throw new Fail(409, "CONFLICT");
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["kind", "name", "url", "events", "project_ids", "min_severity"].includes(k)) fields[k] = "unknown field";
+      const kind = b.kind === "slack" || b.kind === "generic" ? b.kind : null;
+      if (!kind) fields.kind = "slack or generic";
+      for (const k of ["name", "url", "events"]) if (!(k in b)) fields[k] = "required";
+      checkWebhookFields(m[1]!, b, fields, kind ?? "generic");
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const url = new URL(b.url as string);
+      const at = new Date().toISOString();
+      const w: Webhook = {
+        id: db.uuid(),
+        kind: kind!,
+        name: (b.name as string).trim(),
+        url_hint: `${url.protocol}//${url.host}`,
+        events: WEBHOOK_EVENT_TYPES.filter((e) => (b.events as string[]).includes(e)),
+        project_ids: (b.project_ids as string[] | undefined) ?? [],
+        min_severity: (b.min_severity as Webhook["min_severity"] | undefined) ?? null,
+        enabled: true,
+        disabled_reason: null,
+        consecutive_failures: 0,
+        last_delivery: null,
+        created_by: meRef(),
+        created_at: at,
+        updated_at: at,
+      };
+      list.push(w);
+      db.deliveries[w.id] = [];
+      audit("webhook.created", "webhook", w.id, { name: w.name, kind: w.kind, url_hint: w.url_hint, events: w.events });
+      return [201, { webhook: w, secret: w.kind === "generic" ? mockSigningSecret() : null }];
+    },
+  ],
+  ["GET", new RegExp(`^${O}/webhooks/([^/]+)$`), (m) => findWebhook(m[1]!, m[2]!)],
+  [
+    "PATCH",
+    new RegExp(`^${O}/webhooks/([^/]+)$`),
+    (m, _u, body) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      const keys = Object.keys(b);
+      if (keys.length === 0) fields.body = "nothing to change";
+      for (const k of keys) if (!["name", "url", "events", "project_ids", "min_severity", "enabled"].includes(k)) fields[k] = "unknown field";
+      if ("enabled" in b && typeof b.enabled !== "boolean") fields.enabled = "true or false";
+      checkWebhookFields(m[1]!, b, fields, w.kind);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (typeof b.name === "string") w.name = b.name.trim();
+      if (typeof b.url === "string") {
+        const url = new URL(b.url);
+        w.url_hint = `${url.protocol}//${url.host}`;
+      }
+      if (Array.isArray(b.events)) w.events = WEBHOOK_EVENT_TYPES.filter((e) => (b.events as string[]).includes(e));
+      if (Array.isArray(b.project_ids)) w.project_ids = b.project_ids as string[];
+      if ("min_severity" in b) w.min_severity = (b.min_severity as Webhook["min_severity"]) ?? null;
+      if (b.enabled === true) {
+        w.enabled = true;
+        w.disabled_reason = null;
+        w.consecutive_failures = 0;
+      } else if (b.enabled === false) {
+        w.enabled = false;
+        w.disabled_reason = null;
+      }
+      w.updated_at = new Date().toISOString();
+      audit("webhook.updated", "webhook", w.id, { name: w.name, fields: keys });
+      return w;
+    },
+  ],
+  [
+    "DELETE",
+    new RegExp(`^${O}/webhooks/([^/]+)$`),
+    (m) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const list = db.webhooks[m[1]!]!;
+      list.splice(list.indexOf(w), 1);
+      delete db.deliveries[w.id];
+      audit("webhook.deleted", "webhook", w.id, { name: w.name, kind: w.kind });
+      return [204, null];
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/webhooks/([^/]+)/rotate-secret$`),
+    (m) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      if (w.kind !== "generic") throw new Fail(422, "VALIDATION_FAILED", { kind: "Slack webhooks have no signing secret" });
+      audit("webhook.secret_rotated", "webhook", w.id, { name: w.name });
+      return { secret: mockSigningSecret() };
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/webhooks/([^/]+)/test$`),
+    (m) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const log = (db.deliveries[w.id] ??= []);
+      const hourAgo = new Date(db.now() - 3_600_000).toISOString();
+      if (log.filter((d) => d.type === "webhook.test" && d.created_at >= hourAgo).length >= 10) throw new Fail(429, "RATE_LIMITED");
+      const d: WebhookDelivery = {
+        id: db.uuid(),
+        type: "webhook.test",
+        state: "pending",
+        attempts: 0,
+        status_code: null,
+        error: null,
+        created_at: new Date().toISOString(),
+        last_attempt_at: null,
+        next_attempt_at: new Date().toISOString(),
+        delivered_at: null,
+      };
+      (d as WebhookDelivery & { _t?: number })._t = db.now();
+      log.unshift(d);
+      return [202, d];
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/webhooks/([^/]+)/deliveries$`),
+    (m, url) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const log = (db.deliveries[w.id] ?? []).map((d) => advanceDelivery(m[1]!, w.id, d));
+      const { items, next_cursor } = page(log, url);
+      return { items: items.map(({ _t: _omit, ...d }: WebhookDelivery & { _t?: number }) => d), next_cursor };
+    },
+  ],
   // ---- v0.2 API tokens ----
   [
     "GET",
@@ -861,12 +1077,17 @@ const routes: [string, RegExp, Handler][] = [
         if (b.tools && b.tools.some((t) => t !== "trivy")) fields.tools = "image scans run trivy only";
         if (b.image_ref && b.image_ref.length > 512) fields.image_ref = "at most 512 characters";
         if (b.file_size > db.me.limits.image_upload_max_mb * 1024 * 1024) fields.file_size = "larger than image_upload_max_mb";
+      } else if (kind === "history") {
+        // v0.4 wave 2: only the CLI makes these (the web UI can't build a git bundle).
+        if (!/\.bundle$/i.test(b.file_name)) fields.file_name = "must be a .bundle for a history scan";
+        if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
+        if (b.tools && b.tools.some((t) => t !== "gitleaks")) fields.tools = "history scans run gitleaks only";
       } else {
         if (!/\.zip$/i.test(b.file_name)) fields.file_name = "must be a .zip for a source scan";
         if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
       }
       if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
-      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : (b.tools ?? p.default_tools);
+      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : kind === "history" ? (["gitleaks"] as Scan["tools"]) : (b.tools ?? p.default_tools);
       const scan: Scan = {
         id: db.uuid(),
         project_id: p.id,
@@ -883,9 +1104,10 @@ const routes: [string, RegExp, Handler][] = [
         finished_at: null,
         via_token: null,
         kind,
-        target: kind === "image" ? b.target! : "",
+        target: kind === "image" ? b.target! : kind === "history" ? "(history)" : "",
         image_ref: kind === "image" ? (b.image_ref ?? null) : null,
         sbom: null,
+        history: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
@@ -952,7 +1174,9 @@ const routes: [string, RegExp, Handler][] = [
           (sp.get("kev") !== "true" || i.kev) &&
           (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
           (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
-          (!sp.get("source") || (sp.get("source") === "image") === (i.target !== "")) &&
+          // v0.4 wave 2: history issues have the target "(history)".
+          (!sp.get("source") ||
+            (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
           (!sp.get("target") || i.target === sp.get("target")) &&
           (!sp.get("assignee") ||
             (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
@@ -1124,7 +1348,7 @@ function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
 }
 
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, ...rest } = i;
   return rest;
 }
 
