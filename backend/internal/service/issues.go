@@ -28,12 +28,6 @@ const (
 
 var issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]{1,9})-([1-9][0-9]{0,8})$`)
 
-// issueTarget is an image repository without tag or digest (the OpenAPI
-// pattern of scan and issue targets), at most 255 characters.
-var issueTarget = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
-
-const maxTargetLen = 255
-
 // IssueFilter is the raw query of GET /issues.
 type IssueFilter struct {
 	ProjectID string
@@ -143,7 +137,7 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 		fe.add("source", "must be code or image")
 	}
 	if f.Target != "" {
-		if len(f.Target) > maxTargetLen || !issueTarget.MatchString(f.Target) {
+		if len(f.Target) > maxTarget || !ImageTarget.MatchString(f.Target) {
 			fe.add("target", "must be an image repository without tag, e.g. ghcr.io/acme/api")
 		} else {
 			q.Target = f.Target
