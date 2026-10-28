@@ -5,14 +5,17 @@ rules:
     message: >-
       Archive read without Warden's validator. Use zipcheck.Extract
       (backend/internal/scan/zipcheck), which enforces zip-slip, zip-bomb, symlink and
-      size limits.
+      size limits; image tarballs go through imagecheck.
     pattern-either:
       - pattern: zip.OpenReader(...)
       - pattern: zip.NewReader(...)
       - pattern: tar.NewReader(...)
       - pattern: gzip.NewReader(...)
+    # The excluded packages are the reviewed readers, each with attack tests:
+    # zipcheck (uploads), imagecheck (docker save tarballs, never extracted) and
+    # intel (the EPSS feed, decompressed under a byte cap).
     paths:
-      exclude: ["backend/internal/scan/zipcheck/", "*_test.go"]
+      exclude: ["backend/internal/scan/zipcheck/", "backend/internal/scan/imagecheck/", "backend/internal/intel/", "*_test.go"]
     metadata:
       cwe: ["CWE-22: Path Traversal", "CWE-409: Improper Handling of Highly Compressed Data"]
       security-severity: "9.1"
