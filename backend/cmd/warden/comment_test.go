@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // fakeCI is the GitHub or GitLab REST API, as far as --comment uses it.
@@ -572,5 +574,14 @@ func TestCommentImageScanHasItsOwnMarker(t *testing.T) {
 	if code != exitPass || ci.count("POST") != 1 || ci.count("PATCH") != 0 || ci.comments[0].body != "<!-- warden:"+w.prj.String()+" -->\nsource scan" ||
 		!strings.HasPrefix(ci.comments[1].body, commentMarker(w.prj, "ghcr.io/acme/api")+"\n") {
 		t.Fatalf("%d %s %s %v", code, out.String(), errOut.String(), ci.reqs)
+	}
+}
+
+func TestCommentHistoryScanHasItsOwnMarker(t *testing.T) {
+	prj := uuid.New()
+	src, hist := (&options{}).commentTarget(), (&options{history: true}).commentTarget()
+	if src != "" || hist != "(history)" || commentMarker(prj, src) == commentMarker(prj, hist) ||
+		commentMarker(prj, hist) == commentMarker(prj, "ghcr.io/acme/api") {
+		t.Fatal(src, hist)
 	}
 }

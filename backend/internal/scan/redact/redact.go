@@ -77,10 +77,33 @@ func firstSnippet(result map[string]any) string {
 	return ""
 }
 
+// keptFingerprints are the partialFingerprints Gitleaks writes in git mode
+// that leave the sandbox. The others go: commitMessage can quote the secret
+// (or another one Gitleaks didn't match), and author and email are personal
+// data Warden has no use for.
+var keptFingerprints = []string{"commitSha", "date"}
+
+// dropCommitDetails keeps only keptFingerprints, and only as strings.
+func dropCommitDetails(result map[string]any) {
+	pf, ok := result["partialFingerprints"].(map[string]any)
+	if !ok {
+		delete(result, "partialFingerprints")
+		return
+	}
+	kept := map[string]any{}
+	for _, k := range keptFingerprints {
+		if s, ok := pf[k].(string); ok {
+			kept[k] = s
+		}
+	}
+	result["partialFingerprints"] = kept
+}
+
 // Doc redacts the whole document: every secret found in any result is masked
-// everywhere (another result's message, invocations, keys), and each result gets
-// the HMAC of its own secret as properties["warden.contentKey"]. A result that
-// isn't an object can't be checked, so the document is refused.
+// everywhere (another result's message, invocations, keys), commit details
+// other than the sha and date are dropped, and each result gets the HMAC of
+// its own secret as properties["warden.contentKey"]. A result that isn't an
+// object can't be checked, so the document is refused.
 func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 	if len(key) < MinKeyBytes {
 		return nil, errors.New("HMAC key too short")
@@ -100,6 +123,7 @@ func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 			if !ok {
 				return nil, fmt.Errorf("runs[%d].results[%d] is not an object", i, j)
 			}
+			dropCommitDetails(m)
 			secret := firstSnippet(m)
 			keys[[2]int{i, j}] = contentKey(key, secret)
 			if secret != "" && !seen[secret] {

@@ -260,7 +260,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	desc := "d"
 	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now, nil}
 	scanRow := []any{scan, org, proj, "queued", "a.zip", int64(10), []string{"trivy"}, nil, service.ScanStats{Total: 2},
-		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil, "source", "", nil, "sboms/k", int64(9), "abc", 4, "sboms/s", int64(12), "def"}
+		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil, "source", "", nil, "sboms/k", int64(9), "abc", 4, "sboms/s", int64(12), "def", 120, true}
 	r, _ := repoWith(on(map[string][][]any{
 		"LEFT JOIN LATERAL":                           {projRow},
 		"SELECT (SELECT pm.role":                      {{"developer"}},
@@ -295,7 +295,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	}
 	if s, err := r.Scan(ctx, scan, true); err != nil || s.Stats.Total != 2 || s.CreatedBy.ID != user || s.QueuedAt == nil ||
 		s.Kind != "source" || s.SBOM == nil || s.SBOM.Components != 4 || s.SBOM.Key != "sboms/k" || s.SBOM.SPDXKey != "sboms/s" ||
-		s.SBOM.SPDXSize != 12 || len(s.SBOM.Formats) != 2 {
+		s.SBOM.SPDXSize != 12 || len(s.SBOM.Formats) != 2 || s.History == nil || s.History.Commits != 120 || !s.History.Truncated {
 		t.Fatal(s, err)
 	}
 	if s, err := r.Scans(ctx, proj, &service.ScanCursor{CreatedAt: now, ID: scan}, 10); err != nil || len(s) != 1 {
@@ -344,7 +344,7 @@ func issueRow(id, proj, scan uuid.UUID, withDetail bool) []any {
 		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97, nil}
 	if withDetail {
 		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB",
-			0.99, "2024-03-01", true)
+			0.99, "2024-03-01", true, strings.Repeat("a", 40), now, 3)
 	}
 	return row
 }
@@ -366,7 +366,7 @@ func TestRepoIssues(t *testing.T) {
 		t.Fatal(c, err)
 	}
 	if i, err := r.Issue(ctx, iss, true, now); err != nil || i.Version != 3 || i.CWE[0] != "CWE-79" || i.Occurrences != 2 ||
-		*i.EPSSPercentile != 0.99 || *i.KEVAdded != "2024-03-01" || !i.KEVRansomware {
+		*i.EPSSPercentile != 0.99 || *i.KEVAdded != "2024-03-01" || !i.KEVRansomware || i.Commit == nil || i.Commit.Count != 3 || i.Commit.CommittedAt == nil {
 		t.Fatal(i, err)
 	}
 	if c, err := r.Comments(ctx, iss); err != nil || len(c) != 1 {

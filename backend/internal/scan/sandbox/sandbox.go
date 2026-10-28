@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -126,6 +127,51 @@ var ImageTools = map[string]ToolSpec{
 	},
 }
 
+// ArtifactHistory is a history scan's commit count (see HistoryStats).
+const ArtifactHistory = "history"
+
+// Exit codes of warden-gitleaks in history mode for a bundle git can't use.
+const (
+	ExitHistoryIncomplete = 3 // commits are missing (a shallow clone's bundle)
+	ExitHistoryUnreadable = 4 // git refused the bundle (fsck errors)
+)
+
+// HistoryLimits size the history scan's sandbox (scan.history_*).
+type HistoryLimits struct {
+	MaxBytes   int64 // the largest bundle
+	MaxCommits int
+	// ScanTimeout bounds the whole scan (scan.timeout); Gitleaks gets at most that.
+	ScanTimeout time.Duration
+}
+
+// historyTimeout: reading every commit takes longer than reading one tree.
+const historyTimeout = 25 * time.Minute
+
+// HistoryTool is the scanner of history scans (kind history): Gitleaks in git
+// mode over the verified bundle mounted read-only at /src/repo.bundle (see
+// scanners/gitleaks/warden-gitleaks). git fetches the bundle into a fresh
+// repository in /tmp, which holds about the bundle's size again (tmpfs pages
+// count towards the memory limit). The commit limit is an argument set here,
+// never anything from the upload.
+func HistoryTool(l HistoryLimits) ToolSpec {
+	repoMB := l.MaxBytes>>20 + l.MaxBytes>>22 + 256 // the pack, its index, the raw SARIF
+	timeout := historyTimeout
+	if l.ScanTimeout > 0 && l.ScanTimeout < timeout {
+		timeout = l.ScanTimeout
+	}
+	return ToolSpec{
+		Name: "gitleaks", Timeout: timeout, CPUs: "1",
+		Memory:       strconv.FormatInt(repoMB+1536, 10) + "m",
+		TmpfsSize:    strconv.FormatInt(repoMB, 10) + "m",
+		Command:      []string{"warden-gitleaks", "history", strconv.Itoa(max(l.MaxCommits, 1))},
+		NeedsHMACKey: true,
+		Artifacts:    map[string]ArtifactSpec{ArtifactHistory: {File: "history.json", MaxBytes: 256}},
+	}
+}
+
+// HistoryToolNames: history scans run Gitleaks only.
+var HistoryToolNames = []string{"gitleaks"}
+
 func (s ToolSpec) tmpfsSize() string {
 	if s.TmpfsSize == "" {
 		return "256m"
@@ -164,6 +210,8 @@ type ToolRun struct {
 	DurationMS int64
 	Sarif      string // path of the SARIF file when Succeeded
 	Error      string
+	// ExitCode is the tool's exit status when it failed by exiting (0 otherwise).
+	ExitCode int
 	// Artifacts: the path of each artifact the tool wrote as a regular file
 	// within its size cap. A missing or oversized one is left out; that doesn't
 	// fail the tool.
@@ -286,7 +334,7 @@ func Run(ctx context.Context, spec ToolSpec, c RunConfig) ToolRun {
 		if msg == "" {
 			msg = fmt.Sprintf("exit %d", code)
 		}
-		return ToolRun{Tool: spec.Name, Status: Failed, DurationMS: ms, Error: msg}
+		return ToolRun{Tool: spec.Name, Status: Failed, DurationMS: ms, Error: msg, ExitCode: code}
 	}
 	return ToolRun{Tool: spec.Name, Status: Succeeded, DurationMS: ms, Sarif: sarif, Artifacts: artifacts(spec, outDir)}
 }

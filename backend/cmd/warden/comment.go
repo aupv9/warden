@@ -284,7 +284,7 @@ func (c client) comment(ctx context.Context, g gate, scanID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
 	defer cancel()
-	marker := commentMarker(c.o.project, c.o.target)
+	marker := commentMarker(c.o.project, c.o.commentTarget())
 	body := c.commentBody(g, scanID)
 	var updated bool
 	if t.platform == commentGitHub {

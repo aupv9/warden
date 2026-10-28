@@ -88,11 +88,12 @@ func appOptions(cfg *config.Config) fx.Option {
 // ServiceConfig maps the configuration to the service's settings.
 func ServiceConfig(c *config.Config) service.Config {
 	return service.Config{
-		UploadMaxBytes:      int64(c.Scan.UploadMaxMB) << 20,
-		ImageUploadMaxBytes: int64(c.Scan.ImageUploadMaxMB) << 20,
-		RateLimitPerHour:    c.Scan.RateLimitPerHour,
-		UploadURLTTL:        15 * time.Minute,
-		RequireMFARoles:     roles(c.OIDC.RequireMFARoles),
+		UploadMaxBytes:        int64(c.Scan.UploadMaxMB) << 20,
+		ImageUploadMaxBytes:   int64(c.Scan.ImageUploadMaxMB) << 20,
+		HistoryUploadMaxBytes: int64(c.Scan.HistoryUploadMaxMB) << 20,
+		RateLimitPerHour:      c.Scan.RateLimitPerHour,
+		UploadURLTTL:          15 * time.Minute,
+		RequireMFARoles:       roles(c.OIDC.RequireMFARoles),
 		SignIn: service.SignInConfig{
 			Issuer: c.OIDC.Issuer, Audience: c.OIDC.Audience, Algorithms: c.OIDC.Algorithms,
 			KeysURL: c.OIDC.JWKSURL, ConsoleURL: c.OIDC.ConsoleURL, MFAAMR: c.OIDC.MFAAMR, MFAACR: c.OIDC.MFAACR,
@@ -100,7 +101,8 @@ func ServiceConfig(c *config.Config) service.Config {
 		Limits: service.Limits{
 			UploadMaxMB: c.Scan.UploadMaxMB, UnzipMaxMB: c.Scan.UnzipMaxMB, UnzipMaxFiles: c.Scan.UnzipMaxFiles,
 			ScanTimeoutMinutes: int(c.Scan.Timeout / time.Minute), ScansPerHour: c.Scan.RateLimitPerHour,
-			ImageUploadMaxMB: c.Scan.ImageUploadMaxMB,
+			ImageUploadMaxMB:   c.Scan.ImageUploadMaxMB,
+			HistoryUploadMaxMB: c.Scan.HistoryUploadMaxMB, HistoryMaxCommits: c.Scan.HistoryMaxCommits,
 		},
 	}
 }

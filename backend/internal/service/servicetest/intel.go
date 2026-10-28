@@ -78,7 +78,8 @@ func (f *Fake) matchIntel(q service.IssueQuery, i IssueRow) bool {
 		q.KEV && in.KEVAdded == nil,
 		q.EPSSMin != nil && (in.EPSS == nil || *in.EPSS < *q.EPSSMin),
 		q.Source == "code" && i.Target != "",
-		q.Source == "image" && i.Target == "",
+		q.Source == "image" && (i.Target == "" || i.Target == service.HistoryTarget),
+		q.Source == "history" && i.Target != service.HistoryTarget,
 		q.Target != "" && i.Target != q.Target:
 		return false
 	}

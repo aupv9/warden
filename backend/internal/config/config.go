@@ -141,6 +141,10 @@ type ScanSection struct {
 	ImageUploadMaxMB int `koanf:"image_upload_max_mb" validate:"min=1"`
 	// SBOMRetention: how long a scan's SBOM is kept (then deleted by the purge job).
 	SBOMRetention time.Duration `koanf:"sbom_retention" validate:"min=1h"`
+	// HistoryUploadMaxMB caps git bundles (history scans); HistoryMaxCommits
+	// is how many commits one reads, the newest (the scan says when it cut).
+	HistoryUploadMaxMB int `koanf:"history_upload_max_mb" validate:"min=1"`
+	HistoryMaxCommits  int `koanf:"history_max_commits" validate:"min=1"`
 }
 
 func appDefaults() *cgconfig.AppConfig {
@@ -192,6 +196,8 @@ func settingsDefaults() *Settings {
 			AutocloseGuardRatio: 0.5,
 			SBOMRetention:       365 * 24 * time.Hour,
 			ImageUploadMaxMB:    2048,
+			HistoryUploadMaxMB:  1024,
+			HistoryMaxCommits:   50_000,
 		},
 	}
 }

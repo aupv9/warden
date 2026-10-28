@@ -97,7 +97,7 @@ export const me: Me = {
     scans_per_hour: 20,
     image_upload_max_mb: 2048,
     history_upload_max_mb: 1024,
-    history_max_commits: 100000,
+    history_max_commits: 50000,
   },
   mfa_required_orgs: [ORG3_ID],
 };
