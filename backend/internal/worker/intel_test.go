@@ -89,7 +89,7 @@ func TestLoadVulnIntelRefusesOversizeAndSpecialFiles(t *testing.T) {
 	if n := len(db.Calls("")); n != 0 {
 		t.Fatalf("%d statements", n)
 	}
-	if _, _, err := openFeed(filepath.Join(mirror, trivyMetaFile), intel.MaxTrivyMetaBytes); !errors.Is(err, intel.ErrTooLarge) {
+	if _, _, _, err := openFeed(filepath.Join(mirror, trivyMetaFile), intel.MaxTrivyMetaBytes); !errors.Is(err, intel.ErrTooLarge) {
 		t.Fatal(err)
 	}
 }
@@ -120,7 +120,7 @@ func TestLoadVulnIntelRecordsTrivyDB(t *testing.T) {
 		t.Fatalf("%d source updates", len(calls))
 	}
 	a := calls[0].Args
-	if a[0] != sourceTrivyDB || !a[1].(time.Time).Equal(time.Date(2026, 10, 25, 12, 57, 48, 463991102, time.UTC)) ||
+	if a[0] != sourceTrivyDB || !a[1].(*time.Time).Equal(time.Date(2026, 10, 25, 12, 57, 48, 463991102, time.UTC)) ||
 		a[2].(*time.Time) != nil || a[3].(*int) != nil || a[4] != sum {
 		t.Fatalf("%v", a)
 	}

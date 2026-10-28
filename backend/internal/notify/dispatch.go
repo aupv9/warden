@@ -234,7 +234,7 @@ func (r *resolver) resolve(ctx context.Context, ev outboxRow) ([]note, error) {
 		c       = Content{Type: ev.Type, OrgName: orgName, ActorName: actor}
 	)
 	switch ev.Type {
-	case IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided:
+	case IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ComponentMalicious:
 		if err := need(p.IssueID, "issue_id"); err != nil {
 			return nil, err
 		}
@@ -275,6 +275,15 @@ func (r *resolver) resolve(ctx context.Context, ev outboxRow) ([]note, error) {
 			}
 			c.Title = "Exception for " + f.key() + " " + c.Decision
 			users = without(one(p.UserID), p.ActorID)
+		case ComponentMalicious:
+			// Everyone who has to act now: the org's security leads and the
+			// project's owners (the assignee may not be set yet).
+			c.Title = "Malicious package found: " + f.key()
+			if users, err = r.userIDs(ctx, `SELECT user_id FROM org_member WHERE org_id = $1 AND role = 'security_lead'
+				UNION SELECT user_id FROM project_member WHERE project_id = $2 AND role = 'owner'
+				ORDER BY 1`, r.org, f.ProjectID); err != nil {
+				return nil, err
+			}
 		}
 	case ScanFinished:
 		if err := need(p.ScanID, "scan_id"); err != nil {

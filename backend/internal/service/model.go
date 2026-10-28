@@ -271,8 +271,9 @@ type IssueSummary struct {
 	// highest score). They only rank issues: severity and status never change.
 	KEV  bool     `json:"kev"`
 	EPSS *float64 `json:"epss"`
+	// LicenseCategory is the Trivy category of a license-policy issue.
+	LicenseCategory *string `json:"license_category"`
 }
-
 type ScanRef struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt Time      `json:"created_at"`
