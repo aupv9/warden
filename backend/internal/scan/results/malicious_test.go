@@ -15,13 +15,13 @@ import (
 	"github.com/aupv9/warden/backend/internal/worker/dbtest"
 )
 
-func pkg(eco, name, version, path string) trivyjson.Package {
+func malPkg(eco, name, version, path string) trivyjson.Package {
 	return trivyjson.Package{Ecosystem: eco, Name: name, MatchName: ecosystem.MatchName(eco, name), Version: version,
 		MatchVersion: ecosystem.MatchVersion(eco, version), FilePath: path}
 }
 
 func TestMaliciousFinding(t *testing.T) {
-	f := MaliciousFinding(pkg("npm", "Evil-Pkg", "1.0.0", "app/package-lock.json"), Advisory{ID: "MAL-2026-1", Summary: "Malicious code in evil-pkg (npm)"})
+	f := MaliciousFinding(malPkg("npm", "Evil-Pkg", "1.0.0", "app/package-lock.json"), Advisory{ID: "MAL-2026-1", Summary: "Malicious code in evil-pkg (npm)"})
 	if f.Tool != "trivy" || f.RuleID != "malicious:MAL-2026-1" || f.Severity != severity.Critical ||
 		f.Title != "Evil-Pkg 1.0.0 is a malicious package (MAL-2026-1)" || f.FilePath != "app/package-lock.json" ||
 		f.ContentKey != fingerprint.SCAContentKey("MAL-2026-1", "evil-pkg", "1.0.0") ||
@@ -39,7 +39,7 @@ func TestMaliciousFinding(t *testing.T) {
 // inventory spells the version (Go's leading v).
 func TestInjectFingerprintEqualsScan(t *testing.T) {
 	adv := Advisory{ID: "MAL-2026-7", Summary: "s"}
-	scanPkg := pkg("Go", "github.com/Evil/mod", "v1.2.3", "go.mod")
+	scanPkg := malPkg("Go", "github.com/Evil/mod", "v1.2.3", "go.mod")
 	other := []sarif.Finding{
 		{Tool: "trivy", RuleID: "CVE-2024-1", FilePath: "go.mod", ContentKey: "CVE-2024-1|x|1"},
 		{Tool: "trivy", RuleID: "license:GPL-3.0-only", FilePath: "go.mod", ContentKey: "license:GPL-3.0-only|y|2"},
@@ -52,7 +52,7 @@ func TestInjectFingerprintEqualsScan(t *testing.T) {
 		}
 	}
 	// The inventory row: same package, version stored without the v.
-	inv := pkg("Go", "github.com/evil/mod", "1.2.3", "go.mod")
+	inv := malPkg("Go", "github.com/evil/mod", "1.2.3", "go.mod")
 	inj := injectFindings([]MaliciousMatch{{Package: inv, ScanID: uuid.New(), Advisory: adv},
 		{Package: inv, ScanID: uuid.New(), Advisory: adv}}) // duplicates collapse
 	if len(inj) != 1 || scanFP == "" || inj[0].fingerprint != scanFP {
@@ -65,13 +65,13 @@ func TestInjectFingerprintEqualsScan(t *testing.T) {
 
 func TestMaliciousFindingsMatch(t *testing.T) {
 	packages := []trivyjson.Package{
-		pkg("npm", "evil", "1.0.0", "package-lock.json"),
-		pkg("npm", "evil", "1.0.0", "web/package-lock.json"), // another lockfile: its own finding
-		pkg("npm", "typo", "2.0.0", "package-lock.json"),     // listed version
-		pkg("npm", "typo", "2.0.1", "package-lock.json"),     // not listed
-		pkg("PyPI", "Bad_Pkg", "1.0RC1", "requirements.txt"), // normalized name and version
-		pkg("alpine", "musl", "1.2.3", "image"),              // no OSV feed: never looked up
-		pkg("npm", "fine", "1.0.0", "package-lock.json"),
+		malPkg("npm", "evil", "1.0.0", "package-lock.json"),
+		malPkg("npm", "evil", "1.0.0", "web/package-lock.json"), // another lockfile: its own finding
+		malPkg("npm", "typo", "2.0.0", "package-lock.json"),     // listed version
+		malPkg("npm", "typo", "2.0.1", "package-lock.json"),     // not listed
+		malPkg("PyPI", "Bad_Pkg", "1.0RC1", "requirements.txt"), // normalized name and version
+		malPkg("alpine", "musl", "1.2.3", "image"),              // no OSV feed: never looked up
+		malPkg("npm", "fine", "1.0.0", "package-lock.json"),
 	}
 	db := dbtest.New(t, dbtest.Step{Prefix: "SELECT m.id, m.summary, m.ecosystem, m.match_name", Args: func(args []any) error {
 		ecos, names := args[0].([]string), args[1].([]string)
@@ -104,7 +104,7 @@ func TestMaliciousFindingsMatch(t *testing.T) {
 	}
 
 	// Nothing to look up: no query at all.
-	none, err := MaliciousFindings(context.Background(), dbtest.New(t), []trivyjson.Package{pkg("alpine", "musl", "1", "x")})
+	none, err := MaliciousFindings(context.Background(), dbtest.New(t), []trivyjson.Package{malPkg("alpine", "musl", "1", "x")})
 	if err != nil || none != nil {
 		t.Fatal(none, err)
 	}
