@@ -8,7 +8,7 @@ LDFLAGS := -s -w -X $(HEALTH).Version=$(VERSION) -X $(HEALTH).Commit=$(shell git
 # Colima: testcontainers needs the VM-side socket path for its reaper container.
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE ?= /var/run/docker.sock
 
-.PHONY: help setup env up idp down migrate api worker web test test-int lint vulncheck build mirror selfscan selfscan-release clean
+.PHONY: help setup env up idp down migrate api worker web test test-int lint vulncheck build mirror selfscan selfscan-release e2e clean
 
 help:  ## Show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -69,6 +69,9 @@ selfscan:  ## Scan Warden with Warden (FAIL_ON=critical|high)
 
 selfscan-release:  ## Release gate: 0 Critical and 0 un-baselined High 
 	$(MAKE) selfscan FAIL_ON=high
+
+e2e:  ## End-to-end smoke test against the running dev stack (see scripts/e2e.sh)
+	./scripts/e2e.sh
 
 clean:  ## Remove caches, binaries and reports (keeps .env)
 	chmod -R u+w .cache/selfscan .cache/scratch 2>/dev/null || true
