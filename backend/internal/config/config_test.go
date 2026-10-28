@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -215,5 +217,57 @@ func TestOIDCConsoleURL(t *testing.T) {
 		if _, err := Load(); err == nil {
 			t.Fatalf("%q accepted", bad)
 		}
+	}
+}
+
+func TestSecretsKeyAndWebhookSettings(t *testing.T) {
+	t.Chdir(t.TempDir())
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k, err := c.Keyring(); k != nil || err != nil || c.Webhook.FailureLimit != 10 || len(c.Webhook.AllowHosts) != 0 {
+		t.Fatal(k, err, c.Webhook)
+	}
+
+	// Keys are built at test time; the old one comes from a file.
+	b64 := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	oldFile := filepath.Join(t.TempDir(), "old")
+	if err := os.WriteFile(oldFile, []byte("k0:"+b64(7)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WARDEN_SECRETS__KEY", "k1:"+b64(9))
+	t.Setenv("WARDEN_SECRETS__OLD_KEYS", "file:"+oldFile)
+	t.Setenv("WARDEN_WEBHOOK__ALLOW_HOSTS", "127.0.0.1, receiver.local")
+	t.Setenv("WARDEN_WEBHOOK__FAILURE_LIMIT", "3")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := c.Keyring()
+	if err != nil || k.ActiveID() != "k1" || !k.Has("k0") || c.Webhook.FailureLimit != 3 ||
+		!slices.Equal(c.Webhook.AllowHosts, []string{"127.0.0.1", "receiver.local"}) {
+		t.Fatal(k, err, c.Webhook)
+	}
+	if strings.Contains(fmt.Sprintf("%+v %v", c, c.Secrets), b64(9)) {
+		t.Fatal("key printed")
+	}
+
+	short := "k1:" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 16))
+	for env, bad := range map[string]string{
+		"WARDEN_SECRETS__KEY":           short,
+		"WARDEN_WEBHOOK__ALLOW_HOSTS":   "http://127.0.0.1:8080",
+		"WARDEN_WEBHOOK__FAILURE_LIMIT": "0",
+	} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, bad)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("%q accepted", bad)
+			}
+			if strings.Contains(err.Error(), short[3:]) {
+				t.Fatal("error shows the key")
+			}
+		})
 	}
 }

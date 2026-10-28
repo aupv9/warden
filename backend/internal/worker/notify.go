@@ -40,6 +40,7 @@ func (w DispatchNotificationsWorker) Work(ctx context.Context, _ *river.Job[Disp
 	if w.Env == nil {
 		return errNoEnv
 	}
+	defer kickWebhooks(ctx) // deliveries queued by this dispatch
 	return w.Env.DispatchNotifications(ctx)
 }
 
@@ -77,7 +78,7 @@ func (e *Env) dispatcher() *notify.Dispatcher {
 		Tx: func(ctx context.Context, org uuid.UUID, fn func(notify.DB) error) error {
 			return e.Tx(ctx, org, func(db DB) error { return fn(db) })
 		},
-		Mailer: e.Mailer, BaseURL: e.PublicBaseURL, Now: e.Now, Log: e.Log,
+		Mailer: e.Mailer, BaseURL: e.PublicBaseURL, Webhooks: e.webhookQueue(), Now: e.Now, Log: e.Log,
 	}
 }
 

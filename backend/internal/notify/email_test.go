@@ -35,6 +35,10 @@ func contentFor(typ string) Content {
 		c.Overdue, c.DueSoon = 1, 1
 		c.Items = []Item{{ProjectKey: "WEB", IssueKey: "WEB-1", Title: hostileTitle, Severity: "high", Status: "open", Overdue: true,
 			Link: "/orgs/o/issues/1"}, {ProjectKey: "WEB", IssueKey: "WEB-2", Title: "t", Severity: "low", Link: "javascript:alert(1)"}}
+	case WebhookDisabled:
+		// The webhook's name is chosen by an org admin: escaped like a title.
+		c.ProjectID, c.ProjectKey, c.IssueKey, c.IssueTitle, c.Severity, c.Status, c.ActorName = "", "", "", "", "", "", ""
+		c.WebhookName = hostileTitle
 	}
 	return c
 }
@@ -51,7 +55,7 @@ func TestContentIsAnAllowList(t *testing.T) {
 	}
 	fields := names(reflect.TypeFor[Content]())
 	want := []string{"Type", "Title", "OrgName", "ProjectID", "ProjectKey", "IssueKey", "IssueTitle", "Severity", "Status",
-		"ActorName", "Decision", "Overdue", "DueSoon", "Items", "Link"}
+		"ActorName", "Decision", "Overdue", "DueSoon", "Items", "WebhookName", "Link"}
 	if !slices.Equal(fields, want) {
 		t.Fatalf("Content fields changed: %v", fields)
 	}
