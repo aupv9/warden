@@ -25,6 +25,8 @@ const ProjectMembersTab = lazyRoute(() => import("./routes/ProjectLayout"), "Pro
 const ProjectScansTab = lazyRoute(() => import("./routes/ProjectScans"), "ProjectScansTab");
 const ProjectSettingsTab = lazyRoute(() => import("./routes/ProjectSettings"), "ProjectSettingsTab");
 const IssuesPage = lazyRoute(() => import("./routes/IssueList"), "IssuesPage");
+const ComponentsPage = lazyRoute(() => import("./routes/Components"), "ComponentsPage");
+const ProjectComponentsTab = lazyRoute(() => import("./routes/ProjectComponents"), "ProjectComponentsTab");
 const ExceptionsPage = lazyRoute(() => import("./routes/Exceptions"), "ExceptionsPage");
 const MembersPage = lazyRoute(() => import("./routes/Members"), "MembersPage");
 const AuditLogPage = lazyRoute(() => import("./routes/AuditLog"), "AuditLogPage");
@@ -92,6 +94,7 @@ export const appRoutes: RouteObject[] = [
               { index: true, element: <Navigate to="issues" replace /> },
               { path: "issues", element: <ProjectIssuesTab /> },
               { path: "scans", element: <ProjectScansTab /> },
+              { path: "components", element: <ProjectComponentsTab /> },
               { path: "members", element: <ProjectMembersTab /> },
               { path: "settings", element: <ProjectSettingsTab /> },
             ],
@@ -100,6 +103,7 @@ export const appRoutes: RouteObject[] = [
           // selection) while the split view's pane changes. IssuesPage decides between the
           // split view (≥ 1200 px) and the issue as its own page.
           { path: "issues", element: <IssuesPage />, children: [{ path: ":issueId", element: null }] },
+          { path: "components", element: <ComponentsPage /> },
           { path: "exceptions", element: <ExceptionsPage /> },
           { path: "members", element: <MembersPage /> },
           { path: "audit-log", element: <AuditLogPage /> },

@@ -37,11 +37,28 @@ export type C28 = Fits<T.VulnDataSource, S["VulnDataSource"]>;
 export type C29 = Fits<T.ScanKind, S["ScanKind"]>;
 export type C30 = Fits<T.LicenseAction, S["LicenseAction"]>;
 export type C31 = Fits<T.LicenseCategory, keyof S["LicensePolicy"]["categories"]>;
+// v0.4
+export type C32 = Fits<T.ComponentSummary, S["ComponentSummary"]>;
+export type C33 = Fits<T.ComponentUsage, S["ComponentUsage"]>;
+export type C34 = Fits<T.ProjectComponent, S["ProjectComponent"]>;
+export type C35 = Fits<T.ProjectTarget, S["ProjectTarget"]>;
+export type C36 = Fits<T.SbomFormat, S["SbomFormat"]>;
+export type C37 = Fits<S["SbomFormat"], T.SbomFormat>;
+export type C38 = Fits<T.Ecosystem, S["Ecosystem"]>;
+export type C39 = Fits<T.NotificationType, S["NotificationPref"]["type"]>;
+export type C40 = Fits<S["NotificationPref"]["type"], T.NotificationType>;
 // Every sort and issue-list filter value the UI sends is one the server accepts.
 type IssueListQuery = NonNullable<import("./schema").operations["listIssues"]["parameters"]["query"]>;
 export type Q1 = Fits<NonNullable<IssueListQuery["sort"]>, T.IssueSort>;
 export type Q2 = Fits<NonNullable<IssueListQuery["kind"]>, import("../lib/issueFilters").IssueKindFilter>;
 export type Q3 = Fits<NonNullable<IssueListQuery["source"]>, import("../lib/issueFilters").IssueSourceFilter>;
+// v0.4: the SBOM format parameter and the component list filters.
+type SbomQuery = NonNullable<import("./schema").operations["getScanSbom"]["parameters"]["query"]>;
+export type Q4 = Fits<NonNullable<SbomQuery["format"]>, T.SbomFormatParam>;
+type ComponentQuery = NonNullable<import("./schema").operations["listComponents"]["parameters"]["query"]>;
+export type Q5 = Fits<keyof ComponentQuery, keyof import("../lib/components").ComponentApiQuery>;
+type ProjectComponentQuery = NonNullable<import("./schema").operations["listProjectComponents"]["parameters"]["query"]>;
+export type Q6 = Fits<keyof ProjectComponentQuery, keyof import("../lib/components").ProjectComponentApiQuery>;
 // Every error code the server sends is one the UI knows, and the server's list has the newest.
 export type E1 = Fits<T.ApiErrorCode, S["Error"]["code"]>;
 export type E2 = Fits<S["Error"]["code"], "MFA_NOT_ENABLED">;

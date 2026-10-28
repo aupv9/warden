@@ -1,9 +1,11 @@
-# Warden web UI: design spec (v0.3)
+# Warden web UI: design spec (v0.4)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
 projects, an Overview page and the MFA rule; see "v0.2 screens" below. v0.3 adds image scans,
-SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". The images below are screenshots of the app running on its
+SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". v0.4 adds the
+component inventory (which projects use a package version), malicious-package advisories (OSV) and SPDX downloads;
+see "v0.4 screens". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -42,6 +44,7 @@ enforces them anyway.
 | 9 | Project settings (v0.2) | everyone reads; project owner, security lead edit | General details; API tokens (create with a show-once token, revoke); CI setup snippets; auto-assign rules; archive / unarchive |
 | 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates. Sign-in (org admin edits, security lead reads, hidden from members): the identity provider and the org's sign-in policy, see "Sign-in settings" |
 | 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
+| 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation.
 States, the upload flow, dialogs and the phone layout are specified below the screenshots.
@@ -140,11 +143,36 @@ navigation items or the bell; 01 and 03 are current.
 ![Exploited (KEV) view in the dark theme](design/35-dark-issues-kev.png)
 <img src="design/36-phone-issue-kev.png" alt="Phone: issue with the Exploitation card" width="260"> <img src="design/37-phone-new-image-scan.png" alt="Phone: new image scan" width="260">
 
+### 28. Components (v0.4)
+![Components page with "Used in" open beside the table on a malicious package](design/38-components.png)
+![Searching by name and version at 1100 px: "Used in" as a dialog](design/39-components-search.png)
+
+### 29. A project's Components tab and the Image filter (v0.4)
+![Project Components tab narrowed to the image target](design/40-project-components.png)
+![Project Issues tab: the Image filter lists the project's image repositories](design/41-project-image-filter.png)
+
+### 30. Malicious packages (v0.4)
+![Issue list on the Malicious view](design/42-issues-malicious.png)
+![Issue page with the Malicious package card, opened by an advisory without a scan](design/43-issue-malicious.png)
+![Overview with the malicious-package banner](design/44-overview-malicious.png)
+
+### 31. SPDX download (v0.4)
+![Scan panel: CycloneDX and SPDX downloads](design/45-scan-sbom-spdx.png)
+
+### 32. Vulnerability data and notification preferences (v0.4)
+![Vulnerability data with one OSV row per ecosystem](design/46-vuln-data-osv.png)
+![Notification preferences with "Malicious package found"](design/47-notification-preferences.png)
+
+### 33. Dark theme and phone (v0.4)
+![Components page in the dark theme](design/48-dark-components.png)
+![Malicious-package issue in the dark theme](design/49-dark-issue-malicious.png)
+<img src="design/50-phone-used-in.png" alt="Phone: Used in as a full-screen sheet" width="260"> <img src="design/51-phone-issue-malicious.png" alt="Phone: malicious-package issue" width="260"> <img src="design/52-phone-component-filters.png" alt="Phone: component filters in a sheet" width="260">
+
 ## Issue triage
 
 - **Saved views** in the header are presets of the URL filters: Active (default), Assigned to me
-  (`assignee=me`), Past SLA (`past_sla=true`), Secrets (`tool=gitleaks`). Search, sort and project
-  are kept when switching.
+  (`assignee=me`), Past SLA (`past_sla=true`), Secrets (`tool=gitleaks`); v0.3 adds Exploited (KEV)
+  and Licenses, v0.4 Malicious (`kind=malicious`). Search, sort and project are kept when switching.
 - **Filter chips** read as sentences ("Severity is Critical, High"), each with its own remove
   button; "+ Filter" adds severity, status, project, assignee, scanner or past SLA. "Group by"
   (severity or none, remembered per browser) and "Sort" sit on the right.
@@ -427,6 +455,106 @@ to run `make mirror` daily."
 off. Name an image upload `…multiple….tar` or `…invalid….tar` to see a rejection. SBOM links
 are not followed in mock mode.
 
+## v0.4 screens
+
+### Components
+
+`/orgs/:org/components`, "Components" under Issues in the navigation (and in the command palette,
+with "Malicious packages"). The data is each (project, target)'s latest scan where Trivy ran, so a
+component that leaves the lockfile leaves the page with the next scan; history stays in each scan's
+SBOM. Members see their projects, org admins and security leads every project; archived projects
+are left out.
+
+- **Filters** in the URL, checked before they reach the API: the search box (`?q=`) takes a name
+  prefix, or a name and an exact version ("xz 5.6.0", "log4j-core@2.14.1"; an npm scope such as
+  `@acme/ui` stays part of the name); ecosystem (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet,
+  Packagist, deb, apk, rpm; a valid other value from the URL is listed as it is); project; and
+  **Malicious only**, an on/off button (`aria-pressed`). "Clear" resets them. On a phone the search
+  stays on the page and the rest is in the Filters sheet (a checkbox for Malicious only).
+- **Table:** component (mono name, with a red **Malicious** tag whose accessible name is "Malicious
+  package (OSV advisory)"), version, ecosystem, licenses, projects (and "· n targets" when one
+  project has it in several), open issues (active Trivy issues on that package version). 50 per
+  page, "Load more" (cursor). There is no total count in the contract, so the footer says
+  "Showing n components".
+- **Used in:** the component name is a button (`aria-expanded`); from 1200 px the panel opens beside
+  the table (focus moves to its heading; Close returns focus to the row), between 800 and 1200 px as
+  a dialog, on a phone as a full-screen sheet. It shows the purl as text, the ecosystem and
+  licenses, a red block for a malicious version ("Remove it and rotate any credentials the build had
+  access to", with a link to the malicious-package issues), then one entry per project, target and
+  path from `GET …/components/usage`: the project (a link to its Components tab, narrowed to that
+  target and name), "Source code" or an **Image** tag with the repository (a link to the project's
+  issues in that image, only for a well-formed repository), the lockfile or layer path as mono text,
+  "Scanned 2 h ago" (a link to that scan) and the first-seen date.
+- **Empty states:** "No components yet" (they appear after a scan where Trivy runs: lockfiles such
+  as package-lock.json, go.mod or poetry.lock, and container images) and "No components match these
+  filters" with the filters in words and "Clear filters".
+
+### A project's Components tab and targets
+
+- A **Components** tab between Scans and Members: the project's components with where each one is
+  (target and path) and the first-seen date, filtered by name prefix, ecosystem, target (All
+  targets / Source code / each image repository from `GET …/targets`) and Malicious only. The
+  target filter is `?target=(source)` for source code (parentheses
+  can't occur in a repository) and is sent as `target=` (empty), as the contract asks.
+- **Image filter on the issue list:** the free-text field is gone. With a project in scope (its
+  Issues tab, or the project filter on the org list) the Image filter offers the project's image
+  repositories from `GET …/targets`; without one it isn't offered ("Pick a project to filter by
+  container image" in the phone sheet). A target already in the URL keeps its chip and stays listed.
+
+### Malicious packages
+
+An OSV `MAL-` advisory that lists a package version in the inventory makes a **Critical** Trivy
+issue with rule id `malicious:<MAL id>`, at scan time or later without a scan. Advisories create or
+reopen issues; they never fix, hide or downgrade one, and the usual auto-fix, gate, SLA and
+exceptions apply.
+
+- **List:** a red **Malicious** tag beside the title (no KEV/EPSS marks), the Type filter gains
+  "Malicious packages", and the saved view **Malicious** (`kind=malicious`) shows
+  `IssueCounts.malicious`.
+- **Issue page:** a **Malicious package** card first, with a red border: "<pkg> <version> is listed
+  as malicious", what installing it means, "Advisory MAL-…" linked to
+  `https://osv.dev/vulnerability/<id>` (new tab, `noopener noreferrer`) only when the id matches
+  `^MAL-\d{4}-\d{1,8}$` (otherwise the id is text), then **"Remove this version and rotate any
+  credentials the build had access to."** and that it moves to Fixed when the package is gone from
+  the next scan. Where reads "<pkg> <version> · remove this version" (never "no fixed version
+  yet"); How to fix falls back to the same sentence; Details gains an Advisory row. An issue opened
+  by an advisory without a scan shows the server's note in Activity ("Created “Found by
+  malicious-package advisory MAL-… (no scan)”") instead of "from a scan".
+- **Overview:** when `IssueCounts.malicious > 0` (for the project in scope), a red banner above the
+  tiles: "n malicious-package issues are open", what to do, and "View malicious-package issues".
+- **Notifications:** the preference "Malicious package found" (`component.malicious`, email on by
+  default; sent to security leads and project owners).
+
+### SPDX
+
+The SBOM box lists the files the scan has (`Scan.sbom.formats`): "CycloneDX and SPDX JSON · n
+components · size (CycloneDX)" and one button each, **Download SBOM (CycloneDX)** and **Download
+SBOM (SPDX)**. Each calls `GET …/sbom?format=cyclonedx|spdx` and starts the download through the same
+temporary `<a download>` (absolute http(s) only); the box then shows that file's SHA-256. A scan from
+before v0.4 has CycloneDX only and shows one button.
+
+### License category
+
+License issues read their category from `license_category`; the title is no longer parsed. A value
+outside the seven Trivy categories shows no category.
+
+### Vulnerability data: OSV
+
+One row per OSV ecosystem feed (`osv_mal:<ecosystem>`): "OSV malicious packages · npm", what it is,
+the usual freshness, "n advisories · loaded …", and "n advisories skipped: version ranges not
+supported" when the loader skipped some. The card says that an OSV advisory opens or reopens a
+Critical issue and never closes or hides one, while KEV and EPSS only rank.
+
+### Mock mode (v0.4)
+
+Projects and issues now belong to one org: Acme Labs has its own project, LAB (the caller is a
+developer there and a plain member of the org). The inventory covers WEB (npm, Go, the
+`ghcr.io/acme/api` image with Debian and Maven packages), PAY and LAB (PyPI); LEG is archived and
+never listed. Two made-up advisories: `acme-ui-icons` 3.1.4 (npm, PAY, found by a scan) and
+`acme-dataloader` (PyPI, every version, LAB, found without a scan). Scans older than four days have
+CycloneDX only. `?mock_vuln=stale|missing` also covers the OSV rows; `?mock_role=member` limits the
+inventory to the caller's projects.
+
 ## Audit log
 
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
@@ -644,6 +772,15 @@ Below 800 px (screenshots in section 12):
   content comes from the scanned code.
 - **External links (v0.3):** NVD links are built only from ids matching the CVE pattern; KEV,
   NVD and identity-provider links open with `rel="noopener noreferrer"`.
+- **Components (v0.4):** component names, versions, licenses, paths and purls come from scanned
+  lockfiles and images. They are rendered as text, never as HTML and never as an `href`. Links on
+  the Components pages are built from ids (project, scan) and from image repositories that match the
+  contract's pattern; a name only travels encoded in a query string, as text for a search box. Every
+  URL filter is checked against the contract (ecosystem pattern, UUIDs, lengths) before it reaches
+  the API (`src/lib/components.test.ts`, `src/test/screens.test.tsx`).
+- **OSV links (v0.4)** are built only from ids matching `^MAL-\d{4}-\d{1,8}$` and open with
+  `rel="noopener noreferrer"`; any other id is shown as text (`src/lib/malicious.test.ts`).
+- **SPDX downloads (v0.4)** use the SBOM download rules above; the app never reads either file.
 
 ## Visual system
 
@@ -744,17 +881,33 @@ In the design but not in the API contract:
   issue's project. The API doesn't say what happens when the assignee isn't a member of one of
   them; it should skip that issue and count it as skipped.
 
-In v0.3, in the design but not in the API contract:
+In v0.3, closed in v0.4: license issues now have `license_category`, and `GET …/targets` lists a
+project's image targets.
 
-- License issues have no category field; the UI reads it from the end of the title
-  ("… (restricted)") and shows none if the title has another shape.
-- There is no list of a project's image targets, so the Image filter is free text with
-  suggestions from loaded issues. A small `GET …/targets` would fix that.
+In v0.4, in the design but not in the API contract:
+
+- Targets are listed per project only, so the issue list's Image filter needs a project in scope.
+  An org-wide `GET /orgs/{org}/targets` (or `project_id` optional) would let the org list offer it.
+- `GET …/components/usage` takes `name`; the contract doesn't say whether that is the display name
+  or the normalised match name. The UI sends the `name` from the list row.
+- The component list has no total count and no documented sort order; the UI shows "Showing n" and
+  doesn't reorder. Malicious rows can only lead on a project's tab if the server sorts them first.
+- No endpoint says which ecosystems the inventory holds, so the ecosystem filter is a fixed list
+  (plus a valid value from the URL).
+- An issue created or reopened by an advisory without a scan has no event type of its own; the UI
+  relies on the server's note on the `created` (or `status_changed`) event.
+
+## Not in v0.4
+
+Secrets in git history, webhook and Slack notifications, and PR/MR comments from the CLI (all
+planned for the second v0.4 wave); component history over time (the inventory keeps only the current
+components; each scan's SBOM keeps the rest); exporting the inventory; VEX; pulling images from a
+registry; secrets in image layers; Checkov severities.
 
 ## Not in v0.3
 
-Org-wide component search ("which projects use xz 5.6.0?"), SPDX output, pulling images from
-a registry, secrets in image layers, malicious-package advisories.
+Org-wide component search ("which projects use xz 5.6.0?"), SPDX output and malicious-package
+advisories (all in v0.4); pulling images from a registry, secrets in image layers.
 
 ## Not in v0.2
 

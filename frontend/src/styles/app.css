@@ -4354,3 +4354,234 @@ fieldset.policy-section > legend.policy-head + * {
     min-height: var(--touch-h);
   }
 }
+
+/* ---------- v0.4: malicious packages, SPDX, component inventory ---------- */
+
+/* The red "Malicious" tag: an OSV malicious-package advisory. The word carries the meaning. */
+.mal-tag {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--msg-error-bg);
+  color: var(--msg-error-fg);
+  border-color: var(--msg-error-line);
+}
+.intel-marks .mal-tag {
+  height: 18px;
+  padding: 0 5px;
+}
+.malicious-card {
+  border-color: var(--msg-error-line);
+}
+.mal-block .mal-tag {
+  margin-top: 1px;
+  background: var(--surface);
+}
+.mal-block a {
+  overflow-wrap: anywhere;
+}
+.mal-fix {
+  margin: 0;
+}
+.malicious-banner {
+  margin-bottom: 16px;
+}
+.sbom-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.menu-note {
+  margin: 0;
+  padding: 8px 10px;
+  max-width: 260px;
+}
+
+/* An on/off filter beside selects (desktop); the phone sheet uses a checkbox instead. */
+.toggle-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h);
+  padding: 0 10px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toggle-chip:hover {
+  background: var(--hover);
+}
+.toggle-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--ink);
+}
+.mal-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--sev-critical);
+}
+
+/* Components page and a project's Components tab. */
+.comp-intro {
+  max-width: 760px;
+}
+.comp-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.comp-filters .search {
+  flex: 1 1 240px;
+  width: auto;
+  max-width: 340px;
+}
+.comp-split {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.comp-list {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.comp-panel {
+  flex: 0 0 380px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+@media (min-width: 1440px) {
+  .comp-panel {
+    flex-basis: 420px;
+  }
+}
+.comp-cell {
+  min-width: 0;
+}
+.comp-name-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.comp-name {
+  font-weight: 500;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.comp-purl {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.row-button.comp-name {
+  font-family: var(--font-mono);
+}
+.comp-version {
+  white-space: nowrap;
+}
+.comp-licenses {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.comp-where {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.used-in {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.used-in p {
+  margin: 0;
+}
+.used-in-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.used-in-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.used-in-title:focus {
+  outline: none;
+}
+.used-in-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.comp-purl-full {
+  overflow-wrap: anywhere;
+}
+.used-in-mal {
+  align-items: flex-start;
+}
+.usage-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.usage-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.usage-item + .usage-item {
+  border-top: 1px solid var(--line-soft);
+}
+.usage-project {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 500;
+}
+.usage-target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.usage-path {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px) {
+  .comp-filters.phone {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .comp-filters.phone .search {
+    width: 100%;
+    height: var(--touch-h);
+  }
+  .toggle-chip {
+    height: var(--touch-h);
+  }
+  .row-button.comp-name {
+    min-height: var(--touch-h);
+  }
+}

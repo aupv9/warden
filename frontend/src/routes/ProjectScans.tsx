@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { Link, useSearchParams } from "react-router";
 import { BAD_DOWNLOAD_URL, IN_PROGRESS, SBOM_GONE, useCancelScan, useScan, useScans, useSbomDownload } from "../api/hooks/scans";
 import { flattenPages } from "../api/paging";
-import type { Limits, Scan, ScanKind } from "../api/types";
+import type { Limits, SbomFormat, SbomFormatParam, Scan, ScanKind } from "../api/types";
 import { DotMark, Pill, ScanStatusMark, ToolStatusMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
@@ -427,43 +427,69 @@ function ScanPanel({
   );
 }
 
-/** v0.3: the scan's CycloneDX SBOM. Each click asks for a fresh 5-minute link and hands it to
- *  the browser as a download; the page never opens or shows the file. */
+const SBOM_FORMATS: { format: SbomFormat; param: SbomFormatParam; label: string; ext: string }[] = [
+  { format: "cyclonedx-json", param: "cyclonedx", label: "CycloneDX", ext: "cdx.json" },
+  { format: "spdx-json", param: "spdx", label: "SPDX", ext: "spdx.json" },
+];
+
+/** v0.3: the scan's SBOM; v0.4: one button per file the scan has (CycloneDX, SPDX). Each click
+ *  asks for a fresh 5-minute link and hands it to the browser as a download; the page never
+ *  opens or shows the file. */
 function SbomRow({ scan: s, sbom: meta }: { scan: Scan; sbom: NonNullable<Scan["sbom"]> }) {
   const { orgId } = useOrgCtx();
   const project = useProjectCtx();
-  const download = useSbomDownload(orgId);
-  const fileName = `${project.key.toLowerCase()}-${s.id.slice(0, 8)}.cdx.json`;
-  const what = `${meta.components.toLocaleString("en-US")} component${meta.components === 1 ? "" : "s"} · ${formatBytes(meta.size)}`;
+  const cdx = useSbomDownload(orgId);
+  const spdx = useSbomDownload(orgId);
+  const downloads = { "cyclonedx-json": cdx, "spdx-json": spdx };
+  // A server older than v0.4 sends no `formats`: it only ever stored CycloneDX.
+  const have = meta.formats?.length ? meta.formats : (["cyclonedx-json"] as SbomFormat[]);
+  const formats = SBOM_FORMATS.filter((f) => have.includes(f.format));
+  const [last, setLast] = useState<SbomFormat | null>(null);
+  const lastDownload = last ? downloads[last] : null;
+  const what = `${meta.components.toLocaleString("en-US")} component${meta.components === 1 ? "" : "s"}`;
   return (
     <div className="sbom-box">
       <div className="sbom-row">
         <div className="sbom-text">
           <strong>Software bill of materials</strong>
-          <span className="muted small">CycloneDX JSON · {what}</span>
+          <span className="muted small">
+            {`${formats.map((f) => f.label).join(" and ")} JSON · ${what} · ${formatBytes(meta.size)}${formats.length > 1 ? " (CycloneDX)" : ""}`}
+          </span>
         </div>
-        <Button
-          size="sm"
-          busy={download.isPending}
-          onClick={() =>
-            download.mutate(
-              { scanId: s.id, fileName },
-              { onSuccess: () => showToast({ tone: "success", message: `SBOM download started (${what}).` }) },
-            )
-          }
-        >
-          <DownloadIcon /> Download SBOM (CycloneDX)
-        </Button>
+        <div className="sbom-actions">
+          {formats.map((f) => {
+            const d = downloads[f.format];
+            return (
+              <Button
+                key={f.format}
+                size="sm"
+                busy={d.isPending}
+                onClick={() => {
+                  setLast(f.format);
+                  d.mutate(
+                    { scanId: s.id, fileName: `${project.key.toLowerCase()}-${s.id.slice(0, 8)}.${f.ext}`, format: f.param },
+                    { onSuccess: (m) => showToast({ tone: "success", message: `SBOM download started (${f.label}, ${what}, ${formatBytes(m.size)}).` }) },
+                  );
+                }}
+              >
+                <DownloadIcon /> {`Download SBOM (${f.label})`}
+              </Button>
+            );
+          })}
+        </div>
       </div>
-      {download.data && (
+      {lastDownload?.data && (
         <p className="faint small sbom-sum">
-          SHA-256 <span className="mono">{download.data.sha256}</span>
+          {lastDownload.data.format === "spdx-json" ? "SPDX" : "CycloneDX"} SHA-256 <span className="mono">{lastDownload.data.sha256}</span>
         </p>
       )}
       <ActionError
-        error={download.error}
+        error={lastDownload?.error}
         overrides={{
-          [SBOM_GONE]: "This scan's SBOM is no longer available. SBOMs are kept for a limited time; run a new scan to get one.",
+          [SBOM_GONE]:
+            last === "spdx-json"
+              ? "This scan's SPDX file is no longer available. SBOMs are kept for a limited time; run a new scan to get one."
+              : "This scan's SBOM is no longer available. SBOMs are kept for a limited time; run a new scan to get one.",
           [BAD_DOWNLOAD_URL]: "The server sent a download link Warden doesn't follow. Tell your operator.",
         }}
       />

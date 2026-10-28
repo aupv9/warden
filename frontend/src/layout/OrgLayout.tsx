@@ -21,6 +21,7 @@ import {
   MembersIcon,
   MenuIcon,
   OverviewIcon,
+  PackageIcon,
   ProjectsIcon,
   SearchIcon,
   SettingsIcon,
@@ -398,6 +399,11 @@ function OrgNav({ org }: { org: MeOrg }) {
         <IssuesIcon />
         <span className="grow">Issues</span>
         {open !== undefined && open > 0 && <Count label="open">{open}</Count>}
+      </NavLink>
+      {/* v0.4: the component inventory, next to the issues it explains. */}
+      <NavLink to={`${base}/components`}>
+        <PackageIcon />
+        <span className="grow">Components</span>
       </NavLink>
       <NavLink to={`${base}/exceptions`}>
         <ExceptionsIcon />

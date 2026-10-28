@@ -8,6 +8,8 @@ import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOT
 import type {
   ApiToken,
   AssignRule,
+  ComponentSummary,
+  ComponentUsage,
   CreateScanBody,
   CreateTokenBody,
   ExceptionRequest,
@@ -18,6 +20,8 @@ import type {
   NotificationPref,
   OrgRole,
   Project,
+  ProjectComponent,
+  ProjectTarget,
   Scan,
   SeverityCounts,
   UpdatePolicyBody,
@@ -114,7 +118,7 @@ function advance(s: Scan): Scan {
     s.stats = { new: 2, fixed: 1, reopened: 0, total: 12 };
     // An SBOM when Trivy finished (the server stores it from the same Trivy run).
     if (runs.some((r) => r.tool === "trivy" && r.status === "succeeded")) {
-      s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118 };
+      s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118, formats: ["cyclonedx-json", "spdx-json"] };
     }
     // Name a file …traversal….zip, …multiple….tar or …invalid….tar to see a rejection.
     const reject = s.file_name.includes("traversal")
@@ -184,6 +188,181 @@ function findProject(id: string): Project {
   const p = db.projects.find((x) => x.id === id);
   if (!p) throw NOT_FOUND();
   return p;
+}
+
+/** v0.4: projects and issues belong to one org (Acme Labs has LAB); another org's look missing. */
+function inOrg(orgId: string, projectId: string): boolean {
+  return db.orgOfProject(projectId) === orgId;
+}
+function orgProject(orgId: string, id: string): Project {
+  const p = findProject(id);
+  if (!inOrg(orgId, p.id)) throw NOT_FOUND();
+  return p;
+}
+
+// ---- v0.4: component inventory ----
+
+/** Like ecosystem.MatchName on the server: PyPI names per PEP 503, everything else lowercase
+ *  (case-insensitive prefix search). */
+function matchName(eco: string, name: string): string {
+  return eco === "PyPI" ? name.toLowerCase().replace(/[-_.]+/g, "-") : name.toLowerCase();
+}
+
+/** Projects whose components the caller sees: org admins and security leads every project,
+ *  members only their own; archived projects never. */
+function visibleProjects(orgId: string): Project[] {
+  const role = callerRole(orgId);
+  return db.projects.filter((p) => inOrg(orgId, p.id) && !p.archived_at && (role !== "member" || p.my_role !== null));
+}
+
+function isMalicious(eco: string, name: string, version: string): boolean {
+  return db.maliciousPackages.some((m) => m.ecosystem === eco && matchName(eco, m.name) === matchName(eco, name) && (m.versions === "all" || m.versions.includes(version)));
+}
+
+/** Active Trivy issues on this package version in these projects (and target, when given). */
+function openIssuesFor(projectIds: Set<string>, name: string, version: string, target?: string): number {
+  return db.issues.filter(
+    (i) =>
+      projectIds.has(i.project_id) &&
+      ACTIVE.includes(i.status) &&
+      i.tool === "trivy" &&
+      i.package_name === name &&
+      i.package_version === version &&
+      (target === undefined || i.target === target),
+  ).length;
+}
+
+const ECOSYSTEM = /^[A-Za-z0-9.+_-]{1,32}$/;
+
+function inventoryFilter(url: URL): (r: db.InventoryRow) => boolean {
+  const sp = url.searchParams;
+  const q = sp.get("q") ?? "";
+  const eco = sp.get("ecosystem");
+  const version = sp.get("version");
+  const fields: Record<string, string> = {};
+  if (q.length > 128) fields.q = "at most 128 characters";
+  if (eco !== null && !ECOSYSTEM.test(eco)) fields.ecosystem = "not an ecosystem name";
+  if (version !== null && version.length > 128) fields.version = "at most 128 characters";
+  if (sp.has("malicious") && !["true", "false"].includes(sp.get("malicious")!)) fields.malicious = "true or false";
+  if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+  const malicious = sp.get("malicious") === "true";
+  return (r) =>
+    (!q || matchName(r.ecosystem, r.name).startsWith(matchName(eco ?? r.ecosystem, q))) &&
+    (!eco || r.ecosystem === eco) &&
+    (!version || r.version === version) &&
+    (!malicious || isMalicious(r.ecosystem, r.name, r.version));
+}
+
+const byName = (a: { name: string; ecosystem: string; version: string }, b: { name: string; ecosystem: string; version: string }) =>
+  a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.ecosystem.localeCompare(b.ecosystem) || a.version.localeCompare(b.version);
+
+function listComponents(orgId: string, url: URL) {
+  const pid = url.searchParams.get("project_id");
+  const visible = visibleProjects(orgId).filter((p) => !pid || p.id === pid);
+  const ids = new Set(visible.map((p) => p.id));
+  const keep = inventoryFilter(url);
+  const groups = new Map<string, db.InventoryRow[]>();
+  for (const r of db.inventory) {
+    if (!ids.has(r.project_id) || !keep(r)) continue;
+    const k = `${r.ecosystem}\u0000${matchName(r.ecosystem, r.name)}\u0000${r.version}`;
+    groups.set(k, [...(groups.get(k) ?? []), r]);
+  }
+  const items: (ComponentSummary & { id: string })[] = [...groups.entries()].map(([k, rs]) => {
+    const r = rs[0]!;
+    const projects = new Set(rs.map((x) => x.project_id));
+    return {
+      id: k,
+      ecosystem: r.ecosystem,
+      name: r.name,
+      version: r.version,
+      purl: r.purl,
+      licenses: [...new Set(rs.flatMap((x) => x.licenses))],
+      projects: projects.size,
+      targets: new Set(rs.map((x) => `${x.project_id}\u0000${x.target}`)).size,
+      open_issues: openIssuesFor(projects, r.name, r.version),
+      malicious: isMalicious(r.ecosystem, r.name, r.version),
+    };
+  });
+  const { items: pageItems, next_cursor } = page(items.sort(byName), url);
+  return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
+}
+
+function componentUsage(orgId: string, url: URL) {
+  const sp = url.searchParams;
+  const eco = sp.get("ecosystem") ?? "";
+  const name = sp.get("name") ?? "";
+  const version = sp.get("version") ?? "";
+  const fields: Record<string, string> = {};
+  if (!ECOSYSTEM.test(eco)) fields.ecosystem = "required";
+  if (name.length < 1 || name.length > 256) fields.name = "1 to 256 characters";
+  if (version.length < 1 || version.length > 128) fields.version = "1 to 128 characters";
+  if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+  const visible = new Map(visibleProjects(orgId).map((p) => [p.id, p]));
+  const items: (ComponentUsage & { id: string })[] = db.inventory
+    .filter((r) => visible.has(r.project_id) && r.ecosystem === eco && matchName(eco, r.name) === matchName(eco, name) && r.version === version)
+    .map((r) => {
+      const p = visible.get(r.project_id)!;
+      const s = db.scans.find((x) => x.id === r.scan_id)!;
+      return {
+        id: `${r.project_id}${r.target}${r.path}`,
+        project_id: p.id,
+        project_key: p.key,
+        project_name: p.name,
+        target: r.target,
+        path: r.path,
+        scan_id: s.id,
+        scanned_at: s.finished_at ?? s.created_at,
+        first_seen: r.first_seen,
+      };
+    })
+    .sort((a, b) => a.project_key.localeCompare(b.project_key) || a.target.localeCompare(b.target) || a.path.localeCompare(b.path));
+  const { items: pageItems, next_cursor } = page(items, url);
+  return { items: pageItems.map(({ id: _id, ...u }) => u), next_cursor };
+}
+
+function projectComponents(orgId: string, p: Project, url: URL) {
+  const sp = url.searchParams;
+  if (sp.has("target") && sp.get("target")!.length > 255) throw new Fail(422, "VALIDATION_FAILED", { target: "at most 255 characters" });
+  const keep = inventoryFilter(url);
+  const target = sp.get("target");
+  const items: (ProjectComponent & { id: string })[] = db.inventory
+    .filter((r) => r.project_id === p.id && keep(r) && (target === null || r.target === target))
+    .map((r) => ({
+      id: `${r.target}${r.path}${r.ecosystem}${r.name}${r.version}`,
+      ecosystem: r.ecosystem,
+      name: r.name,
+      version: r.version,
+      purl: r.purl,
+      licenses: r.licenses,
+      target: r.target,
+      path: r.path,
+      first_seen: r.first_seen,
+      open_issues: openIssuesFor(new Set([p.id]), r.name, r.version, r.target),
+      malicious: isMalicious(r.ecosystem, r.name, r.version),
+    }))
+    // Malicious first, then by name: the tab is per project, so the most urgent rows lead.
+    .sort((a, b) => Number(b.malicious) - Number(a.malicious) || byName(a, b));
+  void orgId;
+  const { items: pageItems, next_cursor } = page(items, url);
+  return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
+}
+
+function projectTargets(p: Project): { items: ProjectTarget[] } {
+  const targets = new Set<string>();
+  for (const s of db.scans) if (s.project_id === p.id) targets.add(s.target);
+  for (const i of db.issues) if (i.project_id === p.id) targets.add(i.target);
+  const items = [...targets]
+    .sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
+    .map((target) => {
+      const last = db.scans.filter((s) => s.project_id === p.id && s.target === target).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      return {
+        target,
+        kind: (target === "" ? "source" : "image") as ProjectTarget["kind"],
+        last_scan_at: last?.created_at ?? null,
+        open_issues: db.issues.filter((i) => i.project_id === p.id && i.target === target && ACTIVE.includes(i.status)).length,
+      };
+    });
+  return { items };
 }
 
 function memberUser(userId: string) {
@@ -311,9 +490,9 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/issues/counts$`),
-    (_m, url) => {
+    (m, url) => {
       const pid = url.searchParams.get("project_id");
-      const active = db.issues.filter((i) => ACTIVE.includes(i.status) && (!pid || i.project_id === pid));
+      const active = db.issues.filter((i) => ACTIVE.includes(i.status) && inOrg(m[1]!, i.project_id) && (!pid || i.project_id === pid));
       return {
         active: active.length,
         mine: active.filter((i) => i.assignee?.id === db.me.id).length,
@@ -321,6 +500,7 @@ const routes: [string, RegExp, Handler][] = [
         secrets: active.filter((i) => i.tool === "gitleaks").length,
         kev: active.filter((i) => i.kev).length,
         licenses: active.filter((i) => i.tool === "trivy" && i.rule_id.startsWith("license:")).length,
+        malicious: active.filter((i) => i.tool === "trivy" && i.rule_id.startsWith("malicious:")).length,
       };
     },
   ],
@@ -351,20 +531,30 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/scans/([^/]+)/sbom$`),
-    (m) => {
+    (m, url) => {
+      const format = url.searchParams.get("format") ?? "cyclonedx";
+      if (format !== "cyclonedx" && format !== "spdx") throw new Fail(422, "VALIDATION_FAILED", { format: "cyclonedx or spdx" });
       const s = db.scans.find((x) => x.id === m[2]);
-      if (!s || !s.sbom) throw NOT_FOUND();
+      const wire = format === "spdx" ? "spdx-json" : "cyclonedx-json";
+      if (!s || !s.sbom || !s.sbom.formats.includes(wire)) throw NOT_FOUND();
+      // The SPDX file is a little larger than the CycloneDX one for the same components.
+      const size = format === "spdx" ? Math.round(s.sbom.size * 1.37) : s.sbom.size;
       return {
         // Never followed in mock mode (there is no object store); shaped like a presigned GET.
-        url: `https://storage.mock.invalid/warden/sboms/${m[1]}/${s.id}.cdx.json?X-Amz-Expires=300&X-Amz-Signature=mock`,
+        url: `https://storage.mock.invalid/warden/sboms/${m[1]}/${s.id}.${format === "spdx" ? "spdx" : "cdx"}.json?X-Amz-Expires=300&X-Amz-Signature=mock`,
         expires_at: new Date(db.now() + 5 * 60_000).toISOString(),
-        format: "cyclonedx-json",
-        size: s.sbom.size,
-        sha256: db.fakeSha256(s.sbom.size),
+        format: wire,
+        size,
+        sha256: db.fakeSha256(size),
         components: s.sbom.components,
       };
     },
   ],
+  // ---- v0.4 component inventory ----
+  ["GET", new RegExp(`^${O}/components$`), (m, url) => listComponents(m[1]!, url)],
+  ["GET", new RegExp(`^${O}/components/usage$`), (m, url) => componentUsage(m[1]!, url)],
+  ["GET", new RegExp(`^${O}/projects/([^/]+)/components$`), (m, url) => projectComponents(m[1]!, orgProject(m[1]!, m[2]!), url)],
+  ["GET", new RegExp(`^${O}/projects/([^/]+)/targets$`), (m) => projectTargets(orgProject(m[1]!, m[2]!))],
   // ---- v0.2 API tokens ----
   [
     "GET",
@@ -456,8 +646,8 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/summary$`),
-    () => {
-      const open = db.issues.filter((i) => ACTIVE.includes(i.status));
+    (m) => {
+      const open = db.issues.filter((i) => ACTIVE.includes(i.status) && inOrg(m[1]!, i.project_id));
       return {
         open_issues: open.length,
         critical_high_open: open.filter((i) => i.severity === "critical" || i.severity === "high").length,
@@ -583,8 +773,8 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/projects$`),
-    (_m, url) => ({
-      items: db.projects.filter((p) => !p.archived_at || url.searchParams.get("include_archived") === "true").map(projectView),
+    (m, url) => ({
+      items: db.projects.filter((p) => inOrg(m[1]!, p.id) && (!p.archived_at || url.searchParams.get("include_archived") === "true")).map(projectView),
     }),
   ],
   [
@@ -608,12 +798,13 @@ const routes: [string, RegExp, Handler][] = [
         archived_at: null,
       };
       db.projects.push(p);
+      db.projectOrg[p.id] = _m[1]!;
       db.projectMembers[p.id] = [];
       audit("project.created", "project", p.id, { project_key: p.key, name: p.name });
       return [201, projectView(p)];
     },
   ],
-  ["GET", new RegExp(`^${O}/projects/([^/]+)$`), (m) => projectView(findProject(m[2]!))],
+  ["GET", new RegExp(`^${O}/projects/([^/]+)$`), (m) => projectView(orgProject(m[1]!, m[2]!))],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/members$`), (m) => ({ items: db.projectMembers[findProject(m[2]!).id] ?? [] })],
   [
     "PUT",
@@ -745,7 +936,7 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/issues$`),
-    (_m, url) => {
+    (m, url) => {
       const sp = url.searchParams;
       const statuses = sp.getAll("status");
       const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
@@ -753,14 +944,14 @@ const routes: [string, RegExp, Handler][] = [
       const base = db.issues.filter(
         (i) =>
           want.includes(i.status) &&
+          inOrg(m[1]!, i.project_id) &&
           (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
           (!sp.get("tool") || i.tool === sp.get("tool")) &&
           (sp.get("past_sla") !== "true" || i.past_sla) &&
           // v0.3
           (sp.get("kev") !== "true" || i.kev) &&
           (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
-          (!sp.get("kind") ||
-            (i.tool === "trivy" && (sp.get("kind") === "license") === i.rule_id.startsWith("license:"))) &&
+          (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
           (!sp.get("source") || (sp.get("source") === "image") === (i.target !== "")) &&
           (!sp.get("target") || i.target === sp.get("target")) &&
           (!sp.get("assignee") ||
@@ -926,6 +1117,11 @@ const routes: [string, RegExp, Handler][] = [
     },
   ],
 ];
+
+/** v0.4: Trivy issues are license-policy issues, malicious packages or vulnerabilities. */
+function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
+  return ruleId.startsWith("license:") ? "license" : ruleId.startsWith("malicious:") ? "malicious" : "vulnerability";
+}
 
 function summary(i: Issue) {
   const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, ...rest } = i;
