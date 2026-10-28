@@ -39,6 +39,8 @@ type Config struct {
 	RequireMFARoles []rbac.Role
 	// SignIn is shown on the Sign-in settings page.
 	SignIn SignInConfig
+	// Webhooks: secrets.key and the URL checks (webhooks.go).
+	Webhooks WebhookConfig
 }
 
 type Service struct {

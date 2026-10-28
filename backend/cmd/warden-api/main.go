@@ -30,6 +30,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/store"
+	"github.com/aupv9/warden/backend/internal/webhook"
 	"github.com/aupv9/warden/backend/internal/worker"
 )
 
@@ -87,7 +88,10 @@ func appOptions(cfg *config.Config) fx.Option {
 
 // ServiceConfig maps the configuration to the service's settings.
 func ServiceConfig(c *config.Config) service.Config {
+	keys, _ := c.Keyring() // validated by config.Load
 	return service.Config{
+		Webhooks: service.WebhookConfig{Keys: keys,
+			Checker: &webhook.Checker{Policy: webhook.Policy{AllowHosts: c.Webhook.AllowHosts}}},
 		UploadMaxBytes:        int64(c.Scan.UploadMaxMB) << 20,
 		ImageUploadMaxBytes:   int64(c.Scan.ImageUploadMaxMB) << 20,
 		HistoryUploadMaxBytes: int64(c.Scan.HistoryUploadMaxMB) << 20,
