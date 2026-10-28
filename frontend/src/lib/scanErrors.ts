@@ -14,7 +14,7 @@ export const DEFAULT_LIMITS: Limits = {
   image_upload_max_mb: 2048,
   // v0.4 wave 2. Only used when an older server leaves them out of /me.
   history_upload_max_mb: 1024,
-  history_max_commits: 100_000,
+  history_max_commits: 50_000,
 };
 
 /** Limits from /me, with the defaults for any field an older server leaves out. */

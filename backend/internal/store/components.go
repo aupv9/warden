@@ -186,8 +186,12 @@ func (r *Repo) ProjectTargets(ctx context.Context, projectID uuid.UUID) ([]servi
 	return collect(rows, func(row pgx.CollectableRow) (service.ProjectTarget, error) {
 		var t service.ProjectTarget
 		err := row.Scan(&t.Target, &t.LastScanAt, &t.OpenIssues)
-		t.Kind = service.KindSource
-		if t.Target != "" {
+		switch t.Target {
+		case "":
+			t.Kind = service.KindSource
+		case service.HistoryTarget:
+			t.Kind = service.KindHistory
+		default:
 			t.Kind = service.KindImage
 		}
 		return t, err

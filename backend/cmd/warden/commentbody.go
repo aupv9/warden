@@ -116,6 +116,15 @@ func mdCode(s string, limit int) string {
 // commentMarker starts the body and finds the comment again on the next run.
 // Image scans of the project get their own comment per target (a hash, so
 // the marker holds no repository text).
+// commentTarget is the target the scan's issues are tracked under, so source,
+// image and history scans of one project each keep their own comment.
+func (o *options) commentTarget() string {
+	if o.history {
+		return "(history)"
+	}
+	return o.target
+}
+
 func commentMarker(project uuid.UUID, target string) string {
 	if target == "" {
 		return "<!-- warden:" + project.String() + " -->"

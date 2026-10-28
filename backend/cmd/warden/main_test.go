@@ -120,7 +120,7 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || (in["file_name"] != "repo.zip" && in["kind"] != "image") {
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || (in["file_name"] != "repo.zip" && in["kind"] != "image" && in["file_name"] != "repo.bundle") {
 			f.reply(w, 422, nil, "VALIDATION_FAILED")
 			return
 		}

@@ -58,7 +58,8 @@ type NewScan struct {
 	Tools     []string
 	// ViaToken is the API token that created the scan, if any.
 	ViaToken *uuid.UUID
-	// Kind is source or image; Target and ImageRef are for images only.
+	// Kind is source, image or history; Target is the image repository or
+	// HistoryTarget, ImageRef is for images only.
 	Kind     string
 	Target   string
 	ImageRef *string
@@ -113,7 +114,8 @@ type IssueQuery struct {
 	// scored at least this.
 	KEV     bool
 	EPSSMin *float64
-	// Source: "", "code" (target '') or "image" (any target); Target: one image.
+	// Source: "", "code" (target ''), "image" (an image's target) or
+	// "history" (target (history)); Target: one image.
 	Source string
 	Target string
 	// Text search (title, rule_id, file_path), or an issue key.
