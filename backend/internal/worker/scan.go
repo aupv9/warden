@@ -151,7 +151,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		var err error
 		plan, err = results.Process(fin, db, results.Input{
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
-			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
+			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, Packages: out.Packages, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
 			SBOM: stored,
 		})
 		if err != nil {

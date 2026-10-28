@@ -49,6 +49,7 @@ type ArtifactSpec struct {
 const (
 	ArtifactTrivyJSON = "trivy_json"
 	ArtifactSBOM      = "sbom"
+	ArtifactSPDX      = "spdx"
 )
 
 // trivyFlags: offline, nothing read from the scanned tree. The JSON report
