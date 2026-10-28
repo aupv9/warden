@@ -109,7 +109,8 @@ func TestComponentInventory(t *testing.T) {
 	for q, want := range map[string]string{
 		"a%":       "npm:a%b@1.0.0",
 		"a_":       "",
-		"A":        "npm:a%b@1.0.0,npm:axb@1.0.0",
+		"A":        "npm:a%b@1.0.0,npm:axb@1.0.0,Go:github.com/acme/evil@v1.2.3", // a/cme: a segment
+		"evil":     "Go:github.com/acme/evil@v1.2.3",
 		"foo.b":    "PyPI:Foo_Bar@1.0",
 		"FOO_BAR":  "PyPI:Foo_Bar@1.0",
 		"left-pad": "",

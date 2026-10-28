@@ -67,13 +67,20 @@ for u in admin sec; do
       \"firstName\":\"E2E\",\"lastName\":\"$u\",\"enabled\":true,\"requiredActions\":[]}"
     uid=$(curl -fsS "${KH[@]}" "$R/users?username=e2e-$u&exact=true" | jq -r '.[0].id')
   fi
-  jq -n --rawfile p "$STATE/$u-pass" '{type:"password", temporary:false, value:($p|rtrimstr("\n"))}' |
-    curl -fsS "${KH[@]}" -X PUT "$R/users/$uid/reset-password" -d @-
+  echo "$uid" > "$STATE/$u-id"
 done
-user_token() {
+token_request() {
   curl -fsS -d client_id=warden-e2e --data-urlencode "client_secret@$STATE/client" -d grant_type=password \
     -d "username=e2e-$1" --data-urlencode "password@$STATE/$1-pass" -d scope=openid \
-    "$ISSUER/protocol/openid-connect/token" | jq -r .access_token > "$STATE/$1.token"
+    "$ISSUER/protocol/openid-connect/token" 2>/dev/null | jq -r .access_token > "$STATE/$1.token"
+}
+# Set the password only when it doesn't work (new user, or .cache/e2e was
+# cleared): Keycloak refuses to reset a password to its current value.
+user_token() {
+  token_request "$1" && return
+  jq -n --rawfile p "$STATE/$1-pass" '{type:"password", temporary:false, value:($p|rtrimstr("\n"))}' |
+    curl -fsS "${KH[@]}" -X PUT "$R/users/$(cat "$STATE/$1-id")/reset-password" -d @-
+  token_request "$1"
 }
 user_token admin && user_token sec
 ok "client warden-e2e and users e2e-admin, e2e-sec"
@@ -84,7 +91,7 @@ api() {
   local args=(-sS -X "$method" -H "Authorization: Bearer $(cat "$STATE/$tok.token")" -o "$WORK/resp" -w '%{http_code}')
   [ -n "$body" ] && args+=(-H "Content-Type: application/json" -d "$body")
   local code
-  code=$(curl "${args[@]}" "$API$path")
+  code=$(curl "${args[@]}" "$API/api/v1$path")
   if [ "${code:0:1}" != 2 ]; then echo "  $method $path -> $code $(jq -c .error "$WORK/resp" 2>/dev/null)" >&2; return 1; fi
   jq .data "$WORK/resp"
 }
@@ -122,13 +129,14 @@ cat > "$REPO/pom.xml" <<'EOF'
     <version>2.14.1</version></dependency></dependencies></project>
 EOF
 # An AWS-style access key id made up now, so Gitleaks has something to find.
-FAKE_KEY="AKIA$(LC_ALL=C tr -dc 'A-Z2-7' </dev/urandom | head -c 16)"
+# (cut, not head: head would close the pipe early and pipefail would stop the script.)
+FAKE_KEY="AKIA$(openssl rand -base64 96 | LC_ALL=C tr -dc 'A-Z2-7' | cut -c1-16)"
 printf 'aws_access_key_id = %s\n' "$FAKE_KEY" > "$REPO/config.ini"
 git -C "$REPO" init -q && git -C "$REPO" add -A && git -C "$REPO" -c user.email=e2e@example.com -c user.name=e2e commit -qm fixture
 
 curl -fsS -X PUT -H "Authorization: Bearer $(cat "$STATE/sec.token")" -H "Content-Type: application/json" \
   -d '{"categories":{"forbidden":"block","restricted":"review","reciprocal":"allow","notice":"allow","permissive":"allow","unencumbered":"allow","unknown":"allow"},"deny":[],"allow":[]}' \
-  "$API/orgs/$ORG/license-policy" >/dev/null && ok "license preset applied"
+  "$API/api/v1/orgs/$ORG/license-policy" >/dev/null && ok "license preset applied"
 
 set +e
 WARDEN_TOKEN=$(cat "$STATE/scan.token") "$BIN/warden" scan --url "$API" --org "$ORG" --project "$PRJ" --dir "$REPO" \
@@ -162,7 +170,7 @@ api sec GET "/orgs/$ORG/components?q=log4j" > "$WORK/comp.json" || true
 check "search finds log4j-core 2.14.1" jq -e '[.items[] | select(.name == "org.apache.logging.log4j:log4j-core" and .version == "2.14.1")] | length == 1' "$WORK/comp.json"
 api sec GET "/orgs/$ORG/components/usage?ecosystem=Maven&name=org.apache.logging.log4j:log4j-core&version=2.14.1" > "$WORK/usage.json" || true
 check "usage lists the project" jq -e --arg p "$PRJ" '[.items[] | select(.project_id == $p)] | length == 1' "$WORK/usage.json"
-check "API token reads project components" bash -c "curl -fsS -H \"Authorization: Bearer \$(cat '$STATE/scan.token')\" '$API/orgs/$ORG/projects/$PRJ/components?q=lodash' | jq -e '.data.items | length == 1'"
+check "API token reads project components" bash -c "curl -fsS -H \"Authorization: Bearer \$(cat '$STATE/scan.token')\" '$API/api/v1/orgs/$ORG/projects/$PRJ/components?q=lodash' | jq -e '.data.items | length == 1'"
 
 step "Malicious packages"
 osv=$(api sec GET "/orgs/$ORG/vuln-data" | jq -r '[.sources[] | select(.name == "osv_mal:npm" and .loaded_at != null)] | length')

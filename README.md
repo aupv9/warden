@@ -351,8 +351,9 @@ A missing or invalid SBOM never fails the scan.
 recorded per project and target (source code, or each image repository): the latest completed
 or partial scan where Trivy succeeded replaces that target's rows, keeping when each component
 was first seen; a scan where Trivy failed leaves them. `GET /orgs/{org_id}/components` answers
-"which projects use xz 5.6.0?" (name prefix, ecosystem, exact version, project, malicious only;
-names compare case-insensitively, PyPI names per PEP 503), with the number of projects, open
+"which projects use xz 5.6.0?" (a name prefix, also matched after `:` or `/` so `log4j-core` and
+`logrus` find Maven and Go names; ecosystem, exact version, project, malicious only; names compare
+case-insensitively, PyPI names per PEP 503), with the number of projects, open
 issues and whether an advisory lists it; `…/components/usage` lists where one is used. Org
 admins and security leads see every project, other members only theirs; archived projects are
 left out. Ecosystems use OSV's names (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet,
