@@ -2123,7 +2123,7 @@
           "items": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 7,
+            "maxItems": 8,
             "items": {
               "$ref": "#/components/schemas/NotificationPref"
             }
