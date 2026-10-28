@@ -76,6 +76,9 @@ type Outcome struct {
 	// Licenses: every package license Trivy reported, when Trivy succeeded
 	// (FilePath set). Which become issues is the org's policy, applied later.
 	Licenses []trivyjson.License
+	// Packages: every package Trivy reported, when Trivy succeeded
+	// (FilePath set), for the component inventory and the malicious-package match.
+	Packages []trivyjson.Package
 	// SBOM: Trivy's CycloneDX SBOM, stamped; nil when there is none.
 	SBOM     *sbom.Stamped
 	Warnings []string
@@ -183,7 +186,7 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		if run.Status != sandbox.Succeeded || run.Sarif == "" {
 			continue
 		}
-		fs, licenses, err := parseRun(*run, src.rootDir, srcDir, job.Target)
+		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target)
 		if err != nil {
 			slog.Warn("scanner output rejected", "scan_id", job.ScanID, "tool", run.Tool, "err", err)
 			run.Status, run.Error = sandbox.Failed, err.Error()
@@ -193,8 +196,8 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 			continue
 		}
 		out.Findings[run.Tool] = fs
-		if run.Tool == "trivy" {
-			out.Licenses = licenses
+		if run.Tool == "trivy" && rep != nil {
+			out.Licenses, out.Packages = rep.Licenses, rep.Packages
 			out.SBOM = stampSBOM(job, run.Artifacts[sandbox.ArtifactSBOM])
 		}
 	}
@@ -277,9 +280,9 @@ func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipch
 }
 
 // parseRun parses a tool's SARIF and, for Trivy, its JSON report: the
-// licenses, and for image scans the OS that names OS package findings.
-// imageTarget is "" for source scans.
-func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string) ([]sarif.Finding, []trivyjson.License, error) {
+// licenses and packages (returned with FilePath set), and for image scans the
+// OS that names OS package findings. imageTarget is "" for source scans.
+func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string) ([]sarif.Finding, *trivyjson.Report, error) {
 	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir}
 	var rep *trivyjson.Report
 	if run.Tool == "trivy" {
@@ -303,18 +306,26 @@ func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string) ([]sarif
 	if err != nil || rep == nil {
 		return fs, nil, err
 	}
-	// Licenses get the paths their package's vulnerabilities get.
+	// Licenses and packages get the paths their package's vulnerabilities get.
+	filePath := func(target, class string) string {
+		p := fingerprint.NormPath(target, rootDir, false)
+		if imageTarget != "" {
+			if class == trivyjson.ClassOSPackages {
+				p = sarif.ImageArtifact
+			}
+			p = sarif.ImagePath(imageTarget, rep.OSFamily, p)
+		}
+		return p
+	}
 	for i := range rep.Licenses {
 		l := &rep.Licenses[i]
-		l.FilePath = fingerprint.NormPath(l.Target, rootDir, false)
-		if imageTarget != "" {
-			if l.Class == trivyjson.ClassOSPackages {
-				l.FilePath = sarif.ImageArtifact
-			}
-			l.FilePath = sarif.ImagePath(imageTarget, rep.OSFamily, l.FilePath)
-		}
+		l.FilePath = filePath(l.Target, l.Class)
 	}
-	return fs, rep.Licenses, nil
+	for i := range rep.Packages {
+		p := &rep.Packages[i]
+		p.FilePath = filePath(p.Target, p.Class)
+	}
+	return fs, rep, nil
 }
 
 // stampSBOM returns the scan's SBOM ready to store, or nil. A missing or

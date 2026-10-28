@@ -34,10 +34,13 @@ const (
 	ScanFinished       = "scan.finished"
 	SLADueSoon         = "sla.due_soon"
 	SLAOverdue         = "sla.overdue"
+	// ComponentMalicious: a scanned package matches an OSV malicious-package
+	// advisory (at scan time, or when an advisory arrives for the inventory).
+	ComponentMalicious = "component.malicious"
 )
 
 // Types lists every event type, in the order preferences are shown.
-var Types = []string{IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ScanFinished, SLADueSoon, SLAOverdue}
+var Types = []string{IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ScanFinished, SLADueSoon, SLAOverdue, ComponentMalicious}
 
 // DefaultEmail is the email preference of a user who never chose: on, except
 // for scan.finished (people who upload usually watch the scan anyway).

@@ -57,7 +57,11 @@ type Input struct {
 	Findings map[string][]sarif.Finding
 	// Licenses: Trivy's package licenses (FilePath set); the org's license
 	// policy, read in the processing transaction, decides which are issues.
-	Licenses   []trivyjson.License
+	Licenses []trivyjson.License
+	// Packages: every package Trivy reported (FilePath set), nil when Trivy
+	// didn't succeed. They replace the (project, target)'s component
+	// inventory and are matched against malicious-package advisories.
+	Packages   []trivyjson.Package
 	GuardRatio float64
 	Now        time.Time
 	// SBOM is recorded on the scan with the results, or not at all.
