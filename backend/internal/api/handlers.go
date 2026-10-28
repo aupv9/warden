@@ -47,10 +47,12 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	o.POST("/exceptions/:exception_id/decision", h.decide)
 
 	o.GET("/audit-log", h.auditLog)
+	o.GET("/vuln-data", h.vulnData)
 
 	registerTokenRoutes(o, h.svc)
 	h.signInRoutes(o)  // signin.go
 	h.v02Routes(v1, o) // notifications, policy and automation, metrics (notify.go)
+	h.v03Routes(o)     // SBOM download, license policy (v03.go)
 }
 
 // reply renders a service result: data with status (200/201), or the error.
@@ -239,6 +241,7 @@ func (h handlers) issues(c *gin.Context) {
 	f := service.IssueFilter{
 		ProjectID: c.Query("project_id"), Status: c.QueryArray("status"), Severity: c.QueryArray("severity"),
 		Assignee: c.Query("assignee"), Tool: c.Query("tool"), PastSLA: c.Query("past_sla"), Q: c.Query("q"),
+		Kind: c.Query("kind"), KEV: c.Query("kev"), EPSSMin: c.Query("epss_min"), Source: c.Query("source"), Target: c.Query("target"),
 		Sort: c.Query("sort"), PageParams: page(c),
 	}
 	out, err := h.svc.Issues(c.Request.Context(), actor(c), f)
@@ -341,5 +344,10 @@ func (h handlers) decide(c *gin.Context) {
 func (h handlers) auditLog(c *gin.Context) {
 	f := service.AuditFilter{Action: c.Query("action"), ActorID: c.Query("actor_id"), From: c.Query("from"), To: c.Query("to"), PageParams: page(c)}
 	out, err := h.svc.AuditLog(c.Request.Context(), actor(c), f)
+	reply(c, false, out, err)
+}
+
+func (h handlers) vulnData(c *gin.Context) {
+	out, err := h.svc.VulnData(c.Request.Context(), actor(c))
 	reply(c, false, out, err)
 }

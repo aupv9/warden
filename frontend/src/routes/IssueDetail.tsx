@@ -33,6 +33,7 @@ import {
 } from "../lib/format";
 import { issueActions, workflowSteps } from "../lib/issueActions";
 import type { IssueAction } from "../lib/issueActions";
+import { formatEpss, isVulnIssue, KEV_CATALOG_URL, licenseOf, nvdUrl, percentileText } from "../lib/intel";
 import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
 import { showToast } from "../lib/toast";
@@ -246,6 +247,7 @@ function IssueView({
 
       <div className="detail-grid">
         <div className="stack detail-main">
+          <ExploitCard issue={issue} />
           <WhereCard issue={issue} />
           {issue.description && (
             <Card title="What was found" titleId={`${titleId}-desc`}>
@@ -304,11 +306,61 @@ function Stepper({ issue }: { issue: Issue }) {
   );
 }
 
+/** v0.3: what CISA KEV and FIRST EPSS say about the issue's CVEs. Ranking information only:
+ *  the severity and status above don't change because of it. */
+function ExploitCard({ issue }: { issue: Issue }) {
+  const epss = formatEpss(issue.epss);
+  if (!isVulnIssue(issue) || (!issue.kev && !epss)) return null;
+  const pct = percentileText(issue.epss_percentile);
+  const titleId = `exploit-${issue.id}`;
+  return (
+    <Card title="Exploitation" titleId={titleId} className={issue.kev ? "exploit-card is-kev" : "exploit-card"}>
+      <div className="stack" style={{ gap: 12 }}>
+        {issue.kev && (
+          <div className="kev-block">
+            <span className="tag tag-danger kev-tag" aria-hidden="true">
+              KEV
+            </span>
+            <div className="stack" style={{ gap: 4 }}>
+              <strong>Known exploited (CISA KEV)</strong>
+              <span>
+                CISA lists {issue.cve.length === 1 ? "this CVE" : "one of these CVEs"} as exploited in the wild
+                {issue.kev_added ? `, added to the catalog on ${formatDate(`${issue.kev_added}T00:00:00`)}` : ""}.
+              </span>
+              {issue.kev_ransomware && (
+                <span className="danger-text">
+                  <strong>Used in ransomware campaigns</strong>, according to CISA.
+                </span>
+              )}
+              <span>
+                <a href={KEV_CATALOG_URL} target="_blank" rel="noopener noreferrer">
+                  CISA KEV catalog<span className="visually-hidden"> (opens in a new tab)</span>
+                </a>
+              </span>
+            </div>
+          </div>
+        )}
+        {epss && (
+          <p className="epss-line">
+            <span className="epss-value num">{epss}</span>
+            <span>
+              chance of exploitation in the next 30 days (FIRST EPSS)
+              {pct && <span className="muted">, {pct}</span>}.
+            </span>
+          </p>
+        )}
+        <p className="faint small">KEV and EPSS help decide what to fix first. They don't change the severity or the SLA.</p>
+      </div>
+    </Card>
+  );
+}
+
 function WhereCard({ issue }: { issue: Issue }) {
   const lines = issue.snippet ? issue.snippet.replace(/\n$/, "").split("\n") : [];
   const first = issue.start_line ?? 1;
   const last = issue.end_line ?? issue.start_line ?? 0;
   const where = issue.file_path ?? issue.package_name ?? "";
+  const license = licenseOf(issue);
   return (
     <Card
       title="Where"
@@ -339,11 +391,36 @@ function WhereCard({ issue }: { issue: Issue }) {
               );
             })}
           </pre>
-        ) : (
+        ) : issue.package_name ? null : (
           <p className="muted">No code snippet for this finding.</p>
         )}
-        {issue.package_name && (
-          <p>
+        {license && (
+          // v0.3: a license-policy issue: the license, not a version to upgrade to.
+          <p className="where-line">
+            License <span className="mono">{license.spdx}</span>
+            {license.category && <span className="muted"> ({license.category})</span>}
+            {issue.package_name && (
+              <>
+                {" "}
+                in <span className="mono">{issue.package_name} {issue.package_version}</span>
+              </>
+            )}
+          </p>
+        )}
+        {issue.package_name && !license && (
+          <p className="where-line">
+            {issue.target && (
+              <>
+                Image <span className="mono">{issue.target}</span>
+                {issue.file_path && (
+                  <>
+                    {" · "}
+                    <span className="mono">{issue.file_path}</span>
+                  </>
+                )}
+                {" · "}
+              </>
+            )}
             <span className="mono">
               {issue.package_name} {issue.package_version}
             </span>
@@ -355,6 +432,23 @@ function WhereCard({ issue }: { issue: Issue }) {
             ) : (
               <span className="muted"> · no fixed version yet</span>
             )}
+          </p>
+        )}
+        {issue.target && license && (
+          <p className="where-line">
+            Image <span className="mono">{issue.target}</span>
+            {issue.file_path && (
+              <>
+                {" · "}
+                <span className="mono">{issue.file_path}</span>
+              </>
+            )}
+          </p>
+        )}
+        {license && (
+          <p className="muted small">
+            From your org's license policy (Settings). License data comes from lockfiles and image packages, so it is only as
+            complete as they are.
           </p>
         )}
         {issue.tool === "gitleaks" && (
@@ -375,6 +469,7 @@ function DetailsCard({ issue }: { issue: Issue }) {
   const { orgId } = useOrgCtx();
   const org = useOrg(orgId);
   const sla = issue.severity !== "info" ? org.data?.sla_days[issue.severity] : undefined;
+  const license = licenseOf(issue);
   const scanLink = (scan: { id: string; created_at: string }) => (
     <Link to={`/orgs/${orgId}/projects/${issue.project_id}/scans?scan=${encodeURIComponent(scan.id)}`}>
       Scan of {formatDateTime(scan.created_at)}
@@ -423,7 +518,40 @@ function DetailsCard({ issue }: { issue: Issue }) {
         {issue.cve.length > 0 && (
           <>
             <dt>CVE</dt>
-            <dd className="mono">{issue.cve.join(", ")}</dd>
+            <dd className="mono cve-list">
+              {issue.cve.map((id, n) => {
+                // Only a well-formed id becomes part of a URL; anything else stays text.
+                const href = nvdUrl(id);
+                return (
+                  <span key={`${id}-${n}`}>
+                    {n > 0 && ", "}
+                    {href ? (
+                      <a href={href} target="_blank" rel="noopener noreferrer">
+                        {id}
+                        <span className="visually-hidden"> on NVD (opens in a new tab)</span>
+                      </a>
+                    ) : (
+                      id
+                    )}
+                  </span>
+                );
+              })}
+            </dd>
+          </>
+        )}
+        {license && (
+          <>
+            <dt>License</dt>
+            <dd>
+              <span className="mono">{license.spdx}</span>
+              {license.category && <span className="muted"> ({license.category})</span>}
+            </dd>
+          </>
+        )}
+        {issue.target && (
+          <>
+            <dt>Image</dt>
+            <dd className="mono">{issue.target}</dd>
           </>
         )}
         {issue.package_name && (
@@ -432,6 +560,16 @@ function DetailsCard({ issue }: { issue: Issue }) {
             <dd className="mono">
               {issue.package_name} {issue.package_version}
               {issue.fixed_version && ` → ${issue.fixed_version}`}
+            </dd>
+          </>
+        )}
+        {isVulnIssue(issue) && (issue.kev || issue.epss !== null) && (
+          <>
+            <dt>Exploitation</dt>
+            <dd>
+              {[issue.kev ? "Known exploited (KEV)" : null, formatEpss(issue.epss) ? `EPSS ${formatEpss(issue.epss)}` : null]
+                .filter(Boolean)
+                .join(" · ")}
             </dd>
           </>
         )}

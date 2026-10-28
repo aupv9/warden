@@ -36,6 +36,11 @@ type IssueFilter struct {
 	Assignee  string
 	Tool      string
 	PastSLA   string
+	Kind      string
+	KEV       string
+	EPSSMin   string
+	Source    string
+	Target    string
 	Q         string
 	Sort      string
 	PageParams
@@ -102,6 +107,42 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 	default:
 		fe.add("past_sla", "must be true or false")
 	}
+	switch f.Kind {
+	case "", KindVulnerability, KindLicense:
+		q.Kind = f.Kind
+	default:
+		fe.add("kind", "must be vulnerability or license")
+	}
+	switch f.KEV {
+	case "", "false":
+	case "true":
+		q.KEV = true
+	default:
+		fe.add("kev", "must be true or false")
+	}
+	if f.EPSSMin != "" {
+		// ParseFloat also takes NaN, Inf and hex; the range check rejects
+		// the first two, and a hex value in range is harmless.
+		v, err := strconv.ParseFloat(f.EPSSMin, 64)
+		if err != nil || len(f.EPSSMin) > 32 || !(v >= 0 && v <= 1) {
+			fe.add("epss_min", "must be a number between 0 and 1")
+		} else {
+			q.EPSSMin = &v
+		}
+	}
+	switch f.Source {
+	case "", "code", "image":
+		q.Source = f.Source
+	default:
+		fe.add("source", "must be code or image")
+	}
+	if f.Target != "" {
+		if len(f.Target) > maxTarget || !ImageTarget.MatchString(f.Target) {
+			fe.add("target", "must be an image repository without tag, e.g. ghcr.io/acme/api")
+		} else {
+			q.Target = f.Target
+		}
+	}
 	if text := strings.TrimSpace(f.Q); text != "" {
 		if utf8.RuneCountInString(text) > maxQueryLen || !validText(text) {
 			fe.add("q", "must be at most 200 characters")
@@ -114,10 +155,10 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 	}
 	switch f.Sort {
 	case "":
-	case SortDueAt, SortSeverity, SortUpdatedAt:
+	case SortDueAt, SortSeverity, SortUpdatedAt, SortEPSS:
 		q.Sort = f.Sort
 	default:
-		fe.add("sort", "must be due_at, -severity or -updated_at")
+		fe.add("sort", "must be due_at, -severity, -updated_at or -epss")
 	}
 	limit, err := f.limit()
 	if err != nil {
@@ -126,7 +167,8 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 	q.Limit = limit
 	if f.Cursor != "" {
 		c := &IssueCursor{}
-		if decodeCursor(f.Cursor, c) != nil || c.Sort != q.Sort || (c.Sort == SortSeverity && !slices.Contains(severities, c.Severity)) {
+		if decodeCursor(f.Cursor, c) != nil || c.Sort != q.Sort || (c.Sort == SortSeverity && !slices.Contains(severities, c.Severity)) ||
+			(c.EPSS != nil && !(*c.EPSS >= 0 && *c.EPSS <= 1)) {
 			fe.add("cursor", "invalid cursor")
 		} else {
 			q.After = c
@@ -168,6 +210,8 @@ func issueCursor(sort string) func(IssueSummary) any {
 			c.Severity = i.Severity
 		case SortUpdatedAt:
 			c.UpdatedAt = i.UpdatedAt.T()
+		case SortEPSS:
+			c.EPSS = i.EPSS
 		}
 		return c
 	}

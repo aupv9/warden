@@ -1,5 +1,6 @@
 import { ApiError, isApiError } from "../api/client";
-import type { CreateScanBody, CreateScanResponse, Limits, PresignedUpload, Scan, Tool } from "../api/types";
+import type { CreateScanBody, CreateScanResponse, Limits, PresignedUpload, Scan, ScanKind, Tool } from "../api/types";
+import { IMAGE_REF_MAX, IMAGE_TARGET_MAX, IMAGE_TARGET_RE, splitImageRef } from "./intel";
 import { hashBlob } from "./sha256";
 import type { HashMessage } from "./hashWorker";
 
@@ -50,11 +51,54 @@ export interface UploadDeps {
 /** Client-side checks that mirror the server's rules, before anything is sent. */
 export function validateArchive(file: { name: string; size: number }, limits: Pick<Limits, "upload_max_mb">): string | null {
   if (!file.name.toLowerCase().endsWith(".zip")) return "Choose a .zip file.";
+  return validateNameAndSize(file, limits.upload_max_mb);
+}
+
+/** v0.3, image scans: the plain .tar that `docker save` writes (not .tar.gz, not .zip), up to
+ *  image_upload_max_mb. What is inside is checked on the server (imagecheck), never here. */
+export function validateImageArchive(file: { name: string; size: number }, limits: Pick<Limits, "image_upload_max_mb">): string | null {
+  if (!file.name.toLowerCase().endsWith(".tar")) {
+    return /\.(tar\.gz|tgz|tar\.zst|tar\.xz|tar\.bz2)$/i.test(file.name)
+      ? "Choose the uncompressed .tar that docker save writes, not a compressed archive."
+      : "Choose a .tar file made with docker save.";
+  }
+  return validateNameAndSize(file, limits.image_upload_max_mb);
+}
+
+function validateNameAndSize(file: { name: string; size: number }, maxMb: number): string | null {
   if (file.name.length > 255) return "The file name is too long (255 characters at most).";
   if (/[/\\]/.test(file.name)) return "The file name can't contain / or \\.";
   if (file.size < 1) return "The file is empty.";
-  if (file.size > limits.upload_max_mb * 1024 * 1024) return `The file is larger than ${limits.upload_max_mb} MB.`;
+  if (file.size > maxMb * 1024 * 1024) return `The file is larger than ${maxMb >= 1024 && maxMb % 1024 === 0 ? `${maxMb / 1024} GB` : `${maxMb} MB`}.`;
   return null;
+}
+
+/** v0.3: the image repository an image scan's issues are tracked under (the contract's pattern). */
+export function validateImageTarget(raw: string): string | null {
+  const s = raw.trim();
+  if (!s) return "Enter the image repository, such as ghcr.io/acme/api.";
+  if (s.length > IMAGE_TARGET_MAX) return `At most ${IMAGE_TARGET_MAX} characters.`;
+  if (splitImageRef(s).ref !== null) {
+    return "Leave out the tag or digest (it goes under Image reference): ghcr.io/acme/api, not ghcr.io/acme/api:1.4.";
+  }
+  if (s !== s.toLowerCase()) return "Use lowercase: repository names can't have capital letters.";
+  if (!IMAGE_TARGET_RE.test(s)) return "Use a repository name such as ghcr.io/acme/api: lowercase letters and digits, with . _ - / between them.";
+  return null;
+}
+
+/** v0.3: the optional reference shown on the scan (any tag or digest form; text only). */
+export function validateImageRef(raw: string): string | null {
+  const s = raw.trim();
+  if (s.length > IMAGE_REF_MAX) return `At most ${IMAGE_REF_MAX} characters.`;
+  if (/[\u0000-\u001f\u007f]/.test(s)) return "The reference can't contain control characters.";
+  return null;
+}
+
+/** What goes into POST …/scans besides the file: nothing extra for a source scan. */
+export interface ScanOptions {
+  kind: ScanKind;
+  target?: string;
+  imageRef?: string;
 }
 
 export class UploadSession {
@@ -70,6 +114,7 @@ export class UploadSession {
     readonly tools: Tool[],
     private deps: UploadDeps,
     private onChange: (s: UploadSnapshot) => void,
+    readonly options: ScanOptions = { kind: "source" },
   ) {
     this.snap = { phase: "idle", hashed: 0, loaded: 0, total: file.size };
   }
@@ -122,12 +167,7 @@ export class UploadSession {
   private async create(): Promise<boolean> {
     this.set({ phase: "creating", loaded: 0, failedAt: undefined, error: undefined });
     try {
-      const res = await this.deps.createScan({
-        file_name: this.file.name,
-        file_size: this.file.size,
-        sha256: this.sha256 ?? "",
-        ...(this.tools.length > 0 ? { tools: this.tools } : {}),
-      });
+      const res = await this.deps.createScan(this.body());
       if (this.cancelled) {
         await this.deps.cancelScan(res.scan.id).catch(() => undefined);
         return false;
@@ -144,6 +184,17 @@ export class UploadSession {
       this.fail(err);
       return false;
     }
+  }
+
+  /** A source scan sends exactly the v0.2 body (the server defaults kind to source). An image
+   *  scan always runs Trivy only: asking for any other tool would be a 422. */
+  private body(): CreateScanBody {
+    const base = { file_name: this.file.name, file_size: this.file.size, sha256: this.sha256 ?? "" };
+    if (this.options.kind === "image") {
+      const ref = this.options.imageRef?.trim();
+      return { ...base, kind: "image", tools: ["trivy"], target: (this.options.target ?? "").trim(), ...(ref ? { image_ref: ref } : {}) };
+    }
+    return { ...base, ...(this.tools.length > 0 ? { tools: this.tools } : {}) };
   }
 
   private async putAndStart(): Promise<Scan | undefined> {

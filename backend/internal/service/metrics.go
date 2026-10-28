@@ -85,6 +85,10 @@ type IssueTotals struct {
 	Mine    int `json:"mine"`
 	PastSLA int `json:"past_sla"`
 	Secrets int `json:"secrets"` // active gitleaks issues
+	// KEV: active issues with a CVE in KEV; Licenses: active license-policy
+	// issues (trivy, rule license:<SPDX>).
+	KEV      int `json:"kev"`
+	Licenses int `json:"licenses"`
 }
 
 const (

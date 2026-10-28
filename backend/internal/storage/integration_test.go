@@ -218,6 +218,52 @@ func TestDownloadEnforcesMaxSize(t *testing.T) {
 	_ = c.Delete(ctx, key)
 }
 
+// Server-side Put of an SBOM, then a presigned download: an attachment with
+// the content type Warden chose, and the store checks the declared SHA-256.
+func TestPutAndPresignedDownload(t *testing.T) {
+	ctx := context.Background()
+	c := client(t, "warden-itest")
+	body := []byte(`{"bomFormat":"CycloneDX","components":[{"name":"<script>"}]}`)
+	key := "sboms/org/scan-3.cdx.json"
+	if err := c.Put(ctx, key, body, sum(body), "application/vnd.cyclonedx+json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put(ctx, "sboms/org/bad.cdx.json", body, sum([]byte("other")), "application/vnd.cyclonedx+json"); err == nil {
+		t.Error("a body with another SHA-256 was stored")
+	}
+	url, err := c.PresignGet(ctx, key, 5*time.Minute, "WEB-0192f0c4.cdx.json", "application/vnd.cyclonedx+json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := new(bytes.Buffer)
+	_, _ = got.ReadFrom(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(got.Bytes(), body) {
+		t.Fatalf("GET %d %q", resp.StatusCode, got)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != `attachment; filename="WEB-0192f0c4.cdx.json"` {
+		t.Errorf("Content-Disposition %q", cd)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/vnd.cyclonedx+json" {
+		t.Errorf("Content-Type %q", ct)
+	}
+	// The signature covers the response overrides: they can't be swapped for inline HTML.
+	tampered := strings.Replace(url, "response-content-type=application%2Fvnd.cyclonedx%2Bjson", "response-content-type=text%2Fhtml", 1)
+	if tampered == url {
+		t.Fatal(url)
+	}
+	if resp, err := http.Get(tampered); err != nil || resp.StatusCode < 400 {
+		t.Errorf("tampered URL accepted: %v %v", resp.StatusCode, err)
+	} else {
+		resp.Body.Close()
+	}
+	_ = c.Delete(ctx, key)
+}
+
 // The dev store allows browser uploads from the web UI's origin only.
 func TestUploadCORSPreflight(t *testing.T) {
 	ctx := context.Background()

@@ -140,10 +140,12 @@ func (r *Repo) IssueTotals(ctx context.Context, q service.TotalsQuery) (service.
 	sql := `SELECT count(*)::int,
 			count(*) FILTER (WHERE i.assignee_id = ` + a.add(q.Vis.UserID) + `)::int,
 			count(*) FILTER (WHERE i.due_at < ` + a.add(q.Now) + `)::int,
-			count(*) FILTER (WHERE i.tool = 'gitleaks')::int
+			count(*) FILTER (WHERE i.tool = 'gitleaks')::int,
+			count(*) FILTER (WHERE ` + kevExists + `)::int,
+			count(*) FILTER (WHERE i.tool = 'trivy' AND ` + licenseRule + `)::int
 		FROM issue i JOIN project p ON p.id = i.project_id
 		WHERE ` + metricsScope(&a, q.Vis, q.ProjectID) + ` AND i.status IN ` + activeStatuses
 	var t service.IssueTotals
-	err := r.tx.QueryRow(ctx, sql, a...).Scan(&t.Active, &t.Mine, &t.PastSLA, &t.Secrets)
+	err := r.tx.QueryRow(ctx, sql, a...).Scan(&t.Active, &t.Mine, &t.PastSLA, &t.Secrets, &t.KEV, &t.Licenses)
 	return t, mapErr(err)
 }

@@ -260,7 +260,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	desc := "d"
 	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now, nil}
 	scanRow := []any{scan, org, proj, "queued", "a.zip", int64(10), []string{"trivy"}, nil, service.ScanStats{Total: 2},
-		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil}
+		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil, "source", "", nil, "sboms/k", int64(9), "abc", 4}
 	r, _ := repoWith(on(map[string][][]any{
 		"LEFT JOIN LATERAL":                           {projRow},
 		"SELECT (SELECT pm.role":                      {{"developer"}},
@@ -293,7 +293,8 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	if n, oldest, err := r.ScansSince(ctx, user, now); err != nil || n != 2 || !oldest.Equal(now) {
 		t.Fatal(n, oldest, err)
 	}
-	if s, err := r.Scan(ctx, scan, true); err != nil || s.Stats.Total != 2 || s.CreatedBy.ID != user || s.QueuedAt == nil {
+	if s, err := r.Scan(ctx, scan, true); err != nil || s.Stats.Total != 2 || s.CreatedBy.ID != user || s.QueuedAt == nil ||
+		s.Kind != "source" || s.SBOM == nil || s.SBOM.Components != 4 || s.SBOM.Key != "sboms/k" {
 		t.Fatal(s, err)
 	}
 	if s, err := r.Scans(ctx, proj, &service.ScanCursor{CreatedAt: now, ID: scan}, 10); err != nil || len(s) != 1 {
@@ -339,9 +340,10 @@ func TestRepoProjectsAndScans(t *testing.T) {
 
 func issueRow(id, proj, scan uuid.UUID, withDetail bool) []any {
 	row := []any{id, "WEB-1", proj, "t", "high", "open", "opengrep", "r", nil, nil, nil, nil, nil,
-		uuid.New(), "a@b.c", "A", now, true, now}
+		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97}
 	if withDetail {
-		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB")
+		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB",
+			0.99, "2024-03-01", true)
 	}
 	return row
 }
@@ -356,13 +358,14 @@ func TestRepoIssues(t *testing.T) {
 		"SELECT id FROM exception": {{iss}},
 	}))
 	q := service.IssueQuery{Vis: service.Visibility{OrgID: org, UserID: user}, Now: now, Limit: 5}
-	if l, err := r.Issues(ctx, q); err != nil || len(l) != 1 || l[0].Assignee == nil || !l[0].PastSLA {
+	if l, err := r.Issues(ctx, q); err != nil || len(l) != 1 || l[0].Assignee == nil || !l[0].PastSLA || !l[0].KEV || *l[0].EPSS != 0.97 {
 		t.Fatal(l, err)
 	}
 	if c, err := r.IssueCounts(ctx, q); err != nil || c.High != 2 || c.Low != 1 {
 		t.Fatal(c, err)
 	}
-	if i, err := r.Issue(ctx, iss, true, now); err != nil || i.Version != 3 || i.CWE[0] != "CWE-79" || i.Occurrences != 2 {
+	if i, err := r.Issue(ctx, iss, true, now); err != nil || i.Version != 3 || i.CWE[0] != "CWE-79" || i.Occurrences != 2 ||
+		*i.EPSSPercentile != 0.99 || *i.KEVAdded != "2024-03-01" || !i.KEVRansomware {
 		t.Fatal(i, err)
 	}
 	if c, err := r.Comments(ctx, iss); err != nil || len(c) != 1 {

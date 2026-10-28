@@ -69,6 +69,7 @@ type Limits struct {
 	UnzipMaxFiles      int `json:"unzip_max_files"`
 	ScanTimeoutMinutes int `json:"scan_timeout_minutes"`
 	ScansPerHour       int `json:"scans_per_hour"`
+	ImageUploadMaxMB   int `json:"image_upload_max_mb"`
 }
 
 type OrgRef struct {
@@ -200,10 +201,24 @@ type Scan struct {
 	FinishedAt *Time      `json:"finished_at"`
 	ViaToken   *TokenRef  `json:"via_token"`
 	ToolRuns   *[]ToolRun `json:"tool_runs,omitempty"`
+	// Kind is source (a zip of code) or image (a docker save tarball);
+	// Target is the image repository ("" for source scans).
+	Kind     string  `json:"kind"`
+	Target   string  `json:"target"`
+	ImageRef *string `json:"image_ref"`
+	// SBOM is set while the scan's SBOM is stored and not expired.
+	SBOM *ScanSBOM `json:"sbom"`
 
 	OrgID     uuid.UUID `json:"-"`
 	ObjectKey string    `json:"-"`
 	SHA256    string    `json:"-"`
+}
+
+type ScanSBOM struct {
+	Components int    `json:"components"`
+	Size       int64  `json:"size"`
+	Key        string `json:"-"`
+	SHA256     string `json:"-"`
 }
 
 type Upload struct {
@@ -236,6 +251,12 @@ type IssueSummary struct {
 	DueAt          *Time     `json:"due_at"`
 	PastSLA        bool      `json:"past_sla"`
 	UpdatedAt      Time      `json:"updated_at"`
+	// Target is the image repository of issues from image scans, "" for code.
+	Target string `json:"target"`
+	// KEV and EPSS come from vuln_intel over the issue's CVEs (any in KEV, the
+	// highest score). They only rank issues: severity and status never change.
+	KEV  bool     `json:"kev"`
+	EPSS *float64 `json:"epss"`
 }
 
 type ScanRef struct {
@@ -259,6 +280,9 @@ type Issue struct {
 	CanAssign           bool       `json:"can_assign"`
 	CanRequestException bool       `json:"can_request_exception"`
 	PendingExceptionID  *uuid.UUID `json:"pending_exception_id"`
+	EPSSPercentile      *float64   `json:"epss_percentile"`
+	KEVAdded            *string    `json:"kev_added"` // YYYY-MM-DD, the earliest of the CVEs
+	KEVRansomware       bool       `json:"kev_ransomware"`
 	AssigneeID          *uuid.UUID `json:"-"`
 	ProjectKey          string     `json:"-"`
 	Number              int        `json:"-"`

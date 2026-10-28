@@ -3988,3 +3988,369 @@ a.notif-link:hover .notif-title {
     border-top-color: transparent;
   }
 }
+
+/* ---------- v0.3: image scans, SBOM, KEV/EPSS, license policy, vulnerability data ---------- */
+.segmented > button[aria-pressed="true"] {
+  background: var(--surface);
+  border-color: var(--control-line);
+  color: var(--ink);
+  box-shadow: var(--shadow-hairline);
+}
+.segmented > button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.kind-switch {
+  align-self: flex-start;
+}
+/* A fieldset's legend is drawn on the fieldset's top border; floated, it sits below the divider
+   between policy sections like any other heading (sign-in and license policy forms). */
+fieldset.policy-section > legend.policy-head {
+  float: left;
+  width: 100%;
+}
+fieldset.policy-section > legend.policy-head + * {
+  clear: both;
+}
+.warn-text {
+  color: var(--msg-warn-fg);
+}
+
+/* Overview: five tiles (v0.3 adds "Known exploited"). */
+.stat-strip-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@media (max-width: 1000px) {
+  .stat-strip-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .stat-strip-5 .stat:nth-child(odd) {
+    border-left: 0;
+  }
+  .stat-strip-5 .stat:nth-child(even) {
+    border-left: 1px solid var(--line);
+  }
+  .stat-strip-5 .stat:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* New scan: image fields and the commands that make the archive. */
+.image-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.image-howto {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--group-bg);
+}
+.cmd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 2px 2px 10px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+.cmd-text {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  background: none;
+}
+.image-tool {
+  margin: 0;
+}
+
+/* Scan history and panel: an image scan's kind and image. */
+.scan-image {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.scan-image .tag {
+  font-family: var(--font-sans);
+}
+.scan-image .mono {
+  overflow-wrap: anywhere;
+}
+.scan-image-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.scan-image-line .scan-image {
+  margin-top: 0;
+}
+.sbom-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.sbom-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.sbom-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sbom-sum {
+  margin: 0;
+}
+.sbom-sum .mono {
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* Issue rows: KEV and EPSS beside the title of a dependency vulnerability. */
+.intel-marks {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-self: center;
+  gap: 4px;
+}
+.intel-marks .tag {
+  height: 18px;
+  padding: 0 5px;
+}
+.kev-tag {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--msg-error-bg);
+  color: var(--msg-error-fg);
+  border-color: var(--msg-error-line);
+}
+.epss-tag {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Issue page: exploitation (KEV, EPSS), license and image lines. */
+.kev-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--msg-error-line);
+  border-radius: var(--radius-panel);
+  background: var(--msg-error-bg);
+  color: var(--ink);
+}
+.kev-block .kev-tag {
+  margin-top: 1px;
+  background: var(--surface);
+}
+.kev-block .danger-text {
+  color: var(--msg-error-fg);
+}
+.epss-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0;
+}
+.epss-value {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.where-line .mono,
+.cve-list {
+  overflow-wrap: anywhere;
+}
+
+/* Issue filters: the image repository field (in the "+ Filter" popover and the phone sheet). */
+.menu-editor .target-field {
+  min-width: 280px;
+  padding: 8px;
+}
+
+/* Org settings: license policy. */
+.license-note {
+  max-width: 760px;
+  margin-bottom: 16px;
+}
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 6px 0 12px;
+}
+.license-cats {
+  display: flex;
+  flex-direction: column;
+  max-width: 760px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.license-cat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 12px;
+}
+.license-cat + .license-cat {
+  border-top: 1px solid var(--line-soft);
+}
+.license-cat-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.license-cat-text strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+.license-cat-text .desc {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.license-cat-action {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.license-cat-action .select {
+  width: 100%;
+}
+.license-cat-action .select.action-block,
+.license-cat-action .select.action-review {
+  font-weight: 500;
+  color: var(--ink);
+}
+.id-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 760px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.id-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--control-line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font-size: var(--text-sm);
+}
+.id-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.id-chip-x:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.id-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+}
+.id-add .input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.license-off,
+.license-off-note {
+  max-width: 760px;
+}
+.kv-row {
+  display: contents;
+}
+.license-kv {
+  max-width: 560px;
+}
+
+/* Org settings: vulnerability data. */
+.vuln-stale {
+  max-width: 860px;
+  margin-bottom: 12px;
+}
+.vuln-sources {
+  max-width: 860px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.vuln-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 16px;
+  padding: 12px 14px;
+}
+.vuln-source + .vuln-source {
+  border-top: 1px solid var(--line-soft);
+}
+.vuln-source.is-stale {
+  background: var(--msg-warn-bg);
+}
+.vuln-source-name,
+.vuln-source-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+@media (max-width: 800px) {
+  .license-cat,
+  .vuln-source {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .id-chip {
+    height: var(--touch-h);
+  }
+  .id-chip-x {
+    width: var(--touch-h);
+    height: var(--touch-h);
+  }
+  .cmd {
+    min-height: var(--touch-h);
+  }
+}

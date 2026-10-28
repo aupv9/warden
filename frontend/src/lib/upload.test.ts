@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
 import type { CreateScanResponse, PresignedUpload, Scan } from "../api/types";
-import { settableHeaders, UploadSession, validateArchive, xhrPut } from "./upload";
+import { settableHeaders, UploadSession, validateArchive, validateImageArchive, validateImageRef, validateImageTarget, xhrPut } from "./upload";
 import type { UploadDeps, UploadSnapshot } from "./upload";
 
 const T0 = Date.parse("2026-10-26T10:00:00Z");
@@ -204,6 +204,88 @@ describe("validateArchive", () => {
     expect(validateArchive({ name: "a.zip", size: 0 }, limits)).toMatch(/empty/);
     expect(validateArchive({ name: "a.zip", size: 200 * 1024 * 1024 + 1 }, limits)).toMatch(/200 MB/);
     expect(validateArchive({ name: "a.zip", size: 60 * 1024 * 1024 }, { upload_max_mb: 50 })).toMatch(/50 MB/);
+    // v0.3: an image .tar is not a source archive.
+    expect(validateArchive({ name: "app.tar", size: 10 }, limits)).toMatch(/\.zip/);
+  });
+});
+
+describe("validateImageArchive (v0.3)", () => {
+  const limits = { image_upload_max_mb: 2048 };
+  it("takes the plain .tar that docker save writes, up to image_upload_max_mb", () => {
+    expect(validateImageArchive({ name: "app.tar", size: 10 }, limits)).toBeNull();
+    expect(validateImageArchive({ name: "APP.TAR", size: 10 }, limits)).toBeNull();
+    expect(validateImageArchive({ name: "app.tar", size: 2048 * 1024 * 1024 }, limits)).toBeNull();
+    expect(validateImageArchive({ name: "app.tar", size: 2048 * 1024 * 1024 + 1 }, limits)).toMatch(/2 GB/);
+    expect(validateImageArchive({ name: "app.tar", size: 600 * 1024 * 1024 }, { image_upload_max_mb: 500 })).toMatch(/500 MB/);
+  });
+
+  it("refuses compressed archives, zips and anything else", () => {
+    expect(validateImageArchive({ name: "a.tar.gz", size: 10 }, limits)).toMatch(/uncompressed/);
+    expect(validateImageArchive({ name: "a.tgz", size: 10 }, limits)).toMatch(/uncompressed/);
+    expect(validateImageArchive({ name: "a.tar.zst", size: 10 }, limits)).toMatch(/uncompressed/);
+    expect(validateImageArchive({ name: "a.zip", size: 10 }, limits)).toMatch(/\.tar/);
+    expect(validateImageArchive({ name: "a.tar.exe", size: 10 }, limits)).toMatch(/\.tar/);
+    expect(validateImageArchive({ name: "tar", size: 10 }, limits)).toMatch(/\.tar/);
+  });
+
+  it("applies the same name rules as source archives", () => {
+    expect(validateImageArchive({ name: "../evil.tar", size: 10 }, limits)).toMatch(/can't contain/);
+    expect(validateImageArchive({ name: "..\\evil.tar", size: 10 }, limits)).toMatch(/can't contain/);
+    expect(validateImageArchive({ name: `${"a".repeat(252)}.tar`, size: 10 }, limits)).toMatch(/too long/);
+    expect(validateImageArchive({ name: "a.tar", size: 0 }, limits)).toMatch(/empty/);
+  });
+});
+
+describe("image target and reference (v0.3)", () => {
+  it("needs a repository without tag or digest, lowercase, in the contract's pattern", () => {
+    expect(validateImageTarget("ghcr.io/acme/api")).toBeNull();
+    expect(validateImageTarget("  localhost:5000/team/app ")).toBeNull();
+    expect(validateImageTarget("")).toMatch(/Enter the image repository/);
+    expect(validateImageTarget("ghcr.io/acme/api:1.4")).toMatch(/tag or digest/);
+    expect(validateImageTarget("ghcr.io/acme/api@sha256:abc")).toMatch(/tag or digest/);
+    expect(validateImageTarget("ghcr.io/Acme/api")).toMatch(/lowercase/);
+    expect(validateImageTarget("ghcr.io//api")).toMatch(/repository name/);
+    expect(validateImageTarget("ghcr.io/acme/api/")).toMatch(/repository name/);
+    expect(validateImageTarget("a b")).toMatch(/repository name/);
+    expect(validateImageTarget(`r/${"a".repeat(260)}`)).toMatch(/255/);
+  });
+
+  it("keeps the optional reference short and printable", () => {
+    expect(validateImageRef("")).toBeNull();
+    expect(validateImageRef("ghcr.io/acme/api:1.4.2")).toBeNull();
+    expect(validateImageRef("x".repeat(513))).toMatch(/512/);
+    expect(validateImageRef("api:1\u0000")).toMatch(/control characters/);
+  });
+});
+
+describe("UploadSession request body", () => {
+  it("a source scan sends the v0.2 body: no kind, target or image_ref", async () => {
+    const { deps } = fakeDeps();
+    await session(deps).s.start();
+    expect(deps.createScan).toHaveBeenCalledWith({ file_name: "app.zip", file_size: 4, sha256: "a".repeat(64), tools: ["gitleaks", "trivy"] });
+  });
+
+  it("an image scan sends kind image, Trivy only, the target and the trimmed reference", async () => {
+    const { deps } = fakeDeps();
+    const tar = new File([new Uint8Array([1, 2, 3, 4])], "api.tar", { type: "application/x-tar" });
+    const s = new UploadSession(tar, ["gitleaks", "opengrep"], deps, () => {}, { kind: "image", target: " ghcr.io/acme/api ", imageRef: " ghcr.io/acme/api:1.4.2 " });
+    expect((await s.start())?.status).toBe("queued");
+    expect(deps.createScan).toHaveBeenCalledWith({
+      file_name: "api.tar",
+      file_size: 4,
+      sha256: "a".repeat(64),
+      kind: "image",
+      tools: ["trivy"],
+      target: "ghcr.io/acme/api",
+      image_ref: "ghcr.io/acme/api:1.4.2",
+    });
+  });
+
+  it("leaves image_ref out when it is empty", async () => {
+    const { deps } = fakeDeps();
+    const tar = new File([new Uint8Array([1])], "api.tar");
+    await new UploadSession(tar, [], deps, () => {}, { kind: "image", target: "ghcr.io/acme/api", imageRef: "  " }).start();
+    expect(deps.createScan).toHaveBeenCalledWith(expect.not.objectContaining({ image_ref: expect.anything() }));
   });
 });
 

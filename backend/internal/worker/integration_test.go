@@ -3,11 +3,15 @@
 package worker
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +26,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/migrations"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
+	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 )
 
 var ownerPool, appPool *pgxpool.Pool
@@ -106,7 +111,8 @@ func newITest(t *testing.T) *itest {
 	it.env = &Env{Tx: PoolTx(appPool), Store: it.store, Sandbox: it.sb, Now: time.Now, Log: quietLog(),
 		Settings: Settings{ScratchDir: scratch, MirrorDir: "/mirror", Runtime: "runc", Images: testImages,
 			HMACMaster: bytes.Repeat([]byte("m"), 32), GuardRatio: 0.5, ScanTimeout: time.Minute,
-			SourceRetention: time.Hour, AbandonUploadAfter: time.Hour, StuckAfter: 24 * time.Hour}}
+			SourceRetention: time.Hour, AbandonUploadAfter: time.Hour, StuckAfter: 24 * time.Hour,
+			Limits: orchestrator.Limits{Zip: zipcheck.DefaultLimits(), ImageMaxBytes: 1 << 20}, SBOMRetention: 24 * time.Hour}}
 	return it
 }
 
@@ -126,6 +132,78 @@ func (it *itest) run(scanID uuid.UUID) {
 	defer func() { orchestrator.CancelPoll = old }()
 	if err := it.env.RunScan(context.Background(), orchestrator.Job{ScanID: scanID.String(), OrgID: it.org.String()}, 1); err != nil {
 		it.t.Fatal(err)
+	}
+}
+
+// imageTar is a minimal docker save tarball.
+func imageTar() ([]byte, string) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, body := range map[string]string{"manifest.json": `[{"Config":"c.json","Layers":["l/layer.tar"]}]`, "c.json": "{}", "l/layer.tar": "x"} {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))})
+		_, _ = tw.Write([]byte(body))
+	}
+	_ = tw.Close()
+	sum := sha256.Sum256(buf.Bytes())
+	return buf.Bytes(), hex.EncodeToString(sum[:])
+}
+
+// imageScan inserts a queued image scan of target, its tarball uploaded.
+func (it *itest) imageScan(target string) (uuid.UUID, string) {
+	data, sha := imageTar()
+	id := uuid.New()
+	key := "scans/" + it.org.String() + "/" + id.String() + ".tar"
+	owner(it.t, it.org, fmt.Sprintf(`INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, object_key, sha256, tools, kind, target)
+		VALUES ('%s', '%s', '%s', '%s', 'queued', 'api.tar', '%s', '%s', '{trivy}', 'image', '%s')`, id, it.org, it.project, it.user, key, sha, target))
+	it.store.objects[key] = data
+	return id, key
+}
+
+// Issues are tracked per target: an image scan never fixes source issues,
+// a source scan never fixes image issues, and each fixes its own.
+func TestImageAndSourceIssuesAreSeparate(t *testing.T) {
+	it := newITest(t)
+	it.env.Images = map[string]string{"trivy": "docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64)}
+	it.sb.files = map[string]string{"trivy.json": `{"Results":[]}`}
+	const target = "ghcr.io/acme/api"
+	source := func() {
+		data, sha := zipBytes()
+		id, key := it.scan("queued", sha, 0, "trivy")
+		it.store.objects[key] = data
+		it.run(id)
+	}
+	image := func() {
+		id, key := it.imageScan(target)
+		it.run(id)
+		var status string
+		it.one(fmt.Sprintf(`SELECT status FROM scan WHERE id = '%s'`, id), &status)
+		if status != "completed" || !contains(it.store.deleted, key) {
+			t.Fatalf("image scan %s, deleted %v", status, it.store.deleted)
+		}
+	}
+	states := func() (src, img string) {
+		it.one(fmt.Sprintf(`SELECT coalesce((SELECT status::text FROM issue WHERE project_id = '%s' AND target = ''), '-'),
+			coalesce((SELECT status::text FROM issue WHERE project_id = '%s' AND target = '%s' AND file_path LIKE '%s::%%'), '-')`,
+			it.project, it.project, target, target), &src, &img)
+		return src, img
+	}
+
+	source()
+	image()
+	if s, i := states(); s != "open" || i != "open" {
+		t.Fatal(s, i)
+	}
+	if spec := it.sb.specs[len(it.sb.specs)-1]; spec.Memory != "3g" || !strings.Contains(spec.Command[2], "trivy image --input /src/image.tar") {
+		t.Fatalf("image scan ran %+v", spec)
+	}
+	it.sb.empty = true
+	source() // finds nothing: fixes the source issue only
+	if s, i := states(); s != "fixed" || i != "open" {
+		t.Fatal(s, i)
+	}
+	image() // finds nothing: fixes the image issue
+	if s, i := states(); s != "fixed" || i != "fixed" {
+		t.Fatal(s, i)
 	}
 }
 
@@ -150,6 +228,43 @@ func TestScanEndToEnd(t *testing.T) {
 	it.one(fmt.Sprintf(`SELECT count(*) FROM issue WHERE project_id = '%s'`, it.project), &issues)
 	if issues != 1 {
 		t.Fatal("retry duplicated issues")
+	}
+}
+
+// A Trivy scan stores its SBOM and opens license issues under the org's
+// policy; the purge job later removes the SBOM, object and columns together.
+func TestSBOMAndLicensesEndToEnd(t *testing.T) {
+	it := newITest(t)
+	it.env.Images = map[string]string{"trivy": "docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64)}
+	it.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"}]}`}
+	owner(t, it.org, fmt.Sprintf(`UPDATE organization SET license_policy = '{"categories":{"restricted":"block"}}' WHERE id = '%s'`, it.org))
+	data, sha := zipBytes()
+	id, key := it.scan("queued", sha, 0, "trivy")
+	it.store.objects[key] = data
+	it.run(id)
+
+	sbomKey := SBOMKey(it.org, id)
+	var status, storedKey, severity string
+	var components int
+	it.one(fmt.Sprintf(`SELECT status, sbom_key, sbom_components FROM scan WHERE id = '%s'`, id), &status, &storedKey, &components)
+	it.one(fmt.Sprintf(`SELECT severity FROM issue WHERE project_id = '%s' AND rule_id = 'license:GPL-3.0-only'`, it.project), &severity)
+	if status != "completed" || storedKey != sbomKey || components != 1 || severity != "high" || it.store.objects[sbomKey] == nil {
+		t.Fatal(status, storedKey, components, severity)
+	}
+
+	// Not expired yet: kept.
+	if err := it.env.PurgeExpiredSources(context.Background()); err != nil || contains(it.store.deleted, sbomKey) {
+		t.Fatal(err, it.store.deleted)
+	}
+	it.env.Now = func() time.Time { return time.Now().Add(it.env.SBOMRetention + time.Minute) }
+	if err := it.env.PurgeExpiredSources(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var cleared bool
+	it.one(fmt.Sprintf(`SELECT sbom_key IS NULL AND sbom_size IS NULL AND sbom_sha256 IS NULL AND sbom_components IS NULL
+		AND sbom_expires_at IS NULL FROM scan WHERE id = '%s'`, id), &cleared)
+	if !cleared || !contains(it.store.deleted, sbomKey) {
+		t.Fatal(cleared, it.store.deleted)
 	}
 }
 

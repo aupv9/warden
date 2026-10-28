@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -152,28 +153,37 @@ func (c client) printf(format string, a ...any) { fmt.Fprintf(c.o.stdout, format
 // scan runs the whole flow and returns the exit status.
 func scan(ctx context.Context, o options, d deps) (int, error) {
 	c := client{o: o, d: d}
-	dir, err := filepath.Abs(o.dir)
-	if err != nil {
-		return exitError, err
-	}
 	tmp, err := os.MkdirTemp("", "warden-scan-")
 	if err != nil {
 		return exitError, err
 	}
 	defer os.RemoveAll(tmp)
-	name := archiveName(dir)
-	zipPath := filepath.Join(tmp, name+".zip")
-	files, err := d.pack(dir, zipPath, name+"/")
-	if err != nil {
-		return exitError, fmt.Errorf("package %s: %w", dir, err)
+	var zipPath string
+	var body map[string]any
+	if o.image != "" || o.imageTar != "" {
+		if zipPath, body, err = c.imageArtifact(ctx, tmp); err != nil {
+			return exitError, err
+		}
+	} else {
+		dir, err := filepath.Abs(o.dir)
+		if err != nil {
+			return exitError, err
+		}
+		name := archiveName(dir)
+		zipPath = filepath.Join(tmp, name+".zip")
+		files, err := d.pack(dir, zipPath, name+"/")
+		if err != nil {
+			return exitError, fmt.Errorf("package %s: %w", dir, err)
+		}
+		c.printf("==> packaged %d files from %s\n", files, clean(dir))
+		body = map[string]any{"file_name": name + ".zip"}
 	}
 	size, sum, err := digest(zipPath)
 	if err != nil {
 		return exitError, err
 	}
-	c.printf("==> packaged %d files from %s (%d bytes)\n", files, clean(dir), size)
-
-	body := map[string]any{"file_name": name + ".zip", "file_size": size, "sha256": sum}
+	c.printf("==> %s: %d bytes\n", clean(body["file_name"].(string)), size)
+	body["file_size"], body["sha256"] = size, sum
 	if len(o.tools) > 0 {
 		body["tools"] = o.tools
 	}
@@ -207,11 +217,101 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 		return exitError, fmt.Errorf("scan %s %s%s", clean(scanID), final.Status, clean(code))
 	}
 
+	if o.sbomOut != "" {
+		if err := c.saveSBOM(ctx, scanPath, o.sbomOut); err != nil {
+			return exitError, err
+		}
+	}
+
+	gatePath := scanPath + "/gate?fail_on=" + url.QueryEscape(o.failOn)
+	if o.failOnKEV {
+		gatePath += "&fail_on_kev=true"
+	}
 	var g gate
-	if err := c.call(ctx, "GET", scanPath+"/gate?fail_on="+url.QueryEscape(o.failOn), nil, &g); err != nil {
+	if err := c.call(ctx, "GET", gatePath, nil, &g); err != nil {
 		return exitError, err
 	}
 	return c.report(g, scanID), nil
+}
+
+type sbomLink struct {
+	URL        string `json:"url"`
+	Size       int64  `json:"size"`
+	SHA256     string `json:"sha256"`
+	Components int    `json:"components"`
+}
+
+// maxSBOM matches the server's cap on stored SBOMs.
+const maxSBOM = 64 << 20
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// saveSBOM downloads the scan's SBOM from its presigned link (without the API
+// token), checks it against the size and SHA-256 the server recorded, and
+// replaces dest only once the whole file is verified.
+func (c client) saveSBOM(ctx context.Context, scanPath, dest string) error {
+	var l sbomLink
+	if err := c.call(ctx, "GET", scanPath+"/sbom", nil, &l); err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return errors.New("the scan has no SBOM: Trivy must be among the scan's tools and succeed")
+		}
+		return err
+	}
+	u, err := parseURL(l.URL)
+	if err != nil {
+		return fmt.Errorf("refusing the SBOM URL the server returned: %w", err)
+	}
+	if l.Size < 0 || l.Size > maxSBOM || !sha256Hex.MatchString(l.SHA256) {
+		return errors.New("unexpected SBOM details from the server")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.d.upload.Do(req)
+	if err != nil {
+		return netError("GET", "SBOM", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET SBOM: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, l.Size+1))
+	if err != nil {
+		return netError("GET", "SBOM", err)
+	}
+	sum := sha256.Sum256(body)
+	if int64(len(body)) != l.Size || hex.EncodeToString(sum[:]) != l.SHA256 {
+		return errors.New("the downloaded SBOM doesn't match the SHA-256 the server recorded")
+	}
+	if err := writeFile(dest, body, 0o644); err != nil {
+		return fmt.Errorf("save SBOM: %w", err)
+	}
+	c.printf("==> SBOM (CycloneDX, %d components) saved to %s\n", l.Components, clean(dest))
+	return nil
+}
+
+// writeFile replaces path with data through a temporary file in the same
+// directory, so a failed write never leaves a truncated file behind.
+func writeFile(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".warden-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op after the rename
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func digest(path string) (int64, string, error) {
@@ -345,7 +445,13 @@ func (c client) report(g gate, scanID string) int {
 			break
 		}
 	}
-	c.printf("FAIL: scan %s (%s): %d blocking issue(s) at or above %s (%s)\n", clean(scanID), clean(g.Status), n, clean(g.FailOn), counts)
+	which := "at or above " + clean(g.FailOn)
+	if c.o.failOnKEV {
+		// Known-exploited issues block whatever their severity.
+		which += " or known exploited (KEV)"
+		n = max(n, len(g.Blocking))
+	}
+	c.printf("FAIL: scan %s (%s): %d blocking issue(s) %s (%s)\n", clean(scanID), clean(g.Status), n, which, counts)
 	return exitGateFailed
 }
 

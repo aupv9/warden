@@ -178,6 +178,12 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 		if err := copyFile(r.Sarif, out); err != nil {
 			return 2, err
 		}
+		// Trivy's JSON report and CycloneDX SBOM, for review.
+		for _, p := range r.Artifacts {
+			if err := copyFile(p, filepath.Join(o.reports, r.Tool+"-"+filepath.Base(p))); err != nil {
+				return 2, err
+			}
+		}
 		inputs = append(inputs, gate.Input{Tool: r.Tool, File: out})
 	}
 
