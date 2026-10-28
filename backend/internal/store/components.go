@@ -21,11 +21,16 @@ func prefixPattern(s string) string {
 	return r.Replace(s) + "%"
 }
 
-// namesWhere matches c.match_name against any of the prefixes.
+// namesWhere matches c.match_name against any of the prefixes, at the start
+// of the name or of a segment after ':' or '/': people search for log4j-core
+// (Maven org.apache.logging.log4j:log4j-core) or logrus (Go
+// github.com/sirupsen/logrus). Only the whole-name prefix can use the
+// component_prefix index; the segment matches scan the org's rows.
 func namesWhere(a *args, names []service.NamePrefix) string {
 	var or []string
 	for _, n := range names {
-		cond := `c.match_name LIKE ` + a.add(prefixPattern(n.Prefix))
+		p := a.add(prefixPattern(n.Prefix))
+		cond := `(c.match_name LIKE ` + p + ` OR c.match_name LIKE '%:' || ` + p + ` OR c.match_name LIKE '%/' || ` + p + `)`
 		if n.Ecosystem != "" {
 			cond = `(c.ecosystem = ` + a.add(n.Ecosystem) + ` AND ` + cond + `)`
 		}
