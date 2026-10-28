@@ -167,7 +167,7 @@ const scanSelect = `SELECT s.id, s.org_id, s.project_id, s.status::text, s.file_
 	coalesce(s.object_key, ''), coalesce(s.sha256, ''), u.id, u.email::text, u.display_name,
 	vt.id, vt.name, vt.prefix::text, s.kind, s.target, s.image_ref,
 	CASE WHEN s.sbom_expires_at > now() THEN s.sbom_key END, s.sbom_size, s.sbom_sha256, s.sbom_components,
-	s.sbom_spdx_key, s.sbom_spdx_size, s.sbom_spdx_sha256
+	s.sbom_spdx_key, s.sbom_spdx_size, s.sbom_spdx_sha256, s.history_commits, s.history_truncated
 	FROM scan s JOIN app_user u ON u.id = s.created_by LEFT JOIN api_token vt ON vt.id = s.via_token`
 
 func scanScan(row pgx.CollectableRow) (service.Scan, error) {
@@ -180,11 +180,14 @@ func scanScan(row pgx.CollectableRow) (service.Scan, error) {
 		sbomComponents   *int
 		spdxKey, spdxSum *string
 		spdxSize         *int64
+		historyCommits   *int
+		historyTruncated *bool
 	)
 	err := row.Scan(&s.ID, &s.OrgID, &s.ProjectID, &s.Status, &s.FileName, &s.FileSize, &s.Tools,
 		&s.ErrorCode, &s.Stats, &s.CreatedAt, &s.QueuedAt, &s.StartedAt, &s.FinishedAt,
 		&s.ObjectKey, &s.SHA256, &s.CreatedBy.ID, &s.CreatedBy.Email, &s.CreatedBy.DisplayName, &vtID, &vtName, &vtPrefix,
-		&s.Kind, &s.Target, &s.ImageRef, &sbomKey, &sbomSize, &sbomSum, &sbomComponents, &spdxKey, &spdxSize, &spdxSum)
+		&s.Kind, &s.Target, &s.ImageRef, &sbomKey, &sbomSize, &sbomSum, &sbomComponents, &spdxKey, &spdxSize, &spdxSum,
+		&historyCommits, &historyTruncated)
 	if vtID != nil && vtName != nil && vtPrefix != nil {
 		s.ViaToken = &service.TokenRef{ID: *vtID, Name: *vtName, Prefix: *vtPrefix}
 	}
@@ -197,6 +200,9 @@ func scanScan(row pgx.CollectableRow) (service.Scan, error) {
 			s.SBOM.SPDXKey, s.SBOM.SPDXSize, s.SBOM.SPDXSHA256 = *spdxKey, *spdxSize, *spdxSum
 			s.SBOM.Formats = append(s.SBOM.Formats, service.SBOMSPDXJSON)
 		}
+	}
+	if historyCommits != nil && historyTruncated != nil {
+		s.History = &service.ScanHistory{Commits: *historyCommits, Truncated: *historyTruncated}
 	}
 	if s.Tools == nil {
 		s.Tools = []string{}

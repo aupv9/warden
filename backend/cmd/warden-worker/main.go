@@ -35,9 +35,9 @@ func main() {
 		fx.Provide(
 			func() (*storage.Client, error) {
 				sc := storage.FromSection(cfg.Storage)
-				// The download cap fits the largest upload of either kind; the
+				// The download cap fits the largest upload of any kind; the
 				// orchestrator applies each kind's own limit after the download.
-				sc.MaxObjectBytes = int64(max(cfg.Scan.UploadMaxMB, cfg.Scan.ImageUploadMaxMB)) << 20
+				sc.MaxObjectBytes = int64(max(cfg.Scan.UploadMaxMB, cfg.Scan.ImageUploadMaxMB, cfg.Scan.HistoryUploadMaxMB)) << 20
 				return storage.New(sc)
 			},
 			func(pool *pgxpool.Pool, store *storage.Client, log *slog.Logger) (*worker.Env, error) {

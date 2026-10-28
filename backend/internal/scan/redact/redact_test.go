@@ -65,6 +65,43 @@ func TestRedactMasksSecretsAcrossResultsAndKeys(t *testing.T) {
 	}
 }
 
+// Git mode: the commit message (which can quote this secret or one Gitleaks
+// didn't match), the author and the email never leave the sandbox; the sha
+// and date do, as strings only.
+func TestRedactDropsCommitDetails(t *testing.T) {
+	unmatched := "hunter2-" + strings.Repeat("x", 8)
+	sha := strings.Repeat("a1", 20)
+	c := st.Commit{SHA: sha, Date: "2026-10-28T21:36:59Z", Author: "Alice Example", Email: "alice@example.test",
+		Message: "add key " + st.FakeSecret + " and " + unmatched}
+	weird := st.HistoryResult("generic-api-key", "b.env", 2, "s3cr3t-"+strings.Repeat("y", 10), c)
+	weird["partialFingerprints"] = st.M{"commitSha": st.M{"nested": "Alice Example"}, "date": 7, "commitMessage": "x", "extra": "alice@example.test"}
+	bare := st.HistoryResult("generic-api-key", "c.env", 3, "s3cr3t-"+strings.Repeat("z", 10), c)
+	bare["partialFingerprints"] = "Alice Example <alice@example.test>"
+	doc := st.Doc([]any{st.HistoryResult("aws-access-token", "config.py", 1, st.FakeSecret, c), weird, bare})
+
+	out, err := redact.Doc(st.RoundTrip(doc), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := blob(t, out)
+	for _, leak := range []string{st.FakeSecret, unmatched, "Alice", "alice@", "commitMessage", "author", "email", "add key"} {
+		if strings.Contains(s, leak) {
+			t.Errorf("%q left the sandbox: %s", leak, s)
+		}
+	}
+	results := out["runs"].([]any)[0].(st.M)["results"].([]any)
+	pf := results[0].(st.M)["partialFingerprints"].(st.M)
+	if len(pf) != 2 || pf["commitSha"] != sha || pf["date"] != "2026-10-28T21:36:59Z" {
+		t.Fatal(pf)
+	}
+	if pf := results[1].(st.M)["partialFingerprints"].(st.M); len(pf) != 0 {
+		t.Fatal(pf)
+	}
+	if _, ok := results[2].(st.M)["partialFingerprints"]; ok {
+		t.Fatal(results[2])
+	}
+}
+
 func TestRedactPrefersLongestSecret(t *testing.T) {
 	short := "abcdefghijkl"
 	long := short + "MNOPQRSTUVWX"

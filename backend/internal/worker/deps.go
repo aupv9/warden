@@ -24,7 +24,7 @@ type liveDeps struct {
 	org     uuid.UUID
 	scan    uuid.UUID
 	attempt int
-	kind    string // scan.kind: image scans use sandbox.ImageTools
+	kind    string // scan.kind: image scans use sandbox.ImageTools, history scans sandbox.HistoryTool
 }
 
 var _ orchestrator.Deps = (*liveDeps)(nil)
@@ -136,8 +136,12 @@ func (d *liveDeps) RunTool(ctx context.Context, tool, scanID, scanDir string) sa
 		d.env.Sandbox.Kill(scanID, tool)
 	}
 	spec := sandbox.Tools[tool]
-	if d.kind == orchestrator.KindImage {
+	switch d.kind {
+	case orchestrator.KindImage:
 		spec = sandbox.ImageTools[tool]
+	case orchestrator.KindHistory:
+		l := d.env.Limits
+		spec = sandbox.HistoryTool(sandbox.HistoryLimits{MaxBytes: l.HistoryMaxBytes, MaxCommits: l.HistoryMaxCommits, ScanTimeout: d.env.ScanTimeout})
 	}
 	r := d.env.Sandbox.Run(ctx, spec, sandbox.RunConfig{
 		ScanID: scanID, ScanDir: scanDir, Image: image, Runtime: d.env.Runtime, MirrorDir: d.env.MirrorDir,

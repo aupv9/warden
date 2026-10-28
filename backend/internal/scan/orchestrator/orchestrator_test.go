@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
@@ -37,6 +39,13 @@ type fakeDeps struct {
 	limits   *Limits
 	// artifacts trivy writes besides its SARIF (file name -> content)
 	trivyOut map[string]string
+	// History scans: src/repo.bundle, read-only, when a tool ran; the
+	// (redacted) SARIF and history.json Gitleaks writes; its exit code when
+	// it fails.
+	sawBundle   bool
+	gitleaksDoc st.M
+	historyOut  *string
+	exitCode    int
 }
 
 func (d *fakeDeps) Limits() Limits {
@@ -83,6 +92,11 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 		d.sawImage = true
 		d.mu.Unlock()
 	}
+	if st, err := os.Stat(filepath.Join(scanDir, "src", "repo.bundle")); err == nil && st.Mode().Perm() == 0o444 {
+		d.mu.Lock()
+		d.sawBundle = true
+		d.mu.Unlock()
+	}
 	if _, err := os.Stat(filepath.Join(scanDir, "secrets", "hmac")); err == nil {
 		d.mu.Lock()
 		d.sawKey = true
@@ -90,17 +104,25 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 	}
 	status := d.results[tool]
 	if status != sandbox.Succeeded {
-		return sandbox.ToolRun{Tool: tool, Status: status, DurationMS: 1, Error: "boom"}
+		return sandbox.ToolRun{Tool: tool, Status: status, DurationMS: 1, Error: "boom", ExitCode: d.exitCode}
 	}
 	out := filepath.Join(scanDir, "out", tool)
 	_ = os.MkdirAll(out, 0o700)
 	doc := st.Doc([]any{st.M{"ruleId": "r1", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}}})
 	if tool == "gitleaks" {
 		doc = st.GitleaksDoc() // unredacted on purpose: the parser must refuse it
+		if d.gitleaksDoc != nil {
+			doc = d.gitleaksDoc
+		}
 	}
 	b, _ := json.Marshal(doc)
 	_ = os.WriteFile(filepath.Join(out, "result.sarif"), b, 0o600)
 	run := sandbox.ToolRun{Tool: tool, Status: status, DurationMS: 1, Sarif: filepath.Join(out, "result.sarif")}
+	if tool == "gitleaks" && d.historyOut != nil {
+		p := filepath.Join(out, "history.json")
+		_ = os.WriteFile(p, []byte(*d.historyOut), 0o600)
+		run.Artifacts = map[string]string{sandbox.ArtifactHistory: p}
+	}
 	if tool == "trivy" {
 		run.Artifacts = map[string]string{}
 		for name, a := range sandbox.Tools["trivy"].Artifacts {
@@ -421,5 +443,141 @@ func TestImageRejections(t *testing.T) {
 			t.Fatalf("%s: %+v %v", c.code, out, err)
 		}
 		assertCleaned(t, d, j)
+	}
+}
+
+// bundleBytes is a minimal git bundle: the header, and a framed pack
+// (bundlecheck reads only the framing).
+func bundleBytes(t *testing.T, header string) ([]byte, string) {
+	t.Helper()
+	var p bytes.Buffer
+	p.WriteString("PACK\x00\x00\x00\x02\x00\x00\x00\x01")
+	p.Write(bytes.Repeat([]byte{0x78}, 16))
+	sum := sha1.Sum(p.Bytes())
+	p.Write(sum[:])
+	data := append([]byte(header), p.Bytes()...)
+	s := sha256.Sum256(data)
+	return data, hex.EncodeToString(s[:])
+}
+
+const bundleRef = "0123456789abcdef0123456789abcdef01234567 refs/heads/main\n"
+
+func historyJob(sha string) Job {
+	j := newJob(sha, "gitleaks")
+	j.Kind, j.Target = KindHistory, HistoryTarget
+	return j
+}
+
+func historyDoc(t *testing.T) st.M {
+	t.Helper()
+	c := st.Commit{SHA: strings.Repeat("ab", 20), Date: "2024-01-02T03:04:05Z", Author: "A", Email: "a@x.test", Message: "m"}
+	doc, err := redact.Doc(st.RoundTrip(st.Doc([]any{
+		st.HistoryResult("aws-access-token", "src/a.py", 3, st.FakeSecret, c),
+		st.HistoryResult("aws-access-token", "src/b.py", 1, st.FakeSecret, c),
+	})), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+// History scans: the verified bundle is mounted read-only (never unpacked),
+// only Gitleaks runs, with the HMAC key, and its history report comes back.
+// Findings are parsed in git mode; collapsing them is the processor's job.
+func TestHistoryScan(t *testing.T) {
+	data, sha := bundleBytes(t, "# v2 git bundle\n"+bundleRef+"\n")
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Succeeded})
+	d.limits = &Limits{Zip: zipcheck.DefaultLimits(), HistoryMaxBytes: 1 << 20, HistoryMaxCommits: 120}
+	d.gitleaksDoc = historyDoc(t)
+	report := `{"commits":120,"truncated":true}`
+	d.historyOut = &report
+	j := historyJob(sha)
+	out, err := Execute(context.Background(), j, d)
+	if err != nil || out.Status != Completed || !d.sawBundle || !d.sawKey {
+		t.Fatal(out, err, d.sawBundle, d.sawKey)
+	}
+	if out.History == nil || out.History.Commits != 120 || !out.History.Truncated {
+		t.Fatalf("%+v", out.History)
+	}
+	fs := out.Findings["gitleaks"]
+	if len(fs) != 2 || fs[0].FilePath != "src/a.py" || fs[0].Commit == nil || fs[0].Key().FilePath != HistoryTarget {
+		t.Fatalf("%+v", fs)
+	}
+	assertCleaned(t, d, j)
+
+	// Other tools are refused for history scans (the API never queues them).
+	for _, tools := range [][]string{{"gitleaks", "trivy"}, {"opengrep"}} {
+		d = newDeps(t, data, nil)
+		j := historyJob(sha)
+		j.Tools = tools
+		if _, err := Execute(context.Background(), j, d); err == nil {
+			t.Fatalf("%v ran on a history scan", tools)
+		}
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// Without a well-formed history report, Gitleaks' results can't be trusted
+// to cover the history: the tool fails (and nothing gets auto-fixed).
+func TestHistoryReportIsChecked(t *testing.T) {
+	data, sha := bundleBytes(t, "# v2 git bundle\n"+bundleRef+"\n")
+	for _, report := range []*string{nil, ptr(""), ptr(`{"commits":-1,"truncated":false}`), ptr(`{"commits":50001,"truncated":true}`),
+		ptr(`{"commits":1}`), ptr(`{"truncated":false}`), ptr(`{"commits":"1","truncated":false}`), ptr(`{"commits":1.5,"truncated":false}`),
+		ptr(`{"commits":1,"truncated":false,"note":"x"}`), ptr(`{"commits":1,"truncated":false}{}`), ptr(`[1,false]`),
+		ptr(`{"commits":1,"truncated":"no"}`), ptr(`{"commits":1,"truncated":false}` + strings.Repeat(" ", 300))} {
+		d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Succeeded})
+		d.limits = &Limits{Zip: zipcheck.DefaultLimits(), HistoryMaxBytes: 1 << 20, HistoryMaxCommits: 50_000}
+		d.gitleaksDoc, d.historyOut = historyDoc(t), report
+		out, err := Execute(context.Background(), historyJob(sha), d)
+		if err != nil || out.Status != Failed || out.ErrorCode != "ALL_SCANNERS_FAILED" || out.History != nil ||
+			out.Runs[0].Status != sandbox.Failed || !strings.HasPrefix(out.Runs[0].Error, "SARIF:") {
+			t.Errorf("%v: %+v %v", report, out, err)
+		}
+	}
+}
+
+// A bundle is rejected before any scanner runs (bundlecheck), or when git in
+// the sandbox finds commits missing or objects broken (warden-gitleaks' exit
+// codes); any other failure is the scanner's.
+func TestHistoryRejections(t *testing.T) {
+	good, goodSHA := bundleBytes(t, "# v2 git bundle\n"+bundleRef+"\n")
+	shallow, shallowSHA := bundleBytes(t, "# v2 git bundle\n-0123456789abcdef0123456789abcdef01234567\n"+bundleRef+"\n")
+	bad, badSHA := bundleBytes(t, "# v2 git bundle\n0123 refs/heads/main\n\n")
+	for _, c := range []struct {
+		data     []byte
+		sha      string
+		limit    int64
+		exitCode int
+		code     string
+		ran      bool
+	}{
+		{bad, badSHA, 0, 0, "BUNDLE_INVALID", false},
+		{shallow, shallowSHA, 0, 0, "BUNDLE_INCOMPLETE", false},
+		{good, goodSHA, 10, 0, "BUNDLE_TOO_LARGE", false},
+		{good, strings.Repeat("0", 64), 0, 0, "CHECKSUM_MISMATCH", false},
+		{good, goodSHA, 0, sandbox.ExitHistoryIncomplete, "BUNDLE_INCOMPLETE", true},
+		{good, goodSHA, 0, sandbox.ExitHistoryUnreadable, "BUNDLE_INVALID", true},
+		{good, goodSHA, 0, 1, "ALL_SCANNERS_FAILED", true},
+	} {
+		d := newDeps(t, c.data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Failed})
+		d.exitCode = c.exitCode
+		d.limits = &Limits{Zip: zipcheck.DefaultLimits(), HistoryMaxBytes: 1 << 20, HistoryMaxCommits: 10}
+		if c.limit != 0 {
+			d.limits.HistoryMaxBytes = c.limit
+		}
+		j := historyJob(c.sha)
+		out, err := Execute(context.Background(), j, d)
+		if err != nil || out.Status != Failed || out.ErrorCode != c.code || d.sawBundle != c.ran {
+			t.Errorf("%s: %+v %v ran=%v", c.code, out, err, d.sawBundle)
+		}
+		assertCleaned(t, d, j)
+	}
+	// Exit codes mean nothing special for source scans.
+	data, sha := zipBytes(t)
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Failed})
+	d.exitCode = sandbox.ExitHistoryIncomplete
+	if out, err := Execute(context.Background(), newJob(sha, "gitleaks"), d); err != nil || out.ErrorCode != "ALL_SCANNERS_FAILED" {
+		t.Fatal(out, err)
 	}
 }

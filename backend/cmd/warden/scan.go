@@ -160,11 +160,16 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	defer os.RemoveAll(tmp)
 	var zipPath string
 	var body map[string]any
-	if o.image != "" || o.imageTar != "" {
+	switch {
+	case o.history:
+		if zipPath, body, err = c.historyArtifact(ctx, tmp); err != nil {
+			return exitError, err
+		}
+	case o.image != "" || o.imageTar != "":
 		if zipPath, body, err = c.imageArtifact(ctx, tmp); err != nil {
 			return exitError, err
 		}
-	} else {
+	default:
 		dir, err := filepath.Abs(o.dir)
 		if err != nil {
 			return exitError, err
@@ -184,7 +189,7 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	}
 	c.printf("==> %s: %d bytes\n", clean(body["file_name"].(string)), size)
 	body["file_size"], body["sha256"] = size, sum
-	if len(o.tools) > 0 {
+	if _, fixed := body["tools"]; !fixed && len(o.tools) > 0 {
 		body["tools"] = o.tools
 	}
 	var created createdScan
