@@ -21,6 +21,9 @@ import (
 	"time"
 
 	cgconfig "github.com/aupv9/common-go/config"
+
+	"github.com/aupv9/warden/backend/internal/secretbox"
+	"github.com/aupv9/warden/backend/internal/webhook"
 )
 
 const EnvPrefix = "WARDEN_"
@@ -54,6 +57,27 @@ type Settings struct {
 	Storage StorageSection `koanf:"storage"`
 	SMTP    SMTPSection    `koanf:"smtp"`
 	Scan    ScanSection    `koanf:"scan"`
+	Secrets SecretsSection `koanf:"secrets"`
+	Webhook WebhookSection `koanf:"webhook"`
+}
+
+// SecretsSection holds the key that encrypts what Warden must read back in
+// clear (webhook URLs and signing secrets; see internal/secretbox). Without
+// Key, webhooks are unavailable.
+type SecretsSection struct {
+	// Key is "<key id>:<base64 of 32 bytes>" (WARDEN_SECRETS__KEY).
+	Key Secret `koanf:"key"`
+	// OldKeys: earlier keys, comma-separated, that still decrypt (rotation).
+	OldKeys Secret `koanf:"old_keys"`
+}
+
+// WebhookSection configures outgoing webhooks.
+type WebhookSection struct {
+	// AllowHosts may be reached over http and at private addresses (exact host
+	// names or IP literals): development and tests only.
+	AllowHosts List `koanf:"allow_hosts"`
+	// FailureLimit: deliveries failing in a row before a webhook is turned off.
+	FailureLimit int `koanf:"failure_limit" validate:"min=1,max=1000"`
 }
 
 type OIDCSection struct {
@@ -193,6 +217,7 @@ func settingsDefaults() *Settings {
 			SBOMRetention:       365 * 24 * time.Hour,
 			ImageUploadMaxMB:    2048,
 		},
+		Webhook: WebhookSection{FailureLimit: 10},
 	}
 }
 
@@ -243,14 +268,29 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: oidc.require_mfa_roles: unknown org role %q", r)
 		}
 	}
+	if _, err := c.Keyring(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	for _, h := range c.Webhook.AllowHosts {
+		if !webhook.ValidAllowHost(h) {
+			return nil, fmt.Errorf("config: webhook.allow_hosts: %q must be a host name or IP address, without scheme or port", h)
+		}
+	}
 	return c, nil
 }
 
 var orgRoles = []string{"org_admin", "security_lead", "member"}
 
+// Keyring parses secrets.key and secrets.old_keys (nil when no key is set).
+// Errors name the setting, never the key.
+func (c *Config) Keyring() (*secretbox.Keyring, error) {
+	return secretbox.Parse(c.Secrets.Key.Reveal(), c.Secrets.OldKeys.Reveal())
+}
+
 // resolveSecrets expands "file:/path" references.
 func (c *Config) resolveSecrets() error {
-	for _, s := range []*Secret{&c.Migrate.DSN, &c.Storage.AccessKey, &c.Storage.SecretKey, &c.Scan.HMACKey, &c.SMTP.Password} {
+	for _, s := range []*Secret{&c.Migrate.DSN, &c.Storage.AccessKey, &c.Storage.SecretKey, &c.Scan.HMACKey, &c.SMTP.Password,
+		&c.Secrets.Key, &c.Secrets.OldKeys} {
 		v, err := cgconfig.ResolveSecret(string(*s))
 		if err != nil {
 			return err

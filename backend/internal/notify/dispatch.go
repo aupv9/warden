@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -25,8 +26,16 @@ type Dispatcher struct {
 	Mailer Sender
 	// BaseURL is the validated smtp.public_base_url.
 	BaseURL string
-	Now     func() time.Time
-	Log     *slog.Logger
+	// Webhooks queues webhook deliveries for WebhookTypes events in the
+	// dispatch transaction; nil sends none.
+	Webhooks WebhookQueue
+	Now      func() time.Time
+	Log      *slog.Logger
+}
+
+// WebhookQueue writes an event's webhook deliveries (webhook.Queue).
+type WebhookQueue interface {
+	Enqueue(ctx context.Context, db DB, org uuid.UUID, eventID int64, typ string, payload []byte) error
 }
 
 const (
@@ -110,6 +119,11 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, err
 			for _, nt := range notes {
 				if err := r.insert(ctx, ev, nt); err != nil {
 					return err
+				}
+			}
+			if d.Webhooks != nil && slices.Contains(WebhookTypes, ev.Type) {
+				if err := d.Webhooks.Enqueue(ctx, db, org, ev.ID, ev.Type, ev.Payload); err != nil {
+					return fmt.Errorf("outbox event %d: webhooks: %w", ev.ID, err)
 				}
 			}
 			if _, err := db.Exec(ctx, `UPDATE outbox_event SET dispatched_at = $2 WHERE id = $1`, ev.ID, r.now); err != nil {
@@ -307,6 +321,24 @@ func (r *resolver) resolve(ctx context.Context, ev outboxRow) ([]note, error) {
 			return nil, err
 		}
 		return r.digest(ctx, ev.Type, *p.UserID, c)
+	case WebhookDisabled:
+		// Org-level: the people who can turn it on again.
+		if err := need(p.WebhookID, "webhook_id"); err != nil {
+			return nil, err
+		}
+		err := r.db.QueryRow(ctx, `SELECT name FROM webhook WHERE id = $1`, *p.WebhookID).Scan(&c.WebhookName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // deleted meanwhile
+		}
+		if err != nil {
+			return nil, err
+		}
+		c.Title = "Webhook " + strconv.Quote(c.WebhookName) + " turned off after failed deliveries"
+		c.Link = "/orgs/" + r.org.String() + "/integrations"
+		if users, err = r.userIDs(ctx, `SELECT user_id FROM org_member WHERE org_id = $1 AND role IN ('org_admin', 'security_lead')
+			ORDER BY user_id`, r.org); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, &badEvent{fmt.Errorf("unknown type %q", ev.Type)}
 	}
