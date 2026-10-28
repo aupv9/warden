@@ -3,14 +3,24 @@ package service
 import (
 	"context"
 	"time"
+
+	"github.com/aupv9/warden/backend/internal/domain/ecosystem"
 )
 
 // VulnStaleAfter: a source whose publisher date is older than this is shown as
 // stale (the mirror isn't being synced).
 const VulnStaleAfter = 7 * 24 * time.Hour
 
-// vulnSources are always reported, in this order, loaded or not.
-var vulnSources = []string{"trivy_db", "kev", "epss"}
+// vulnSources are always reported, in this order, loaded or not: the Trivy
+// DB, KEV, EPSS, then one OSV malicious-package feed per ecosystem (the
+// worker's osv_mal:<ecosystem> sources).
+var vulnSources = func() []string {
+	out := []string{"trivy_db", "kev", "epss"}
+	for _, eco := range ecosystem.OSV {
+		out = append(out, "osv_mal:"+eco)
+	}
+	return out
+}()
 
 // VulnRepo reads vuln_intel_source (public data, no RLS).
 type VulnRepo interface {
@@ -23,8 +33,10 @@ type VulnDataSource struct {
 	LoadedAt  *Time  `json:"loaded_at"`
 	Records   *int   `json:"records"`
 	Stale     bool   `json:"stale"`
+	// Unsupported: OSV feeds only, advisories skipped because their version
+	// ranges aren't supported (null for the others and before a load).
+	Unsupported *int `json:"unsupported"`
 }
-
 type VulnData struct {
 	Sources []VulnDataSource `json:"sources"`
 }

@@ -245,6 +245,50 @@ func TestDispatchResolvesRecipients(t *testing.T) {
 	}
 }
 
+// component.malicious goes to the security leads and the project's owners
+// (once each, even when a lead owns the project), email on by default.
+func TestDispatchComponentMalicious(t *testing.T) {
+	var w *world
+	w = newWorld(t, dbtest.Step{Prefix: "SELECT user_id FROM org_member WHERE org_id = $1 AND role = 'security_lead' UNION",
+		Do: func(args []any) dbtest.Step {
+			if args[1] != projID {
+				t.Errorf("project %v", args[1])
+			}
+			return w.userRows(func(u user) bool { return u.role == "security_lead" || u.role == "owner" })
+		}})
+	w.addUser("lead", "security_lead", true, false)
+	owner := w.addUser("owner", "owner", true, true)
+	w.addUser("dev", "developer", true, true)
+	w.addUser("gone", "owner", false, true)
+	w.prefs[owner.String()+"|"+ComponentMalicious] = false
+	dev := w.uid("dev")
+	iss := w.addIssue(3, "evil 1.0.0 is a malicious package (MAL-2026-1)", &dev, nil)
+	w.event(1, ComponentMalicious, Payload{IssueID: &iss})
+	w.event(2, ComponentMalicious, Payload{}) // malformed: skipped
+	if err := w.d.DispatchOrg(context.Background(), orgID); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, n := range w.inserted() {
+		got[w.users[n[0].(uuid.UUID)].email+" "+n[1].(string)+" "+n[2].(string)+" "+n[3].(string)] = true
+	}
+	want := map[string]bool{
+		"lead@example.com component.malicious Malicious package found: WEB-3 pending": true,
+		"owner@example.com component.malicious Malicious package found: WEB-3 none":   true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("missing %q in %v", k, got)
+		}
+	}
+	if !DefaultEmail(ComponentMalicious) {
+		t.Fatal("component.malicious email must be on by default")
+	}
+}
+
 func TestDispatchPropagatesDatabaseErrors(t *testing.T) {
 	for _, prefix := range []string{
 		"SELECT id, type, payload FROM outbox_event", "SELECT name FROM organization", "SELECT display_name FROM app_user",

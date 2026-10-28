@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aupv9/warden/backend/internal/domain/ecosystem"
 	"github.com/aupv9/warden/backend/internal/domain/rbac"
 	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/service/servicetest"
@@ -261,7 +262,7 @@ func TestVulnData(t *testing.T) {
 	x.f.SetVulnSource(service.VulnDataSource{Name: "kev", UpdatedAt: &fresh, LoadedAt: &fresh, Records: &n})
 	x.f.SetVulnSource(service.VulnDataSource{Name: "trivy_db", UpdatedAt: &old})
 	d, err := x.s.VulnData(context.Background(), x.actor())
-	if err != nil || len(d.Sources) != 3 {
+	if err != nil || len(d.Sources) != 3+len(ecosystem.OSV) || d.Sources[3].Name != "osv_mal:npm" || d.Sources[10].Name != "osv_mal:Packagist" {
 		t.Fatal(d, err)
 	}
 	trivy, kev, epss := d.Sources[0], d.Sources[1], d.Sources[2]

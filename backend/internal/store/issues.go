@@ -28,7 +28,7 @@ func issueSummaryCols(now string) string {
 		i.file_path, i.start_line, i.package_name, i.package_version, i.fixed_version,
 		au.id, au.email::text, au.display_name, i.due_at,
 		(i.due_at IS NOT NULL AND i.due_at < ` + now + ` AND i.status IN ` + activeStatuses + `), i.updated_at,
-		i.target, coalesce(vi.kev, false), vi.epss`
+		i.target, coalesce(vi.kev, false), vi.epss, i.license_category`
 }
 
 // issueBase is the issue/project join every issue query filters on.
@@ -52,11 +52,15 @@ const kevExists = `EXISTS (SELECT 1 FROM vuln_intel v WHERE v.cve = ANY(i.cve) A
 // rule license:<SPDX>; every other Trivy issue is a vulnerability.
 const licenseRule = `i.rule_id LIKE 'license:%'`
 
+// maliciousRule: malicious-package issues (results.MaliciousRulePrefix) are
+// Trivy issues with rule malicious:<MAL-id>.
+const maliciousRule = `i.rule_id LIKE 'malicious:%'`
+
 func summaryDest(s *service.IssueSummary, aID **uuid.UUID, aEmail, aName **string) []any {
 	return []any{&s.ID, &s.Key, &s.ProjectID, &s.Title, &s.Severity, &s.Status, &s.Tool, &s.RuleID,
 		&s.FilePath, &s.StartLine, &s.PackageName, &s.PackageVersion, &s.FixedVersion,
 		aID, aEmail, aName, &s.DueAt, &s.PastSLA, &s.UpdatedAt,
-		&s.Target, &s.KEV, &s.EPSS}
+		&s.Target, &s.KEV, &s.EPSS, &s.LicenseCategory}
 }
 
 func scanSummary(row pgx.CollectableRow) (service.IssueSummary, error) {
@@ -106,9 +110,11 @@ func issueWhere(a *args, q service.IssueQuery) string {
 	}
 	switch q.Kind {
 	case service.KindVulnerability:
-		w = append(w, `i.tool = 'trivy' AND NOT `+licenseRule)
+		w = append(w, `i.tool = 'trivy' AND NOT `+licenseRule+` AND NOT `+maliciousRule)
 	case service.KindLicense:
 		w = append(w, `i.tool = 'trivy' AND `+licenseRule)
+	case service.KindMalicious:
+		w = append(w, `i.tool = 'trivy' AND `+maliciousRule)
 	}
 	if q.KEV {
 		w = append(w, kevExists)
@@ -288,13 +294,12 @@ func (r *Repo) InsertComment(ctx context.Context, c service.NewComment) error {
 
 // VulnSources reads vuln_intel_source: global public data, no RLS.
 func (r *Repo) VulnSources(ctx context.Context) ([]service.VulnDataSource, error) {
-	rows, _ := r.tx.Query(ctx, `SELECT name, updated_at, loaded_at, records FROM vuln_intel_source ORDER BY name`)
+	rows, _ := r.tx.Query(ctx, `SELECT name, updated_at, loaded_at, records, unsupported FROM vuln_intel_source ORDER BY name`)
 	return collect(rows, func(row pgx.CollectableRow) (service.VulnDataSource, error) {
 		var s service.VulnDataSource
-		return s, row.Scan(&s.Name, &s.UpdatedAt, &s.LoadedAt, &s.Records)
+		return s, row.Scan(&s.Name, &s.UpdatedAt, &s.LoadedAt, &s.Records, &s.Unsupported)
 	})
 }
-
 func (r *Repo) PendingExceptionID(ctx context.Context, issueID uuid.UUID) (*uuid.UUID, error) {
 	var id uuid.UUID
 	err := r.tx.QueryRow(ctx, `SELECT id FROM exception_request WHERE issue_id = $1 AND status = 'pending'`, issueID).Scan(&id)

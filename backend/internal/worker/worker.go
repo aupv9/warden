@@ -117,6 +117,7 @@ func Config(opts Options) (*river.Config, error) {
 	river.AddWorker(workers, DispatchNotificationsWorker{Env: opts.Env})
 	river.AddWorker(workers, SLADigestWorker{Env: opts.Env})
 	river.AddWorker(workers, LoadVulnIntelWorker{Env: opts.Env})
+	river.AddWorker(workers, MatchMaliciousWorker{Env: opts.Env})
 	cfg.Workers = workers
 	cfg.Queues = map[string]river.QueueConfig{
 		QueueScan:          {MaxWorkers: opts.ScanSlots},

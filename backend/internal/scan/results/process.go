@@ -130,7 +130,11 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	}
 	findings := in.Findings
 	if SucceededTools(in.Runs)["trivy"] {
-		if lic := LicenseFindings(in.Licenses, policy); len(lic) > 0 {
+		mal, err := MaliciousFindings(ctx, db, in.Packages)
+		if err != nil {
+			return Plan{}, err
+		}
+		if lic := append(LicenseFindings(in.Licenses, policy), mal...); len(lic) > 0 {
 			findings = map[string][]sarif.Finding{}
 			maps.Copy(findings, in.Findings)
 			findings["trivy"] = append(slices.Clone(findings["trivy"]), lic...)
@@ -183,6 +187,8 @@ type applier struct {
 	// members who are active users and still in the org.
 	rules    []autoassign.Rule
 	eligible map[uuid.UUID]bool
+	// createNote is the note of a new issue's created event (Inject).
+	createNote string
 }
 
 // loadAssignRules reads the project's rules (and, if there are any, who they
@@ -275,6 +281,9 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 			return err
 		}
 	}
+	if err := notifyMalicious(ctx, a.db, a.in, p); err != nil {
+		return err
+	}
 	for tool, n := range p.ToolCounts {
 		if _, err := a.db.Exec(ctx, `UPDATE scan_tool_run SET findings_count = $3 WHERE scan_id = $1 AND tool = $2`,
 			a.in.ScanID, tool, n); err != nil {
@@ -328,7 +337,7 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}
-	if err := a.event(ctx, id, EventCreated, nil, ptr(string(issuestate.Open)), ""); err != nil {
+	if err := a.event(ctx, id, EventCreated, nil, ptr(string(issuestate.Open)), a.createNote); err != nil {
 		return err
 	}
 	if rule > 0 {
