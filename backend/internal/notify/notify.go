@@ -37,10 +37,21 @@ const (
 	// ComponentMalicious: a scanned package matches an OSV malicious-package
 	// advisory (at scan time, or when an advisory arrives for the inventory).
 	ComponentMalicious = "component.malicious"
+	// WebhookDisabled: a webhook was turned off after repeated failed
+	// deliveries (org admins and security leads).
+	WebhookDisabled = "webhook.disabled"
 )
 
 // Types lists every event type, in the order preferences are shown.
-var Types = []string{IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ScanFinished, SLADueSoon, SLAOverdue, ComponentMalicious}
+var Types = []string{IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ScanFinished, SLADueSoon, SLAOverdue, ComponentMalicious, WebhookDisabled}
+
+// WebhookTypes are the event types a webhook can subscribe to. SLA digests are
+// per user and webhook.disabled is about the webhook itself, so neither is sent.
+var WebhookTypes = []string{ScanFinished, IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ComponentMalicious}
+
+// WebhookTest is the type of the delivery POST .../webhooks/{id}/test sends;
+// it has no outbox event.
+const WebhookTest = "webhook.test"
 
 // DefaultEmail is the email preference of a user who never chose: on, except
 // for scan.finished (people who upload usually watch the scan anyway).
