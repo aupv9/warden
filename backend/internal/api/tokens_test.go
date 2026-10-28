@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/domain/rbac"
 	"github.com/aupv9/warden/backend/internal/service"
+	"github.com/aupv9/warden/backend/internal/service/servicetest"
 )
 
 // callTok calls the API with a raw API token.
@@ -563,5 +566,56 @@ func TestGate(t *testing.T) {
 	e.expect(e.do("GET", path, dev, nil), 500, "INTERNAL")
 	delete(e.f.Fail, "ScanIssueCounts")
 	e.f.Fail["ScanIssues"] = errors.New("db")
+	e.expect(e.do("GET", path, dev, nil), 500, "INTERNAL")
+}
+
+func TestGateBlockingNew(t *testing.T) {
+	e := newEnv(t)
+	older := e.f.AddScan(e.web, e.u[dev], "completed", 10)
+	sc := e.f.AddScan(e.web, e.u[dev], "completed", 10)
+	issue := func(sev string, firstSeen uuid.UUID) uuid.UUID {
+		id := e.f.AddIssue(e.web, sev, "open", nil)
+		e.f.SetIssue(id, func(r *servicetest.IssueRow) { r.ScanID = firstSeen })
+		e.f.AddOccurrence(id, sc)
+		return id
+	}
+	created := issue("high", sc)
+	known := issue("critical", older) // already open before this scan
+	reopened := issue("high", older)  // fixed, then found again by this scan
+	reopenedEarlier := issue("high", older)
+	e.f.AddScanReopen(reopened, sc)
+	e.f.AddScanReopen(reopenedEarlier, older) // another scan's reopen doesn't count
+	newLow := issue("low", sc)                // new but not blocking at high
+
+	path := "/scans/" + sc.String() + "/gate"
+	r := e.do("GET", path, dev, nil)
+	e.expect(r, 200, "")
+	var blocking []string
+	for _, b := range r.obj()["blocking"].([]any) {
+		blocking = append(blocking, b.(map[string]any)["id"].(string))
+	}
+	if len(blocking) != 4 || blocking[0] != known.String() {
+		t.Fatal(r.body)
+	}
+	// In blocking's order, only ids from blocking.
+	var want []any
+	for _, id := range blocking {
+		if id == created.String() || id == reopened.String() {
+			want = append(want, id)
+		}
+	}
+	if got := r.obj()["blocking_new"].([]any); fmt.Sprint(got) != fmt.Sprint(want) || len(got) != 2 {
+		t.Fatalf("%v, want %v", got, want)
+	}
+	r = e.do("GET", path+"?fail_on=low", dev, nil)
+	if got := r.obj()["blocking_new"].([]any); len(got) != 3 || !slices.Contains(got, any(newLow.String())) {
+		t.Fatal(r.body)
+	}
+	// Nothing blocking: an empty list, never null.
+	r = e.do("GET", "/scans/"+e.f.AddScan(e.web, e.u[dev], "completed", 10).String()+"/gate", dev, nil)
+	if got, ok := r.obj()["blocking_new"].([]any); !ok || len(got) != 0 {
+		t.Fatal(r.body)
+	}
+	e.f.Fail["ScanNewIssues"] = errors.New("db")
 	e.expect(e.do("GET", path, dev, nil), 500, "INTERNAL")
 }

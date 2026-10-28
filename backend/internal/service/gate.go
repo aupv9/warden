@@ -27,6 +27,10 @@ type GateRepo interface {
 	// ScanIssues lists those issues with one of severities (or, with kev, a
 	// CVE in KEV), most severe first.
 	ScanIssues(ctx context.Context, scanID uuid.UUID, severities []string, kev bool, now time.Time, limit int) ([]IssueSummary, error)
+	// ScanNewIssues returns those of issueIDs that the scan created
+	// (first seen in it) or reopened, with the same truth as the scan's
+	// stats: the issue's first_seen_scan_id and the events the scan wrote.
+	ScanNewIssues(ctx context.Context, scanID uuid.UUID, issueIDs []uuid.UUID) ([]uuid.UUID, error)
 }
 
 // Gate is a CI verdict on one scan.
@@ -40,6 +44,10 @@ type Gate struct {
 	Counts    SeverityCounts `json:"counts"`
 	KEV       int            `json:"kev"`
 	Blocking  []IssueSummary `json:"blocking"`
+	// BlockingNew: the ids from Blocking (in its order) that this scan
+	// created or reopened; the rest were already open. `warden scan
+	// --comment` marks them New on the pull request.
+	BlockingNew []uuid.UUID `json:"blocking_new"`
 }
 
 func finishedStatus(s string) bool {
@@ -114,13 +122,45 @@ func (s *Service) Gate(ctx context.Context, a *Actor, scanID uuid.UUID, failOn, 
 		if blocking == nil {
 			blocking = []IssueSummary{}
 		}
+		newIDs, err := blockingNew(ctx, r, scanID, blocking)
+		if err != nil {
+			return err
+		}
 		finished := finishedStatus(sc.Status)
 		out = Gate{
 			ScanID: scanID, Status: sc.Status, Finished: finished, FailOn: failOn, FailOnKEV: kev,
 			Pass:   finished && (sc.Status == "completed" || sc.Status == "partial") && !blocked,
-			Counts: counts, KEV: kevCount, Blocking: blocking,
+			Counts: counts, KEV: kevCount, Blocking: blocking, BlockingNew: newIDs,
 		}
 		return nil
 	})
 	return out, err
+}
+
+// blockingNew keeps blocking's order and lists each id once, whatever the
+// repository returns, so the response always holds `blocking_new ⊆ blocking`.
+func blockingNew(ctx context.Context, r Repo, scanID uuid.UUID, blocking []IssueSummary) ([]uuid.UUID, error) {
+	out := []uuid.UUID{}
+	if len(blocking) == 0 {
+		return out, nil
+	}
+	ids := make([]uuid.UUID, len(blocking))
+	for i, b := range blocking {
+		ids[i] = b.ID
+	}
+	found, err := r.ScanNewIssues(ctx, scanID, ids)
+	if err != nil {
+		return nil, err
+	}
+	isNew := make(map[uuid.UUID]bool, len(found))
+	for _, id := range found {
+		isNew[id] = true
+	}
+	for _, id := range ids {
+		if isNew[id] {
+			out = append(out, id)
+			delete(isNew, id)
+		}
+	}
+	return out, nil
 }
