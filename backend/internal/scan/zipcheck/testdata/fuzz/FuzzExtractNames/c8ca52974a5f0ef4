@@ -1,0 +1,6 @@
+go test fuzz v1
+string("\u058c")
+uint32(106)
+string("0")
+uint32(0)
+[]byte("0")

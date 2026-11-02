@@ -288,10 +288,15 @@ func Extract(zipPath, dest string, limits Limits) (*Result, error) {
 
 // pathErr makes a path the file system refuses as too long (PATH_MAX: 4096
 // bytes on Linux, 1024 on macOS, with dest's own path included) a rejected
-// upload. archpath caps paths in runes, and up to 4 bytes each can pass.
+// upload. archpath caps paths in runes, and up to 4 bytes each can pass. So
+// is a name the file system can't store (EILSEQ: APFS refuses unassigned
+// code points; Linux file systems take any bytes).
 func pathErr(err error) error {
-	if errors.Is(err, syscall.ENAMETOOLONG) {
+	switch {
+	case errors.Is(err, syscall.ENAMETOOLONG):
 		return reject("ZIP_PATH_TRAVERSAL", "entry path too long for the file system")
+	case errors.Is(err, syscall.EILSEQ):
+		return reject("ZIP_PATH_TRAVERSAL", "entry name the file system can't store")
 	}
 	return err
 }
