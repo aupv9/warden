@@ -30,6 +30,10 @@ const (
 	MaxRatio       = 100
 	RatioFloor     = 1024 * 1024
 	MaxBinaryBytes = 5 * 1024 * 1024
+	// MaxNameBytes is the longest path component Linux file systems take
+	// (NAME_MAX). A longer one would fail the write with ENAMETOOLONG, an
+	// internal error instead of a rejected upload.
+	MaxNameBytes = 255
 
 	flagEncrypted = 0x1
 	flagUTF8      = 0x800
@@ -140,11 +144,18 @@ func safeRename(name string) string {
 }
 
 // validatePath returns the cleaned relative parts of an entry name, or an empty
-// slice for the archive root itself (the rules are shared with imagecheck).
+// slice for the archive root itself (archpath's rules, shared with imagecheck,
+// plus MaxNameBytes per component). Renamed entries are checked by their new
+// name, which the digest suffix makes longer.
 func validatePath(name string) ([]string, error) {
 	parts, err := archpath.Clean(name)
 	if err != nil {
 		return nil, reject("ZIP_PATH_TRAVERSAL", "%v", err)
+	}
+	for _, p := range parts {
+		if len(p) > MaxNameBytes {
+			return nil, reject("ZIP_PATH_TRAVERSAL", "entry path has a component longer than %d bytes", MaxNameBytes)
+		}
 	}
 	return parts, nil
 }
