@@ -89,6 +89,9 @@ type Options struct {
 	SourceRoot string
 	JSONOut    string
 	Today      time.Time // zero = now (UTC)
+	// History: the inputs are a history scan's (Gitleaks in git mode): one
+	// row per secret, at the oldest commit that added it.
+	History bool
 }
 
 type Row struct {
@@ -126,9 +129,12 @@ func Run(opts Options, w io.Writer) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		findings, err := sarif.Parse(doc, in.Tool, sarif.Options{SourceRoot: opts.SourceRoot})
+		findings, err := sarif.Parse(doc, in.Tool, sarif.Options{SourceRoot: opts.SourceRoot, History: opts.History})
 		if err != nil {
 			return 2, err
+		}
+		if opts.History {
+			findings = sarif.CollapseHistory(findings)
 		}
 		for _, item := range fingerprint.Assign(findings, sarif.Finding.Key, sarif.Finding.Line) {
 			f := item.Finding
@@ -136,6 +142,9 @@ func Run(opts Options, w io.Writer) (int, error) {
 			loc := f.FilePath + ":"
 			if f.StartLine != nil {
 				loc += fmt.Sprint(*f.StartLine)
+			}
+			if c := f.Commit; c != nil {
+				loc += fmt.Sprintf(" in commit %.7s (%d commits)", c.SHA, c.Count)
 			}
 			row := Row{
 				Fingerprint: item.Fingerprint, Tool: in.Tool, Rule: f.RuleID, Severity: string(f.Severity),

@@ -43,6 +43,25 @@ func GitleaksDoc() M {
 	}})
 }
 
+// Commit is what Gitleaks reports about a commit in git mode.
+type Commit struct {
+	SHA, Date, Author, Email, Message string
+}
+
+// HistoryResult is one result in the shape `gitleaks git` writes (v8.30):
+// the commit in partialFingerprints, the file path relative to the repository.
+func HistoryResult(rule, uri string, line int, secret string, c Commit) M {
+	return M{
+		"ruleId":    rule,
+		"message":   M{"text": rule + " has detected secret for file " + uri + " at commit " + c.SHA + "."},
+		"locations": []any{Loc(uri, line, secret)},
+		"partialFingerprints": M{
+			"commitSha": c.SHA, "email": c.Email, "author": c.Author, "date": c.Date, "commitMessage": c.Message,
+		},
+		"properties": M{"tags": []any{}},
+	}
+}
+
 // RoundTrip serializes and re-decodes a fixture the way Load would see it.
 func RoundTrip(doc M) M {
 	b, err := json.Marshal(doc)

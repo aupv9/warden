@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/service"
 )
 
@@ -105,4 +106,20 @@ func (r *Repo) ScanIssues(ctx context.Context, scanID uuid.UUID, severities []st
 		ORDER BY i.severity ASC, i.number ASC LIMIT ` + a.add(limit)
 	rows, _ := r.tx.Query(ctx, q, a...)
 	return collect(rows, scanSummary)
+}
+
+// ScanNewIssues reads what results.Process wrote for the scan: a created issue
+// has first_seen_scan_id = the scan, and a reopen is the system's
+// status_changed event with results.ReopenNote(scan). Two writes look alike
+// and are left out: results.Inject creates malicious-package issues with an
+// existing scan as first_seen_scan_id but notes their created event (scans
+// leave it empty), and a user's reopen has an actor.
+func (r *Repo) ScanNewIssues(ctx context.Context, scanID uuid.UUID, issueIDs []uuid.UUID) ([]uuid.UUID, error) {
+	rows, _ := r.tx.Query(ctx, `SELECT i.id FROM issue i WHERE i.id = ANY($2::uuid[]) AND (
+		(i.first_seen_scan_id = $1 AND NOT EXISTS (SELECT 1 FROM issue_event e
+			WHERE e.issue_id = i.id AND e.type = $3 AND e.note IS NOT NULL))
+		OR EXISTS (SELECT 1 FROM issue_event e WHERE e.issue_id = i.id AND e.type = $4
+			AND e.to_value = 'reopened' AND e.actor_id IS NULL AND e.note = $5))`,
+		scanID, issueIDs, results.EventCreated, results.EventStatusChanged, results.ReopenNote(scanID))
+	return collect(rows, pgx.RowTo[uuid.UUID])
 }

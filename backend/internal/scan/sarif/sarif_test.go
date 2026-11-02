@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
@@ -50,6 +52,104 @@ func TestGitleaksParseAfterRedaction(t *testing.T) {
 	raw, _ := json.Marshal(f.Raw)
 	if strings.Contains(string(raw), st.FakeSecret) {
 		t.Fatal("secret in raw")
+	}
+}
+
+var (
+	shaOld = strings.Repeat("0a", 20)
+	shaNew = strings.Repeat("0b", 20)
+)
+
+func historyCommit(sha, date string) st.Commit {
+	return st.Commit{SHA: sha, Date: date, Author: "A", Email: "a@x.test", Message: "m"}
+}
+
+func redacted(t *testing.T, results ...any) st.M {
+	t.Helper()
+	doc, err := redact.Doc(st.RoundTrip(st.Doc(results)), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+// Git mode: the path is the repository's (a top-level src/ kept), and the
+// commit is read from what warden-redact left.
+func TestGitleaksHistoryParse(t *testing.T) {
+	doc := redacted(t, st.HistoryResult("aws-access-token", "src/config.py", 4, st.FakeSecret, historyCommit(shaOld, "2024-02-03T04:05:06+07:00")))
+	f := one(t, parse(t, doc, "gitleaks", sarif.Options{History: true, RootDir: "src"}))
+	if f.FilePath != "src/config.py" || f.Line() != 4 || f.Commit == nil || f.Commit.SHA != shaOld || f.Commit.Count != 1 ||
+		f.Commit.Date == nil || !f.Commit.Date.Equal(time.Date(2024, 2, 2, 21, 5, 6, 0, time.UTC)) || f.Commit.Date.Location() != time.UTC {
+		t.Fatalf("%+v %+v", f, f.Commit)
+	}
+	if k := f.Key(); k.FilePath != fingerprint.HistoryPath || k.ContentKey == "" {
+		t.Fatal(k)
+	}
+	// Source scans ignore commit fields (dir mode writes empty ones).
+	if f := one(t, parse(t, doc, "gitleaks", sarif.Options{})); f.Commit != nil || f.Key().FilePath != "config.py" {
+		t.Fatalf("%+v", f)
+	}
+}
+
+func TestGitleaksHistoryRejectsBadCommits(t *testing.T) {
+	sha256 := strings.Repeat("c", 64)
+	if f := one(t, parse(t, redacted(t, st.HistoryResult("r", "a", 1, "s3cr3t-value-1", historyCommit(sha256, "2020-01-01T00:00:00Z"))),
+		"gitleaks", sarif.Options{History: true})); f.Commit.SHA != sha256 {
+		t.Fatal(f.Commit)
+	}
+	for name, sha := range map[string]string{
+		"missing": "", "short": shaOld[:39], "upper": strings.ToUpper(shaOld), "abbreviated": shaOld[:7],
+		"injection": shaOld + "' OR 1=1 --", "newline": shaOld + "\n", "41 chars": shaOld + "a",
+	} {
+		doc := redacted(t, st.HistoryResult("r", "a", 1, "s3cr3t-value-1", historyCommit(sha, "2020-01-01T00:00:00Z")))
+		if _, err := sarif.Parse(doc, "gitleaks", sarif.Options{History: true}); !errors.Is(err, sarif.ErrSARIF) {
+			t.Errorf("%s: got %v", name, err)
+		}
+	}
+	// A date that isn't a sane RFC 3339 time is dropped, not the finding.
+	for _, date := range []string{"", "yesterday", "2020-01-01", "1969-12-31T23:59:59Z", "2020-13-01T00:00:00Z",
+		"10000-01-01T00:00:00Z", "2020-01-01T00:00:00Z" + strings.Repeat(" ", 100), "2020-01-01 00:00:00"} {
+		doc := redacted(t, st.HistoryResult("r", "a", 1, "s3cr3t-value-1", historyCommit(shaOld, date)))
+		if f := one(t, parse(t, doc, "gitleaks", sarif.Options{History: true})); f.Commit == nil || f.Commit.Date != nil {
+			t.Errorf("%q: %+v", date, f.Commit)
+		}
+	}
+}
+
+// One finding per rule and secret: the oldest commit's location, and how many
+// commits added it. Another secret, or another rule, stays apart.
+func TestCollapseHistory(t *testing.T) {
+	other := "ghp_" + strings.Repeat("Q", 36)
+	doc := redacted(t,
+		st.HistoryResult("aws-access-token", "b/new.py", 9, st.FakeSecret, historyCommit(shaNew, "2025-06-01T00:00:00Z")),
+		st.HistoryResult("aws-access-token", "a/old.py", 3, st.FakeSecret, historyCommit(shaOld, "2023-06-01T00:00:00Z")),
+		st.HistoryResult("aws-access-token", "a/copy.py", 1, st.FakeSecret, historyCommit(shaOld, "2023-06-01T00:00:00Z")),
+		st.HistoryResult("github-pat", "x.py", 2, other, historyCommit(shaNew, "2025-06-01T00:00:00Z")),
+		st.HistoryResult("generic-api-key", "a/old.py", 3, st.FakeSecret, historyCommit(shaNew, "")),
+	)
+	fs := sarif.CollapseHistory(parse(t, doc, "gitleaks", sarif.Options{History: true}))
+	if len(fs) != 3 {
+		t.Fatalf("%d findings", len(fs))
+	}
+	aws := fs[0]
+	// Same commit and date: the path decides, so the choice is stable.
+	if aws.RuleID != "aws-access-token" || aws.FilePath != "a/copy.py" || aws.Line() != 1 || aws.Commit.SHA != shaOld || aws.Commit.Count != 2 {
+		t.Fatalf("%+v %+v", aws, aws.Commit)
+	}
+	if fs[1].RuleID != "github-pat" || fs[1].Commit.Count != 1 || fs[2].RuleID != "generic-api-key" || fs[2].Commit.Date != nil {
+		t.Fatalf("%+v %+v", fs[1], fs[2])
+	}
+	// Unknown dates sort after known ones.
+	a := sarif.Finding{Tool: "gitleaks", RuleID: "r", ContentKey: "k", FilePath: "a", Commit: &sarif.Commit{SHA: shaOld}}
+	when := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	b := sarif.Finding{Tool: "gitleaks", RuleID: "r", ContentKey: "k", FilePath: "b", Commit: &sarif.Commit{SHA: shaNew, Date: &when}}
+	if got := sarif.CollapseHistory([]sarif.Finding{a, b}); len(got) != 1 || got[0].FilePath != "b" || got[0].Commit.Count != 2 {
+		t.Fatalf("%+v", got)
+	}
+	// Findings without a commit (source scans) are left alone.
+	plain := sarif.Finding{Tool: "gitleaks", RuleID: "r", ContentKey: "k", FilePath: "a"}
+	if got := sarif.CollapseHistory([]sarif.Finding{plain, plain}); len(got) != 2 {
+		t.Fatal(got)
 	}
 }
 

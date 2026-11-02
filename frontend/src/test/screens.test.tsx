@@ -710,7 +710,8 @@ describe("v0.4 screens: component inventory, malicious packages, SPDX", () => {
     expect(t).toContain("never closes or hides one");
     const prefs = text(await render(`${org()}/preferences`));
     expect(prefs).toContain("Malicious package found");
-    expect(prefs).toMatch(/6 ?of ?8 ?emailed/);
+    // v0.4 wave 2 adds "Webhook turned off" (on by default).
+    expect(prefs).toMatch(/7 ?of ?9 ?emailed/);
   });
 
   it("mock API follows the v0.4 contract: components, usage, targets, visibility, SBOM formats", async () => {
@@ -734,6 +735,8 @@ describe("v0.4 screens: component inventory, malicious packages, SPDX", () => {
     const targets = await call("GET", `/orgs/${db.ORG_ID}/projects/${web().id}/targets`);
     expect(targets.json.data.items).toEqual([
       expect.objectContaining({ target: "", kind: "source" }),
+      // v0.4 wave 2: the history scans' target.
+      expect.objectContaining({ target: "(history)", kind: "history" }),
       expect.objectContaining({ target: "ghcr.io/acme/api", kind: "image" }),
     ]);
     // Another org's project looks missing.
@@ -769,5 +772,302 @@ describe("v0.4 screens: component inventory, malicious packages, SPDX", () => {
 
     const counts = await call("GET", `/orgs/${db.ORG2_ID}/issues/counts`);
     expect(counts.json.data).toMatchObject({ malicious: 1, active: 1 });
+  });
+});
+
+describe("v0.4 wave 2 screens: secrets in git history, integrations, CI setup", () => {
+  const org = () => `/orgs/${db.ORG_ID}`;
+  const web = () => db.projects[0]!;
+  const historyScan = () => db.scans.find((s) => s.kind === "history" && s.status === "completed")!;
+  const awsHistory = () => db.issues.find((i) => i.target === "(history)" && i.rule_id === "aws-access-token")!;
+  const asRole = (role: "org_admin" | "security_lead" | "member") => ({
+    ...db.me,
+    orgs: db.me.orgs.map((o) => (o.id === db.ORG_ID ? { ...o, role } : o)),
+  });
+  const call = async (method: string, path: string, body?: unknown) => {
+    const { mockFetch } = await import("../api/mock/server");
+    const r = await mockFetch(`/api/v1${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+    return {
+      status: r.status,
+      json: (r.status === 204 ? { data: null, error: null } : await r.json()) as {
+        data: ({ items?: Record<string, unknown>[]; next_cursor?: string | null } & Record<string, unknown>) | null;
+        error: { code: string; metadata?: { fields?: Record<string, string> } } | null;
+      },
+    };
+  };
+
+  it("scans tab: the Git history tag and commits, the history panel, BUNDLE_* rejections, the note under New scan", async () => {
+    const base = `${org()}/projects/${web().id}/scans`;
+    const html = await render(base);
+    const t = text(html);
+    expect(t).toContain("storefront.bundle");
+    expect(t).toContain("Git history");
+    expect(t).toContain("2,481 commits");
+    expect(t).toContain("shallow clone");
+    // The New scan card stays Source code / Container image; history scans come from CI.
+    expect(html).not.toMatch(/<button type="button" aria-pressed="false">Git history<\/button>/);
+    expect(t).toContain("warden scan --history");
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/projects/${web().id}/settings#ci-setup"`);
+
+    const panelHtml = await render(`${base}?scan=${historyScan().id}`);
+    const panel = text(panelHtml);
+    expect(panel).toContain("2,481 commits scanned");
+    expect(panel).toContain("Issues tracked under Git history");
+    expect(panel).not.toContain("Only the newest");
+    expect(panelHtml).toContain(`href="/orgs/${db.ORG_ID}/projects/${web().id}/issues?source=history"`);
+
+    const truncated = { ...historyScan(), history: { commits: 100000, truncated: true } };
+    const cut = text(await render(`${base}?scan=${truncated.id}`, (qc) => qc.setQueryData(qk.scan(db.ORG_ID, truncated.id), truncated)));
+    expect(cut).toContain("Only the newest 100,000 commits were scanned (the server's limit).");
+
+    const rejected = db.scans.find((s) => s.error_code === "BUNDLE_INCOMPLETE")!;
+    const r = text(await render(`${base}?scan=${rejected.id}`));
+    expect(r).toContain("Bundle rejected");
+    expect(r).toContain("The bundle doesn't hold the full history");
+    expect(r).toContain("BUNDLE_INCOMPLETE");
+    // A browser can't build a bundle: no "Upload a new …" for a history scan.
+    expect(r).not.toContain("Upload a new");
+  });
+
+  it("issue list: Source is Git history, the History tag, the Secrets view lists both", async () => {
+    const html = await render(`${org()}/issues?source=history`);
+    const t = text(html);
+    expect(t).toContain("Source is Git history");
+    expect(t).toContain("2 issues match");
+    expect(t).toContain("AWS access key in git history");
+    expect(t).toContain("Slack bot token in git history");
+    expect(t).not.toContain("AWS access key in deploy config");
+    expect(t).toContain("Found in git history");
+    expect(t).not.toContain("(history) ·");
+    const secrets = text(await render(`${org()}/issues?tool=gitleaks`));
+    expect(secrets).toContain("AWS access key in git history");
+    expect(secrets).toContain("AWS access key in deploy config");
+    // Source code excludes history issues; images too.
+    expect(text(await render(`${org()}/issues?source=code&tool=gitleaks`))).not.toContain("in git history");
+    expect(text(await render(`${org()}/issues?source=image`))).not.toContain("in git history");
+  });
+
+  it("issue page: Found in git history with the short sha as text, the rotate sentence, Where and How to fix", async () => {
+    const issue = awsHistory();
+    const sha = issue.commit!.sha;
+    const html = await render(`${org()}/issues/${issue.id}`);
+    const t = text(html);
+    expect(t).toContain("Found in git history");
+    expect(t).toContain(`Added in commit ${sha.slice(0, 7)}`);
+    expect(t).toContain("and in 2 more commits");
+    // The full sha is in the accessible name and copyable, never a link.
+    expect(html).toContain(`<span class="visually-hidden">${sha}</span>`);
+    expect(html).toContain("Copy sha");
+    expect(html).not.toMatch(new RegExp(`href="[^"]*${sha.slice(0, 7)}`));
+    expect(html).toContain(
+      "<strong>Rotate this secret. Deleting the file or the line doesn&#x27;t remove it from history; anyone with a clone still has it.</strong>",
+    );
+    expect(t).toContain(`scripts/deploy.sh:7 in commit ${sha.slice(0, 7)}`);
+    // How to fix falls back to the same sentence; the snippet is the masked one.
+    expect(t.match(/Rotate this secret\./g)!.length).toBeGreaterThanOrEqual(2);
+    expect(t).toContain("export AWS_ACCESS_KEY_ID=AKIA****");
+    expect(t).toContain("Git history");
+    expect(t).not.toMatch(/Image \(history\)/);
+  });
+
+  it("issue page: hostile shas and titles are text, never markup or links", async () => {
+    const issue = awsHistory();
+    const hostile = {
+      ...issue,
+      title: '<img src=x onerror=alert(1)> in history',
+      file_path: '"><script>alert(1)</script>',
+      commit: { sha: 'javascript:alert(1)"><img src=x>', committed_at: null, count: 1 },
+    };
+    const html = await render(`${org()}/issues/${issue.id}`, (qc) => qc.setQueryData(qk.issue(db.ORG_ID, issue.id), hostile));
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toMatch(/href="javascript:/);
+    expect(text(html)).toContain("javascript:alert(1)&quot;&gt;&lt;img src=x&gt;");
+    expect(text(html)).not.toContain("more commit");
+  });
+
+  it("targets: (history) is not offered as an image or a component target", async () => {
+    const tab = await render(`${org()}/projects/${web().id}/components`);
+    expect(tab).not.toContain('value="(history)"');
+    expect(tab).toContain('<option value="ghcr.io/acme/api">ghcr.io/acme/api</option>');
+    // An Image filter of (history) in the URL is dropped (it isn't an image repository).
+    const list = text(await render(`${org()}/projects/${web().id}/issues?target=%28history%29`));
+    expect(list).not.toContain("Image is (history)");
+  });
+
+  it("integrations: navigation, list, tags, url_hint as text, states, the 20 limit, the palette entry", async () => {
+    const html = await render(`${org()}/integrations`);
+    const t = text(html);
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/integrations"`);
+    expect(html.indexOf("Integrations</span>")).toBeGreaterThan(html.indexOf("Members</span>"));
+    expect(t).toContain("#security-alerts");
+    expect(t).toContain("Ticket relay");
+    expect(t).toMatch(/Slack/);
+    expect(t).toMatch(/Webhook/);
+    // The hint is text, never a link.
+    expect(t).toContain("https://hooks.slack.com");
+    expect(t).toContain("https://relay.acme.example");
+    expect(html).not.toMatch(/href="https:\/\/(hooks\.slack\.com|relay\.acme\.example)/);
+    expect(t).toContain("Active");
+    expect(t).toContain("Turned off after failed deliveries");
+    expect(t).toContain("Turn on again");
+    expect(t).toContain("Critical only");
+    expect(t).toContain("2 projects");
+    expect(t).toContain("All projects");
+    expect(t).toMatch(/Delivered \d+ min ago/);
+    expect(t).toMatch(/Failed 2 h ago · HTTP 500/);
+    expect(t).toContain("2 of 20");
+    expect(t).toContain("never code, descriptions, comments, email addresses or secrets");
+    // Icon-only and repeated buttons have names.
+    expect(html).toContain('aria-label="More actions for Ticket relay"');
+    expect(t).toContain("Delivery log of Ticket relay");
+    expect(t).toContain("Send test to #security-alerts");
+    expect(html).toMatch(/<button type="button" class="btn btn-primary btn-sm"[^>]*>.*Add<\/button>/s);
+  });
+
+  it("integrations: hidden from members, who never call the API; a 403 page if they open the URL", async () => {
+    const before = db.me.orgs.find((o) => o.id === db.ORG_ID)!.role;
+    let seed: QueryClient | null = null;
+    const html = await render(`${org()}/integrations`, (qc) => {
+      seed = qc;
+      qc.setQueryData(qk.me, asRole("member"));
+    });
+    expect(before).toBe("security_lead");
+    const t = text(html);
+    expect(t).toContain("You don't have access to this");
+    expect(html).not.toContain(`href="/orgs/${db.ORG_ID}/integrations"`);
+    expect(seed!.getQueryCache().find({ queryKey: qk.webhooks(db.ORG_ID) })).toBeUndefined();
+    // Acme Labs: the caller is a member there.
+    const labs = await render(`/orgs/${db.ORG2_ID}/projects`);
+    expect(labs).not.toContain(`href="/orgs/${db.ORG2_ID}/integrations"`);
+    // An org admin sees it too.
+    const admin = await render(`${org()}/integrations`, (qc) => qc.setQueryData(qk.me, asRole("org_admin")));
+    expect(text(admin)).toContain("#security-alerts");
+  });
+
+  it("integrations: without secrets.key the page shows only the operator note", async () => {
+    db.mockFlags.integrationsUnavailable = true;
+    try {
+      const html = await render(`${org()}/integrations`);
+      const t = text(html);
+      expect(t).toContain("Webhooks are turned off on this server.");
+      expect(t).toContain("WARDEN_SECRETS__KEY");
+      expect(t).not.toContain("#security-alerts");
+      expect(html).not.toMatch(/>\s*Add<\/button>/);
+      expect(html).toContain('rel="noopener noreferrer"');
+    } finally {
+      db.mockFlags.integrationsUnavailable = false;
+    }
+  });
+
+  it("integrations: hostile names and hints are text", async () => {
+    const list = db.webhooks[db.ORG_ID]!;
+    const hostile = { ...list[0]!, id: db.uuid(), name: '<img src=x onerror=alert(1)>', url_hint: "javascript:alert(1)" };
+    list.push(hostile);
+    try {
+      const html = await render(`${org()}/integrations`);
+      expect(html).not.toContain("<img");
+      expect(html).not.toMatch(/href="javascript:/);
+      expect(text(html)).toContain("&lt;img src=x onerror=alert(1)&gt;");
+      expect(text(html)).toContain("javascript:alert(1)");
+    } finally {
+      list.splice(list.indexOf(hostile), 1);
+    }
+  });
+
+  it("CI setup: the two switches, off by default; snippets never contain a token", async () => {
+    const html = await render(`${org()}/projects/${web().id}/settings`);
+    const t = text(html);
+    expect(html).toContain('id="ci-setup"');
+    expect(t).toContain("Comment on pull requests / merge requests");
+    expect(t).toContain("Scan git history");
+    expect(html.match(/role="switch"/g)).toHaveLength(2);
+    expect(t).not.toContain("--comment auto\n");
+    expect(html).not.toMatch(/wdn_[a-z2-7]{8}_[a-z2-7]{20,}|whsec_/);
+    expect(t).toContain("Warden itself keeps no GitHub or GitLab credentials.");
+  });
+
+  it("notifications: the Webhook turned off preference and its link to Integrations", async () => {
+    const prefs = text(await render(`${org()}/preferences`));
+    expect(prefs).toContain("Webhook turned off");
+    expect(prefs).toContain("Sent to org admins and security leads.");
+    const { safeAppPath } = await import("../lib/notifications");
+    const n = db.notifications.find((x) => x.type === "webhook.disabled")!;
+    expect(safeAppPath(n.link)).toBe(`/orgs/${db.ORG_ID}/integrations`);
+  });
+
+  it("mock API follows the webhook contract: roles, URL checks, 409 at 20, Slack has no secret, the test limit, the log", async () => {
+    const hooks = `/orgs/${db.ORG_ID}/webhooks`;
+    expect((await call("GET", `/orgs/${db.ORG2_ID}/webhooks`)).status).toBe(403);
+    const listed = await call("GET", hooks);
+    expect(listed.json.data).toMatchObject({ available: true });
+    expect(Object.keys(listed.json.data!.items![0]!).sort()).toEqual(
+      ["consecutive_failures", "created_at", "created_by", "disabled_reason", "enabled", "events", "id", "kind", "last_delivery", "min_severity", "name", "project_ids", "updated_at", "url_hint"].sort(),
+    );
+
+    const bad = await call("POST", hooks, { kind: "slack", name: "", url: "http://10.0.0.5/x", events: [] });
+    expect(bad.status).toBe(422);
+    expect(bad.json.error?.metadata?.fields).toMatchObject({ name: expect.any(String), url: "must use https", events: expect.any(String) });
+    expect((await call("POST", hooks, { kind: "generic", name: "x", url: "https://10.0.0.5/x", events: ["scan.finished"] })).json.error?.metadata?.fields?.url).toBe(
+      "resolves to a private address",
+    );
+    expect((await call("POST", hooks, { kind: "slack", name: "x", url: "https://relay.acme.example/x", events: ["scan.finished"] })).json.error?.metadata?.fields?.url).toBe(
+      "Slack URLs start with https://hooks.slack.com/services/",
+    );
+
+    const before = db.webhooks[db.ORG_ID]!.length;
+    const made: string[] = [];
+    try {
+      const slack = await call("POST", hooks, { kind: "slack", name: "#ops", url: "https://hooks.slack.com/services/T0/B0/mock", events: ["scan.finished"] });
+      expect(slack.status).toBe(201);
+      expect(slack.json.data).toMatchObject({ secret: null, webhook: { url_hint: "https://hooks.slack.com" } });
+      const sw = (slack.json.data as { webhook: { id: string } }).webhook;
+      made.push(sw.id);
+      expect(JSON.stringify(slack.json)).not.toContain("/services/T0");
+      expect((await call("POST", `${hooks}/${sw.id}/rotate-secret`)).status).toBe(422);
+      const gen = await call("POST", hooks, { kind: "generic", name: "relay 2", url: "https://relay2.acme.example/hook", events: ["issue.assigned"] });
+      const gw = (gen.json.data as { webhook: { id: string }; secret: string }).webhook;
+      made.push(gw.id);
+      expect((gen.json.data as { secret: string }).secret).toMatch(/^whsec_/);
+      expect((await call("POST", `${hooks}/${gw.id}/rotate-secret`)).json.data).toMatchObject({ secret: expect.stringMatching(/^whsec_/) });
+      // Ten tests an hour, then 429.
+      for (let i = 0; i < 10; i++) expect((await call("POST", `${hooks}/${gw.id}/test`)).status).toBe(202);
+      expect((await call("POST", `${hooks}/${gw.id}/test`)).status).toBe(429);
+      // At most 20 per org.
+      while (db.webhooks[db.ORG_ID]!.length < 20) {
+        const r = await call("POST", hooks, { kind: "slack", name: "filler", url: "https://hooks.slack.com/services/T0/B0/fill", events: ["scan.finished"] });
+        made.push((r.json.data as { webhook: { id: string } }).webhook.id);
+      }
+      expect((await call("POST", hooks, { kind: "slack", name: "one too many", url: "https://hooks.slack.com/services/T0/B0/x", events: ["scan.finished"] })).status).toBe(409);
+    } finally {
+      for (const id of made) expect((await call("DELETE", `${hooks}/${id}`)).status).toBe(204);
+    }
+    expect(db.webhooks[db.ORG_ID]!.length).toBe(before);
+
+    // Turning the relay on again resets its failures.
+    const relay = db.webhooks[db.ORG_ID]!.find((w) => w.name === "Ticket relay")!;
+    const saved = { ...relay };
+    try {
+      const on = await call("PATCH", `${hooks}/${relay.id}`, { enabled: true });
+      expect(on.json.data).toMatchObject({ enabled: true, disabled_reason: null, consecutive_failures: 0 });
+      expect((await call("PATCH", `${hooks}/${relay.id}`, {})).status).toBe(422);
+    } finally {
+      Object.assign(relay, saved);
+    }
+
+    // The log pages 50 at a time, newest first.
+    const slackHook = db.webhooks[db.ORG_ID]!.find((w) => w.kind === "slack")!;
+    const page1 = await call("GET", `${hooks}/${slackHook.id}/deliveries`);
+    expect(page1.json.data!.items).toHaveLength(50);
+    expect(page1.json.data!.next_cursor).not.toBeNull();
+    const relayLog = await call("GET", `${hooks}/${relay.id}/deliveries`);
+    const errors = new Set(relayLog.json.data!.items!.map((d) => d.error));
+    for (const e of ["timeout", "dns", "connect", "tls", "blocked_address", "redirect", "http_status", "disabled", "key_unavailable"]) expect(errors).toContain(e);
+    expect(new Set(relayLog.json.data!.items!.map((d) => d.state))).toEqual(new Set(["pending", "delivered", "failed"]));
+
+    // History issues: source=history, and summaries carry no commit (only the issue does).
+    const hist = await call("GET", `/orgs/${db.ORG_ID}/issues?source=history`);
+    expect(hist.json.data!.items!.map((i) => i.target)).toEqual(["(history)", "(history)"]);
+    expect(hist.json.data!.items![0]).not.toHaveProperty("commit");
   });
 });

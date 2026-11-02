@@ -4585,3 +4585,151 @@ fieldset.policy-section > legend.policy-head + * {
     min-height: var(--touch-h);
   }
 }
+
+/* ---------- v0.4 wave 2: secrets in git history ---------- */
+.history-tag {
+  font-weight: 600;
+  background: var(--msg-warn-bg);
+  color: var(--msg-warn-fg);
+  border-color: var(--msg-warn-line);
+}
+.intel-marks .history-tag {
+  height: 18px;
+  padding: 0 5px;
+}
+.history-commits {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+}
+.history-truncated {
+  flex-basis: 100%;
+  margin: 0;
+}
+.history-note {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.history-card {
+  border-color: var(--msg-warn-line);
+}
+.history-commit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0;
+}
+.history-commit > svg {
+  color: var(--muted);
+}
+.history-commit > span:first-of-type {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.history-commit .sha {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--hover);
+  overflow-wrap: anywhere;
+}
+.history-rotate {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--msg-warn-line);
+  border-radius: var(--radius-panel);
+  background: var(--msg-warn-bg);
+  color: var(--ink);
+}
+.sans {
+  font-family: var(--font-sans);
+}
+
+/* ---------- v0.4 wave 2: Integrations (webhooks and Slack) ---------- */
+.hook-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hook-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.hook-row:first-child {
+  border-top: none;
+}
+.hook-row.selected {
+  background: var(--accent-tint);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.hook-main {
+  display: flex;
+  flex: 1 1 320px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.hook-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.hook-name {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.hook-hint,
+.hook-meta {
+  overflow-wrap: anywhere;
+}
+.hook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.hook-more {
+  min-width: 32px;
+  justify-content: center;
+}
+.hook-panel {
+  flex-basis: 400px;
+}
+.delivery-item .usage-project {
+  justify-content: space-between;
+}
+.hook-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-control);
+}
+.ci-switches {
+  margin: 4px -16px 12px;
+}
+.ci-switches .pref-row {
+  align-items: flex-start;
+}
+.ci-switches .switch {
+  margin-top: 2px;
+}
+@media (max-width: 800px) {
+  .hook-actions {
+    justify-content: flex-start;
+  }
+  .hook-actions .btn {
+    min-height: var(--touch-h);
+  }
+}

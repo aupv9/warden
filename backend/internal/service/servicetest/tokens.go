@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/service"
 )
 
@@ -172,6 +173,38 @@ func (f *Fake) ScanIssueCounts(_ context.Context, scan uuid.UUID) (service.Sever
 		}
 	}
 	return c, kev, nil
+}
+
+// AddScanReopen records that scan reopened issue, as results.Process does: a
+// system status_changed event with results.ReopenNote.
+func (f *Fake) AddScanReopen(issue, scan uuid.UUID) {
+	f.st.nextID++
+	note, from, to := results.ReopenNote(scan), "fixed", "reopened"
+	f.st.Events = append(f.st.Events, eventRow{ID: f.st.nextID, CreatedAt: f.tick(), NewEvent: service.NewEvent{
+		OrgID: f.st.Issues[issue].OrgID, IssueID: issue, Type: results.EventStatusChanged, From: &from, To: &to, Note: &note}})
+}
+
+// ScanNewIssues: created means IssueRow.ScanID (first seen) is the scan; reopened
+// means a system event with the scan's reopen note.
+func (f *Fake) ScanNewIssues(_ context.Context, scan uuid.UUID, issueIDs []uuid.UUID) ([]uuid.UUID, error) {
+	if err := f.fail("ScanNewIssues"); err != nil {
+		return nil, err
+	}
+	out := []uuid.UUID{}
+	for _, id := range issueIDs {
+		i, ok := f.st.Issues[id]
+		if !ok || i.OrgID != f.org {
+			continue
+		}
+		reopened := slices.ContainsFunc(f.st.Events, func(e eventRow) bool {
+			return e.IssueID == id && e.ActorID == nil && e.Type == results.EventStatusChanged && e.To != nil &&
+				*e.To == "reopened" && e.Note != nil && *e.Note == results.ReopenNote(scan)
+		})
+		if i.ScanID == scan || reopened {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 func (f *Fake) ScanIssues(_ context.Context, scan uuid.UUID, severities []string, kev bool, now time.Time, limit int) ([]service.IssueSummary, error) {

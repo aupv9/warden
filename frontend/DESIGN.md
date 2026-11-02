@@ -4,7 +4,8 @@ v0.1 was the first usable release: a team uploads code, sees issues, and works t
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
 projects, an Overview page and the MFA rule; see "v0.2 screens" below. v0.3 adds image scans,
 SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". v0.4 adds the
-component inventory (which projects use a package version), malicious-package advisories (OSV) and SPDX downloads;
+component inventory (which projects use a package version), malicious-package advisories (OSV) and SPDX downloads,
+and in its second wave secrets in git history, webhooks and Slack, and pull/merge request comments from the CLI;
 see "v0.4 screens". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
@@ -45,8 +46,10 @@ enforces them anyway.
 | 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates. Sign-in (org admin edits, security lead reads, hidden from members): the identity provider and the org's sign-in policy, see "Sign-in settings" |
 | 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
 | 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
+| 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook |
 
-Members without `view_audit_log` don't see "Audit log" in the navigation.
+Members without `view_audit_log` don't see "Audit log" in the navigation, and members don't see
+"Integrations".
 States, the upload flow, dialogs and the phone layout are specified below the screenshots.
 
 ## Screens in the app
@@ -167,6 +170,21 @@ navigation items or the bell; 01 and 03 are current.
 ![Components page in the dark theme](design/48-dark-components.png)
 ![Malicious-package issue in the dark theme](design/49-dark-issue-malicious.png)
 <img src="design/50-phone-used-in.png" alt="Phone: Used in as a full-screen sheet" width="260"> <img src="design/51-phone-issue-malicious.png" alt="Phone: malicious-package issue" width="260"> <img src="design/52-phone-component-filters.png" alt="Phone: component filters in a sheet" width="260">
+
+### 34. Integrations: webhooks and Slack (v0.4 wave 2)
+![Integrations: a Slack channel and a webhook turned off after failed deliveries](design/53-integrations.png)
+![The delivery log beside the list, every state and error in words](design/54-delivery-log.png)
+![Add dialog with the server's URL error under the field](design/55-add-webhook-errors.png)
+![A new webhook's signing secret, shown once](design/56-webhook-secret.png)
+
+### 35. Secrets in git history and CI setup (v0.4 wave 2)
+![Issue page with the Found in git history card](design/57-issue-history.png)
+![Scans tab: a history scan with its commits and the note under New scan](design/58-scan-history.png)
+![CI setup with both switches on](design/59-ci-setup.png)
+
+### 36. Dark theme and phone (v0.4 wave 2)
+![Integrations and the delivery log in the dark theme](design/60-dark-integrations.png)
+<img src="design/61-phone-integrations.png" alt="Phone: Integrations" width="260"> <img src="design/62-phone-delivery-log.png" alt="Phone: delivery log as a full-screen sheet" width="260"> <img src="design/63-phone-issue-history.png" alt="Phone: issue found in git history" width="260">
 
 ## Issue triage
 
@@ -545,6 +563,102 @@ the usual freshness, "n advisories · loaded …", and "n advisories skipped: ve
 supported" when the loader skipped some. The card says that an OSV advisory opens or reopens a
 Critical issue and never closes or hides one, while KEV and EPSS only rank.
 
+### Wave 2: secrets in git history
+
+A **history scan** (`kind: history`) reads every commit of a repository, not only the files of
+the current checkout. Only the CLI makes one: `warden scan --history` uploads a `git bundle` of the
+repository (a browser can't build one), and only Gitleaks runs. Its issues have the target
+`(history)`, so source scans and history scans never fix each other's issues.
+
+- **Scans tab:** history rows and the scan panel show a **Git history** tag and "n commits"
+  (`Scan.history.commits`); when `history.truncated`, "Only the newest n commits were scanned
+  (the server's limit)". The panel adds "Issues tracked under Git history", and "View issues"
+  opens the issue list with `?source=history`. The New scan card stays Source code / Container
+  image; under it a line says history scans come from CI (`warden scan --history`, needs the full
+  history: `fetch-depth: 0` / `GIT_DEPTH: 0`) with a link to the CI setup card.
+- **Issue list:** the Source filter gains **Git history** (`source=history`); a history issue
+  carries a small **History** tag beside the title. The Secrets view (`tool=gitleaks`) lists both.
+- **Issue page:** a **Found in git history** card first: "Added in commit `abc1234` on <date>"
+  (`commit.sha` shortened to 7, the full sha in the accessible name and a copy button; never a
+  link, the UI doesn't know the repository host), "and in n more commits" when `commit.count > 1`,
+  and the file and line from that commit. Then, in bold: **"Rotate this secret. Deleting the file
+  or the line doesn't remove it from history; anyone with a clone still has it."** It moves to
+  Fixed only when a later history scan no longer finds it in any commit (after the history is
+  rewritten). Where reads "<file>:<line> in commit abc1234"; How to fix falls back to the same
+  sentence. The snippet is the masked one, as for every secret.
+- **Project targets:** `GET …/targets` lists `(history)` with kind `history`. The Components tab
+  target filter and the issue list's Image filter leave it out (history scans have no components
+  and aren't images).
+
+### Wave 2: integrations (webhooks and Slack)
+
+`/orgs/:org/integrations`, "Integrations" under Organization in the navigation, for org admins and
+security leads (`manage_integrations`); members don't see it, and the page never calls the API for
+them. When `GET …/webhooks` says `available: false`, the page shows only a note: the operator must
+set `WARDEN_SECRETS__KEY` (README "Notifications"), and "Add" is hidden.
+
+- **List:** one row per webhook: name, a **Slack** or **Webhook** tag, `url_hint` as mono text
+  (never a link), events as short labels, "All projects" or "n projects", minimum severity, and
+  the state: Active, **Off** (turned off by someone), or **Turned off after failed deliveries**
+  (`disabled_reason: failures`, red) with "Turn on again". The last delivery ("Delivered 5 min
+  ago", "Failed 2 h ago · HTTP 500"). At most 20; "n of 20".
+- **Add / edit dialog:** type (Slack / Webhook, cards; fixed after creation), name (1–80), URL
+  (`type="url"`, `autocomplete="off"`, never echoed back: editing shows "Enter a new URL to replace
+  it" and an empty field), events (checkboxes, at least one: Scan finished, Issue assigned, Issue
+  reopened, Exception requested, Exception decided, Malicious package found), projects (All
+  projects, or a multi-select of up to 100), minimum severity for issue events (Any or one).
+  The server's URL errors map to the field ("must use https", "resolves to a private address",
+  "Slack URLs start with https://hooks.slack.com/services/"). A note says what is sent: keys,
+  titles, severities, statuses and links; never code, descriptions, comments, emails or secrets.
+- **Signing secret:** after creating a generic webhook, or after **Rotate secret** (confirm: "The
+  old secret stops working at once"), the dialog shows the `whsec_…` secret once with the same
+  rules as a new API token (warning banner, focused read-only mono box, Copy with a live region,
+  "Done"), plus how to verify it (Standard Webhooks headers, a link to README "Notifications").
+  Slack webhooks have no secret: the URL is the credential.
+- **Send test:** queues a `webhook.test` delivery and opens the delivery log, which polls every
+  5 s for a minute. 429 shows "You've sent 10 tests in the last hour. Try again later."
+- **Delivery log** (a panel beside the list from 1200 px, a dialog between 800 and 1200 px, a
+  full-screen sheet on phones, like "Used in"): newest first, 50 at a
+  time, "Load older": event type, state (Pending with the next attempt time, Delivered, Failed),
+  attempts, HTTP status, and the error in words (`timeout` "No answer within 10 seconds",
+  `dns` "The host name didn't resolve", `connect` "Couldn't connect", `tls` "TLS failed",
+  `blocked_address` "The host resolved to a private or internal address", `redirect` "The
+  endpoint answered with a redirect; Warden doesn't follow redirects", `http_status` "The
+  endpoint answered HTTP <status>", `disabled` "Not sent: the webhook was off",
+  `key_unavailable` "The server can't read this webhook's URL or secret; edit the URL or ask your
+  operator"). Response bodies are never shown (Warden doesn't keep them).
+- **Delete:** confirm dialog naming the webhook ("Its delivery log is deleted too").
+- **Notification:** the preference "Webhook turned off" (`webhook.disabled`, email on by
+  default; sent to org admins and security leads), linking to the Integrations page.
+
+### Wave 2: CI setup (Project settings)
+
+The CI setup card gains two switches that change the snippets:
+
+- **Comment on pull requests / merge requests** adds `--comment auto`. GitHub: the job needs
+  `permissions: pull-requests: write` and passes `GITHUB_TOKEN`; GitLab: a project access token
+  with `api` scope stored as the masked variable `WARDEN_GITLAB_TOKEN` (`CI_JOB_TOKEN` can't write
+  notes), and a rule on `$CI_PIPELINE_SOURCE == "merge_request_event"`. The note
+  says the comment lists counts and the blocking issues (severity, rule, file and line, link),
+  marks the new ones (`Gate.blocking_new`), is updated in place on every run, and never contains
+  code, descriptions or secrets. Warden itself keeps no GitHub or GitLab credentials.
+- **Scan git history** adds a second job on the default branch (scheduled nightly) with
+  `fetch-depth: 0` / `GIT_DEPTH: 0` and `warden scan --history` (GitHub: an `on: schedule` cron,
+  and the scan job skips scheduled runs; GitLab: a rule on a pipeline schedule for the default
+  branch, which the user creates). Both switches only change the snippet; nothing is saved, and
+  no snippet contains a token (`src/lib/history.test.ts`).
+
+### Mock mode (v0.4 wave 2)
+
+WEB has a history scan (2,481 commits, not truncated) with two history issues: an AWS access key
+added in 3 commits and a Slack token added in one, and an older history scan rejected with
+`BUNDLE_INCOMPLETE`. Acme Engineering has two webhooks: a Slack channel (Active, all projects,
+Critical and above, a log long enough for "Load older") and a generic webhook, "Ticket relay",
+turned off after failed deliveries, with a delivery log mixing every state and error; a test sent
+to it fails a few seconds later, to Slack it is delivered. A created webhook's secret is a plainly
+fake `whsec_…` built at runtime. `?mock_integrations=unavailable` shows the "operator must set the
+key" note; `?mock_role=member` hides the page.
+
 ### Mock mode (v0.4)
 
 Projects and issues now belong to one org: Acme Labs has its own project, LAB (the caller is a
@@ -623,7 +737,7 @@ people can search for it or quote it. Unknown codes fall back to the last row of
 
 ### Scan `error_code`
 
-A scan with status `failed` and a `ZIP_*`, `IMAGE_*` or `CHECKSUM_MISMATCH` code is shown as
+A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*` or `CHECKSUM_MISMATCH` code is shown as
 **Rejected** (the archive was refused before any scanner ran); any other failed scan is
 **Failed**. There is no `rejected` status in the API. History rows use the short text; the scan
 card uses the full text.
@@ -640,6 +754,9 @@ card uses the full text.
 | `IMAGE_INVALID` | not a docker save archive | The file isn't a docker save archive with one image. Create it with `docker save -o app.tar IMAGE` and upload the .tar as it is, not compressed. |
 | `IMAGE_TOO_LARGE` | image too large | The image is larger than Warden accepts (2 GB, or too many files or layers in the archive). Scan a smaller image, such as the final stage of a multi-stage build. |
 | `IMAGE_MULTIPLE` | more than one image | The archive holds more than one image. Save one image per file: `docker save -o app.tar IMAGE`. |
+| `BUNDLE_INVALID` | not a git bundle | The file isn't a git bundle Warden can read. Create it with `warden scan --history`, which runs `git bundle create`. |
+| `BUNDLE_INCOMPLETE` | shallow clone | The bundle doesn't hold the full history (it was made from a shallow clone). In CI, check out with `fetch-depth: 0` (GitHub) or `GIT_DEPTH: 0` (GitLab). |
+| `BUNDLE_TOO_LARGE` | history too large | The repository's history is larger than Warden accepts (or has too many branches and tags). Ask your operator about the limit. |
 | `CHECKSUM_MISMATCH` | file changed in upload | The stored file doesn't match the one you picked, so it was not scanned. Upload it again. |
 | `ALL_SCANNERS_FAILED` | every scanner failed | Every scanner failed, so there are no results. Each scanner's error is listed below. If it happens again, tell your operator. |
 | `TIMEOUT` | took over 30 min | The scan took longer than the 30-minute limit and was stopped. |
@@ -781,6 +898,12 @@ Below 800 px (screenshots in section 12):
 - **OSV links (v0.4)** are built only from ids matching `^MAL-\d{4}-\d{1,8}$` and open with
   `rel="noopener noreferrer"`; any other id is shown as text (`src/lib/malicious.test.ts`).
 - **SPDX downloads (v0.4)** use the SBOM download rules above; the app never reads either file.
+- **Webhooks (v0.4):** a webhook's URL is sent once (create, or a replacement on edit) and never
+  read back; the list shows `url_hint` as text, never as a link. The signing secret follows the
+  API token rules: dialog state only, dropped on close, never in TanStack Query's caches, the URL,
+  browser storage or a log. Commit shas are shown as text, never linked. The URL (and on edit a
+  replacement URL) reaches the mutation through a closure, not as mutation variables, which
+  TanStack Query keeps in its cache (`src/api/webhooks.test.ts`).
 
 ## Visual system
 
@@ -897,12 +1020,19 @@ In v0.4, in the design but not in the API contract:
 - An issue created or reopened by an advisory without a scan has no event type of its own; the UI
   relies on the server's note on the `created` (or `status_changed`) event.
 
+In v0.4 wave 2, in the design but not in the API contract:
+
+- The delivery log has no filter by state; a busy webhook's failures can scroll out of the first page.
+- `POST …/webhooks` answers 409 `CONFLICT` both for "20 webhooks already" and for "no secrets.key", so
+  the dialog can't say which (the page hides Add in both cases, so this only shows after a race).
+
 ## Not in v0.4
 
-Secrets in git history, webhook and Slack notifications, and PR/MR comments from the CLI (all
-planned for the second v0.4 wave); component history over time (the inventory keeps only the current
+Component history over time (the inventory keeps only the current
 components; each scan's SBOM keeps the rest); exporting the inventory; VEX; pulling images from a
-registry; secrets in image layers; Checkov severities.
+registry; secrets in image layers; Checkov severities. Microsoft Teams and other chat apps (a generic
+webhook can feed them through a relay); webhooks for SLA digests; incremental history scans (each
+history scan reads the whole bundle); comments on lines of the diff (the PR/MR comment is one summary).
 
 ## Not in v0.3
 

@@ -27,7 +27,8 @@ type CreateScanInput struct {
 	FileSize int64     `json:"file_size"`
 	SHA256   string    `json:"sha256"`
 	Tools    *[]string `json:"tools"`
-	// Kind is source (default: a .zip of code) or image (a docker save .tar).
+	// Kind is source (default: a .zip of code), image (a docker save .tar)
+	// or history (a git bundle, .bundle).
 	Kind     string  `json:"kind"`
 	Target   *string `json:"target"`
 	ImageRef *string `json:"image_ref"`
@@ -35,9 +36,13 @@ type CreateScanInput struct {
 
 // Scan kinds.
 const (
-	KindSource = orchestrator.KindSource
-	KindImage  = orchestrator.KindImage
+	KindSource  = orchestrator.KindSource
+	KindImage   = orchestrator.KindImage
+	KindHistory = orchestrator.KindHistory
 )
+
+// HistoryTarget is the target of every history scan and its issues.
+const HistoryTarget = orchestrator.HistoryTarget
 
 // ImageTarget is an image repository without tag or digest (the OpenAPI
 // CreateScanRequest.target pattern): lower-case path components, an optional
@@ -59,15 +64,23 @@ func ImageObjectKey(orgID, scanID uuid.UUID) string {
 	return fmt.Sprintf("scans/%s/%s.tar", orgID, scanID)
 }
 
+// HistoryObjectKey is where a history scan's git bundle lives in object storage.
+func HistoryObjectKey(orgID, scanID uuid.UUID) string {
+	return fmt.Sprintf("scans/%s/%s.bundle", orgID, scanID)
+}
+
 func (s *Service) validateScanInput(in CreateScanInput) fieldErrors {
 	fe := fieldErrors{}
-	image := in.Kind == KindImage
-	if in.Kind != "" && in.Kind != KindSource && !image {
-		fe.add("kind", "must be source or image")
+	image, history := in.Kind == KindImage, in.Kind == KindHistory
+	if in.Kind != "" && in.Kind != KindSource && !image && !history {
+		fe.add("kind", "must be source, image or history")
 	}
 	ext, maxBytes := ".zip", s.cfg.UploadMaxBytes
-	if image {
+	switch {
+	case image:
 		ext, maxBytes = ".tar", s.cfg.ImageUploadMaxBytes
+	case history:
+		ext, maxBytes = ".bundle", s.cfg.HistoryUploadMaxBytes
 	}
 	n := in.FileName
 	if !strings.HasSuffix(strings.ToLower(n), ext) || len(n) <= len(ext) || utf8.RuneCountInString(n) > 255 ||
@@ -82,6 +95,13 @@ func (s *Service) validateScanInput(in CreateScanInput) fieldErrors {
 	}
 	if in.Tools != nil && !validTools(*in.Tools) {
 		fe.add("tools", "must be a non-empty list of distinct tools: gitleaks, opengrep, trivy, checkov")
+	}
+	if history {
+		// Only Gitleaks reads a git bundle (in git mode); the other scanners
+		// read a source tree, and only Gitleaks output is redacted.
+		if in.Tools != nil && (len(*in.Tools) != 1 || (*in.Tools)[0] != "gitleaks") {
+			fe.add("tools", "history scans run gitleaks only")
+		}
 	}
 	if !image {
 		if in.Target != nil {
@@ -136,8 +156,11 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 			tools = *in.Tools
 		}
 		kind, target := KindSource, ""
-		if in.Kind == KindImage {
+		switch in.Kind {
+		case KindImage:
 			kind, target, tools = KindImage, *in.Target, []string{"trivy"}
+		case KindHistory:
+			kind, target, tools = KindHistory, HistoryTarget, []string{"gitleaks"}
 		}
 		if s.cfg.RateLimitPerHour > 0 {
 			if err := r.LockScanRate(ctx, a.UserID); err != nil {
@@ -154,8 +177,11 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		}
 		id := ids.New()
 		key := ObjectKey(a.OrgID, id)
-		if kind == KindImage {
+		switch kind {
+		case KindImage:
 			key = ImageObjectKey(a.OrgID, id)
+		case KindHistory:
+			key = HistoryObjectKey(a.OrgID, id)
 		}
 		sum := strings.ToLower(in.SHA256)
 		ns := NewScan{

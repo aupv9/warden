@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aupv9/warden/backend/internal/domain/autoassign"
+	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
 	"github.com/aupv9/warden/backend/internal/domain/issuestate"
 	"github.com/aupv9/warden/backend/internal/domain/licensepolicy"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
@@ -46,12 +47,19 @@ const (
 	EventAssigned        = "assigned"
 )
 
+// ReopenNote is the note of the status_changed event a scan writes when it
+// reopens an issue. The scan gate's blocking_new reads it back
+// (store.ScanNewIssues): issue_event has no scan column, and the note names
+// the scan exactly.
+func ReopenNote(scanID uuid.UUID) string { return "found again in scan " + scanID.String() }
+
 type Input struct {
 	OrgID, ProjectID, ScanID uuid.UUID
 	Status                   string // final scan status: completed or partial
-	// Target is the scan's target (the image repository; "" for source
-	// scans). Only the project's issues with this target are matched and
-	// auto-fixed, so image and source scans never close each other's issues.
+	// Target is the scan's target (the image repository, (history) for
+	// history scans; "" for source scans). Only the project's issues with this
+	// target are matched and auto-fixed, so image, history and source scans
+	// never close each other's issues.
 	Target   string
 	Runs     []sandbox.ToolRun
 	Findings map[string][]sarif.Finding
@@ -66,6 +74,14 @@ type Input struct {
 	Now        time.Time
 	// SBOM is recorded on the scan with the results, or not at all.
 	SBOM *SBOM
+	// History is recorded on a history scan: the commits Gitleaks read.
+	History *History
+}
+
+// History is a history scan's scan.history_commits and history_truncated.
+type History struct {
+	Commits   int
+	Truncated bool
 }
 
 // SBOM is the stored SBOM of a scan (scan.sbom_* columns): the CycloneDX
@@ -134,15 +150,23 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 		return Plan{}, fmt.Errorf("organization.license_policy: %w", err)
 	}
 	findings := in.Findings
+	if in.Target == fingerprint.HistoryPath {
+		// One finding per rule and secret, at the oldest commit that added it.
+		findings = map[string][]sarif.Finding{}
+		for tool, fs := range in.Findings {
+			findings[tool] = sarif.CollapseHistory(fs)
+		}
+	}
 	if SucceededTools(in.Runs)["trivy"] {
 		mal, err := MaliciousFindings(ctx, db, in.Packages)
 		if err != nil {
 			return Plan{}, err
 		}
 		if lic := append(LicenseFindings(in.Licenses, policy), mal...); len(lic) > 0 {
-			findings = map[string][]sarif.Finding{}
-			maps.Copy(findings, in.Findings)
-			findings["trivy"] = append(slices.Clone(findings["trivy"]), lic...)
+			all := map[string][]sarif.Finding{}
+			maps.Copy(all, findings)
+			all["trivy"] = append(slices.Clone(all["trivy"]), lic...)
+			findings = all
 		}
 	}
 	existing, err := loadIssues(ctx, db, in.ProjectID, in.Target)
@@ -317,7 +341,22 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 			return fmt.Errorf("record sbom: %w", err)
 		}
 	}
+	if h := a.in.History; h != nil {
+		if _, err := a.db.Exec(ctx, `UPDATE scan SET history_commits = $2, history_truncated = $3 WHERE id = $1`,
+			a.in.ScanID, h.Commits, h.Truncated); err != nil {
+			return fmt.Errorf("record history: %w", err)
+		}
+	}
 	return a.outbox(ctx, notify.ScanFinished, notify.Payload{ScanID: notify.ID(a.in.ScanID)})
+}
+
+// commit returns a history finding's issue.commit_sha, committed_at and
+// commit_count (all nil for other findings).
+func commit(f sarif.Finding) (sha *string, at *time.Time, count *int) {
+	if c := f.Commit; c != nil {
+		return &c.SHA, c.Date, &c.Count
+	}
+	return nil, nil, nil
 }
 
 // autoAssign returns the first matching rule (1-based) whose assignee is
@@ -342,16 +381,18 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 		}
 		status, assignee = issuestate.Assigned, &user
 	}
+	sha, committed, commits := commit(f)
 	_, err := a.db.Exec(ctx, `INSERT INTO issue (id, org_id, project_id, number, fingerprint, tool, rule_id, title,
 		description, remediation, severity, status, file_path, start_line, end_line, snippet, cwe, cve,
 		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id, target,
-		license_category)
+		license_category, commit_sha, committed_at, commit_count)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25, $26,
-		$27)`,
+		$27, $28, $29, $30)`,
 		id, a.in.OrgID, a.in.ProjectID, number, n.Fingerprint, f.Tool, f.RuleID, f.Title,
 		nullable(f.Description), nullable(f.Remediation), string(f.Severity), nullable(f.FilePath), f.StartLine, f.EndLine,
 		nullable(f.Snippet), f.CWE, f.CVE, nullable(f.PackageName), nullable(f.PackageVersion), nullable(f.FixedVersion),
-		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target, nullable(f.LicenseCategory))
+		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target, nullable(f.LicenseCategory),
+		sha, committed, commits)
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}
@@ -376,11 +417,14 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error {
 	f, id := s.Finding, s.Issue.ID
 	// Location and snippet follow the code (and the license category, Trivy's
-	// classification); this isn't a user-visible edit, so version and
-	// updated_at stay put.
+	// classification; for a secret in history, the oldest commit that added
+	// it, which a rewrite may change); this isn't a user-visible edit, so
+	// version and updated_at stay put.
+	sha, committed, commits := commit(f)
 	if _, err := a.db.Exec(ctx, `UPDATE issue SET last_seen_scan_id = $2, file_path = $3, start_line = $4, end_line = $5,
-		snippet = $6, license_category = $7 WHERE id = $1`, id, a.in.ScanID, nullable(f.FilePath), f.StartLine, f.EndLine,
-		nullable(f.Snippet), nullable(f.LicenseCategory)); err != nil {
+		snippet = $6, license_category = $7, commit_sha = $8, committed_at = $9, commit_count = $10 WHERE id = $1`,
+		id, a.in.ScanID, nullable(f.FilePath), f.StartLine, f.EndLine,
+		nullable(f.Snippet), nullable(f.LicenseCategory), sha, committed, commits); err != nil {
 		return fmt.Errorf("update issue: %w", err)
 	}
 	sev := s.Issue.Severity
@@ -396,7 +440,7 @@ func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error 
 	}
 	if s.Reopen {
 		due := a.sla.DueAt(sev, now)
-		changed, err := a.transition(ctx, s.Issue, issuestate.Reopened, due, "found again in scan "+a.in.ScanID.String())
+		changed, err := a.transition(ctx, s.Issue, issuestate.Reopened, due, ReopenNote(a.in.ScanID))
 		if err != nil {
 			return err
 		}
