@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -82,16 +83,37 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// VerifyAuditChain recomputes every hash of org's audit log in order and returns
-// the number of entries checked, or ErrChainBroken naming the first bad entry.
-func VerifyAuditChain(ctx context.Context, q Querier, orgID uuid.UUID) (int, error) {
+// ChainError names the first entry that doesn't verify; it is ErrChainBroken.
+type ChainError struct {
+	ID     int64
+	Reason string
+}
+
+func (e *ChainError) Error() string {
+	return fmt.Sprintf("%v: entry %d %s", ErrChainBroken, e.ID, e.Reason)
+}
+func (e *ChainError) Unwrap() error { return ErrChainBroken }
+
+// AuditCheck is the result of CheckAuditChain.
+type AuditCheck struct {
+	// Entries is the size of the org's log; Good the entries before the first
+	// bad one (all of them when Bad is nil).
+	Entries, Good int
+	Bad           *ChainError
+}
+
+// CheckAuditChain recomputes every hash of org's audit log in id order (the
+// chain's order: Append takes the org's lock before the id is drawn). After
+// the first bad entry the rest are only counted.
+func CheckAuditChain(ctx context.Context, q Querier, orgID uuid.UUID) (AuditCheck, error) {
+	var out AuditCheck
 	rows, err := q.Query(ctx, `SELECT id, actor_id, action, target_type, target_id, host(ip), user_agent, data::text,
 		coalesce(prev_hash, ''), hash, created_at FROM audit_log WHERE org_id = $1 ORDER BY id`, orgID)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	defer rows.Close()
-	prev, n := "", 0
+	prev := ""
 	for rows.Next() {
 		var (
 			id       int64
@@ -102,24 +124,81 @@ func VerifyAuditChain(ctx context.Context, q Querier, orgID uuid.UUID) (int, err
 		)
 		if err := rows.Scan(&id, &row.ActorID, &row.Action, &row.TargetType, &row.TargetID, &row.IP, &row.UserAgent,
 			&data, &prevHash, &hash, &row.CreatedAt); err != nil {
-			return n, err
+			return out, err
+		}
+		out.Entries++
+		if out.Bad != nil {
+			continue
 		}
 		if row.IP != nil {
 			row.IP = normIP(*row.IP)
 		}
 		row.Data = []byte(data)
 		if prevHash != prev {
-			return n, fmt.Errorf("%w: entry %d doesn't link to its predecessor", ErrChainBroken, id)
+			out.Bad = &ChainError{ID: id, Reason: "doesn't link to its predecessor"}
+			continue
 		}
 		want, err := ChainHash(prev, row)
 		if err != nil {
-			return n, err
+			return out, err
 		}
 		if want != hash {
-			return n, fmt.Errorf("%w: entry %d was modified", ErrChainBroken, id)
+			out.Bad = &ChainError{ID: id, Reason: "was modified"}
+			continue
 		}
 		prev = hash
-		n++
+		out.Good++
 	}
-	return n, rows.Err()
+	return out, rows.Err()
+}
+
+// VerifyAuditChain recomputes every hash of org's audit log in order and returns
+// the number of good entries, and a *ChainError naming the first bad entry.
+func VerifyAuditChain(ctx context.Context, q Querier, orgID uuid.UUID) (int, error) {
+	c, err := CheckAuditChain(ctx, q, orgID)
+	if err != nil {
+		return c.Good, err
+	}
+	if c.Bad != nil {
+		return c.Good, c.Bad
+	}
+	return c.Good, nil
+}
+
+// LockAuditVerify serializes POST /audit-log/verify per org, so its rate
+// limit holds across API instances. A lock of its own: the chain's lock
+// (auditlog.Append) would block every audited write in the org during the check.
+func (r *Repo) LockAuditVerify(ctx context.Context, orgID uuid.UUID) error {
+	_, err := r.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('warden.audit_verify:' || $1::text, 0))`, orgID)
+	return err
+}
+
+// AuditSince counts the org's entries of one action (by one actor, if set)
+// created after since, and returns the oldest one's time (zero if none).
+func (r *Repo) AuditSince(ctx context.Context, q service.AuditCount) (int, time.Time, error) {
+	var (
+		a      args
+		n      int
+		oldest *time.Time
+	)
+	sql := `SELECT count(*), min(created_at) FROM audit_log WHERE org_id = ` + a.add(q.OrgID) + ` AND action = ` + a.add(q.Action) +
+		` AND created_at > ` + a.add(q.Since)
+	if q.ActorID != nil {
+		sql += ` AND actor_id = ` + a.add(*q.ActorID)
+	}
+	err := r.tx.QueryRow(ctx, sql, a...).Scan(&n, &oldest)
+	if oldest == nil {
+		return n, time.Time{}, mapErr(err)
+	}
+	return n, *oldest, mapErr(err)
+}
+
+// VerifyAudit checks the org's chain in the caller's transaction.
+func (r *Repo) VerifyAudit(ctx context.Context, orgID uuid.UUID) (service.AuditChain, error) {
+	c, err := CheckAuditChain(ctx, r.tx, orgID)
+	out := service.AuditChain{Entries: c.Entries}
+	if c.Bad != nil {
+		out.FirstBadID = &c.Bad.ID
+	}
+	return out, err
 }

@@ -25,6 +25,31 @@ type ComponentRepo interface {
 	ComponentUsage(ctx context.Context, q ComponentUsageQuery) ([]ComponentUsage, error)
 	ProjectComponents(ctx context.Context, q ProjectComponentQuery) ([]ProjectComponent, error)
 	ProjectTargets(ctx context.Context, projectID uuid.UUID) ([]ProjectTarget, error)
+	// OrgTargets is ProjectTargets over every visible, unarchived project.
+	OrgTargets(ctx context.Context, q OrgTargetQuery) ([]OrgTarget, error)
+	// ComponentEcosystems counts distinct (name, version) per ecosystem, in
+	// the same scope as Components.
+	ComponentEcosystems(ctx context.Context, v Visibility, projectID *uuid.UUID) ([]EcosystemCount, error)
+}
+
+// OrgTargetQuery is a validated GET /targets.
+type OrgTargetQuery struct {
+	Vis       Visibility
+	ProjectID *uuid.UUID // API tokens: their own project only
+	Kind      string     // "", KindSource, KindImage or KindHistory
+}
+
+// OrgTarget is a ProjectTarget with its project.
+type OrgTarget struct {
+	ProjectID   uuid.UUID `json:"project_id"`
+	ProjectKey  string    `json:"project_key"`
+	ProjectName string    `json:"project_name"`
+	ProjectTarget
+}
+
+type EcosystemCount struct {
+	Ecosystem  string `json:"ecosystem"`
+	Components int    `json:"components"`
 }
 
 // NamePrefix matches component.match_name by prefix, in one ecosystem or ("")
@@ -72,12 +97,16 @@ type ComponentUsageQuery struct {
 	Limit     int
 }
 
-// ProjectComponentCursor positions a project's component list.
+// ProjectComponentCursor positions a project's component list: malicious
+// first, then match name, version, ecosystem, target, path (the table's
+// unique key). Malicious is a pointer so that a cursor from before that order
+// (without "m") is rejected rather than read as "not malicious".
 type ProjectComponentCursor struct {
-	Target    string `json:"t"`
+	Malicious *bool  `json:"m"`
 	MatchName string `json:"n"`
-	Ecosystem string `json:"e"`
 	Version   string `json:"v"`
+	Ecosystem string `json:"e"`
+	Target    string `json:"t"`
 	Path      string `json:"p"`
 }
 
@@ -331,7 +360,7 @@ func (s *Service) ProjectComponents(ctx context.Context, a *Actor, projectID uui
 	}
 	if f.Cursor != "" {
 		c := &ProjectComponentCursor{}
-		if decodeCursor(f.Cursor, c) != nil {
+		if decodeCursor(f.Cursor, c) != nil || c.Malicious == nil {
 			fe.add("cursor", "invalid cursor")
 		} else {
 			q.After = c
@@ -356,7 +385,8 @@ func (s *Service) ProjectComponents(ctx context.Context, a *Actor, projectID uui
 			return err
 		}
 		out.Items, out.NextCursor = page(rows, q.Limit, func(c ProjectComponent) any {
-			return ProjectComponentCursor{Target: c.Target, MatchName: c.MatchName, Ecosystem: c.Ecosystem, Version: c.Version, Path: c.Path}
+			return ProjectComponentCursor{Malicious: &c.Malicious, MatchName: c.MatchName, Version: c.Version, Ecosystem: c.Ecosystem,
+				Target: c.Target, Path: c.Path}
 		})
 		return nil
 	})
@@ -375,6 +405,62 @@ func (s *Service) ProjectTargets(ctx context.Context, a *Actor, projectID uuid.U
 			return errForbidden()
 		}
 		rows, err := r.ProjectTargets(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		if rows != nil {
+			out.Items = rows
+		}
+		return nil
+	})
+	return out, err
+}
+
+// OrgTargets lists the targets of every project the caller can see, for the
+// issue list's Image filter without a project: the issue list's visibility
+// (archived projects left out), ordered by project key, then target.
+func (s *Service) OrgTargets(ctx context.Context, a *Actor, kind string) (Items[OrgTarget], error) {
+	out := Items[OrgTarget]{Items: []OrgTarget{}}
+	err := s.inOrg(ctx, a, func(r Repo) error {
+		switch kind {
+		case "", KindSource, KindImage, KindHistory:
+		default:
+			return errField("kind", "must be source, image or history")
+		}
+		q := OrgTargetQuery{Vis: a.vis(), Kind: kind}
+		// The API doesn't route tokens here; if one gets here, it sees only its project.
+		if a.Token != nil {
+			q.ProjectID = &a.Token.ProjectID
+			if _, err := projectAccess(ctx, r, a, *q.ProjectID); err != nil {
+				return err
+			}
+		}
+		rows, err := r.OrgTargets(ctx, q)
+		if err != nil {
+			return err
+		}
+		if rows != nil {
+			out.Items = rows
+		}
+		return nil
+	})
+	return out, err
+}
+
+// ComponentEcosystems counts the inventory per ecosystem, in the projects the
+// caller can see (GET /components' scope).
+func (s *Service) ComponentEcosystems(ctx context.Context, a *Actor) (Items[EcosystemCount], error) {
+	out := Items[EcosystemCount]{Items: []EcosystemCount{}}
+	err := s.inOrg(ctx, a, func(r Repo) error {
+		var projectID *uuid.UUID
+		// The API doesn't route tokens here; if one gets here, it sees only its project.
+		if a.Token != nil {
+			projectID = &a.Token.ProjectID
+			if _, err := projectAccess(ctx, r, a, *projectID); err != nil {
+				return err
+			}
+		}
+		rows, err := r.ComponentEcosystems(ctx, a.vis(), projectID)
 		if err != nil {
 			return err
 		}

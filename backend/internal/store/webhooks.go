@@ -129,11 +129,14 @@ func (r *Repo) WebhookTestsSince(ctx context.Context, webhookID uuid.UUID, since
 	return n, *oldest, err
 }
 
-func (r *Repo) WebhookDeliveries(ctx context.Context, webhookID uuid.UUID, since time.Time, after *service.DeliveryCursor, limit int) ([]service.WebhookDelivery, error) {
+func (r *Repo) WebhookDeliveries(ctx context.Context, webhookID uuid.UUID, since time.Time, state string, after *service.DeliveryCursor, limit int) ([]service.WebhookDelivery, error) {
 	var a args
 	q := `SELECT id, type, state, attempts, status_code, error, created_at, last_attempt_at,
 			CASE WHEN state = 'pending' THEN next_at END, delivered_at
 		FROM webhook_delivery WHERE webhook_id = ` + a.add(webhookID) + ` AND created_at >= ` + a.add(since)
+	if state != "" {
+		q += ` AND state = ` + a.add(state)
+	}
 	if after != nil {
 		q += ` AND (created_at, id) < (` + a.add(after.CreatedAt) + `, ` + a.add(after.ID) + `)`
 	}

@@ -139,8 +139,9 @@ type WebhookRepo interface {
 	// WebhookTestsSince counts the webhook's test deliveries created after
 	// since and returns the oldest one's time (zero if none).
 	WebhookTestsSince(ctx context.Context, webhookID uuid.UUID, since time.Time) (int, time.Time, error)
-	// WebhookDeliveries lists deliveries created at or after since, newest first.
-	WebhookDeliveries(ctx context.Context, webhookID uuid.UUID, since time.Time, after *DeliveryCursor, limit int) ([]WebhookDelivery, error)
+	// WebhookDeliveries lists deliveries created at or after since, newest
+	// first, in one state ("" for any).
+	WebhookDeliveries(ctx context.Context, webhookID uuid.UUID, since time.Time, state string, after *DeliveryCursor, limit int) ([]WebhookDelivery, error)
 }
 
 // Optional is a PATCH field that may be absent, null or a value.
@@ -181,8 +182,14 @@ type UpdateWebhookInput struct {
 	Enabled     *bool            `json:"enabled"`
 }
 
+// errWebhooksUnavailable and errWebhookLimit have their own codes so a client
+// can tell "ask your operator" from "delete one first" without parsing text.
 func errWebhooksUnavailable() error {
-	return errConflict("webhooks are unavailable: the server has no secrets.key (ask your operator)")
+	return apperrors.Conflict("SECRETS_KEY_MISSING", "webhooks are unavailable: the server has no secrets.key (ask your operator)")
+}
+
+func errWebhookLimit() error {
+	return apperrors.Conflict("WEBHOOK_LIMIT", fmt.Sprintf("an organization can have at most %d webhooks", webhook.MaxPerOrg))
 }
 
 func errWebhookKey() error {
@@ -341,7 +348,7 @@ func (s *Service) CreateWebhook(ctx context.Context, a *Actor, in CreateWebhookI
 		if n, err := r.CountWebhooks(ctx); err != nil {
 			return err
 		} else if n >= webhook.MaxPerOrg {
-			return errConflict(fmt.Sprintf("an organization can have at most %d webhooks", webhook.MaxPerOrg))
+			return errWebhookLimit()
 		}
 		id := ids.New()
 		var raw []byte
@@ -590,9 +597,18 @@ func errTestRateLimited(retryAfter time.Duration) error {
 		WithHTTPStatus(http.StatusTooManyRequests).WithMetadata("retry_after", secs)
 }
 
-// WebhookDeliveries lists a webhook's deliveries of the last 30 days, newest first.
-func (s *Service) WebhookDeliveries(ctx context.Context, a *Actor, id uuid.UUID, p PageParams) (Page[WebhookDelivery], error) {
+// DeliveryFilter is the raw query of GET /webhooks/{id}/deliveries.
+type DeliveryFilter struct {
+	// State: "" (any), pending, delivered or failed.
+	State string
+	PageParams
+}
+
+// WebhookDeliveries lists a webhook's deliveries of the last 30 days, newest
+// first, optionally only those in one state.
+func (s *Service) WebhookDeliveries(ctx context.Context, a *Actor, id uuid.UUID, f DeliveryFilter) (Page[WebhookDelivery], error) {
 	var out Page[WebhookDelivery]
+	p := f.PageParams
 	limit := DefaultLimit
 	if p.Limit != "" {
 		n, err := strconv.Atoi(p.Limit)
@@ -612,10 +628,15 @@ func (s *Service) WebhookDeliveries(ctx context.Context, a *Actor, id uuid.UUID,
 		if err := integrations(a); err != nil {
 			return err
 		}
+		switch f.State {
+		case "", "pending", "delivered", "failed":
+		default:
+			return errField("state", "must be pending, delivered or failed")
+		}
 		if _, err := r.Webhook(ctx, id, false); err != nil {
 			return notFound(err)
 		}
-		rows, err := r.WebhookDeliveries(ctx, id, s.now().UTC().Add(-webhook.Retention), after, limit+1)
+		rows, err := r.WebhookDeliveries(ctx, id, s.now().UTC().Add(-webhook.Retention), f.State, after, limit+1)
 		if err != nil {
 			return err
 		}
