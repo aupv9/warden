@@ -9,7 +9,7 @@ import { flattenPages } from "../api/paging";
 import { ISSUE_STATUSES, SEVERITIES, TOOLS } from "../api/types";
 import type { IssueSort, IssueStatus, IssueSummary, OrgMember, Project, Severity, SeverityCounts, Tool } from "../api/types";
 import { Avatar, ProjectDot } from "../components/Avatar";
-import { MaliciousTag, SeverityMark, StatusMark } from "../components/Badges";
+import { HistoryTag, MaliciousTag, SeverityMark, StatusMark } from "../components/Badges";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Select } from "../components/Field";
@@ -44,6 +44,7 @@ import {
 import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, StatusFilter } from "../lib/issueFilters";
 import { formatEpss, isImageTarget, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
 import { isMaliciousIssue } from "../lib/malicious";
+import { isHistoryIssue } from "../lib/history";
 import { useIssueCounts } from "../api/hooks/metrics";
 import type { IssueCounts } from "../api/types";
 import { can } from "../lib/permissions";
@@ -68,7 +69,7 @@ const SORT_OPTIONS: Option[] = [
 ];
 
 const KIND_OPTIONS: Option[] = [{ value: "", label: "Any type" }, ...ISSUE_KINDS.map((k) => ({ value: k, label: KIND_LABELS[k] }))];
-const SOURCE_OPTIONS: Option[] = [{ value: "", label: "Code and images" }, ...ISSUE_SOURCES.map((k) => ({ value: k, label: SOURCE_LABELS[k] }))];
+const SOURCE_OPTIONS: Option[] = [{ value: "", label: "Any source" }, ...ISSUE_SOURCES.map((k) => ({ value: k, label: SOURCE_LABELS[k] }))];
 const EPSS_OPTIONS: Option[] = [{ value: "", label: "Any EPSS" }, ...EPSS_PRESETS.map((n) => ({ value: String(n), label: epssMinText(n) }))];
 
 type GroupBy = "severity" | "none";
@@ -1045,6 +1046,8 @@ function whereText(i: IssueSummary): string {
     const v = `${i.package_version ?? ""}${i.fixed_version ? ` → ${i.fixed_version}` : ""}`;
     where = i.file_path ? `${i.file_path} · ${v}` : v;
   } else where = location(i.file_path, i.start_line);
+  // v0.4 wave 2: a history issue's target is "(history)"; the History tag says it instead.
+  if (isHistoryIssue(i)) return where;
   // v0.3: issues from an image scan say which image first.
   return i.target ? [i.target, where].filter(Boolean).join(" · ") : where;
 }
@@ -1052,6 +1055,14 @@ function whereText(i: IssueSummary): string {
 /** v0.3: KEV and EPSS beside the title of a dependency vulnerability (ranking signals, never
  *  instead of the severity), and a tag on license-policy issues. */
 function IntelMarks({ issue: i }: { issue: IssueSummary }) {
+  // v0.4 wave 2: a secret found in git history (a history scan).
+  if (isHistoryIssue(i)) {
+    return (
+      <span className="intel-marks">
+        <HistoryTag />
+      </span>
+    );
+  }
   // v0.4: a malicious package is said in red next to the title (with the label, not colour alone).
   if (isMaliciousIssue(i)) {
     return (

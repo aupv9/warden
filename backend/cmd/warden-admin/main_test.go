@@ -23,6 +23,7 @@ func TestUsageErrors(t *testing.T) {
 		{"user", "relink", "--email", "a@b.c", "--sub", "s", "--next-sign-in"}, // both
 		{"user", "relink", "--sub", "s"},
 		{"user", "relink", "--email", "a@b.c", "--next-sign-in", "--within", "soon"},
+		{"secrets", "rotate", "--now"},
 	} {
 		var out, errOut bytes.Buffer
 		if code := run(args, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "usage:") {

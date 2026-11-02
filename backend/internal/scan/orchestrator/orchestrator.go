@@ -3,9 +3,11 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
+	"github.com/aupv9/warden/backend/internal/scan/bundlecheck"
 	"github.com/aupv9/warden/backend/internal/scan/imagecheck"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
@@ -47,8 +50,9 @@ type Job struct {
 	SHA256    string   `json:"sha256"`
 	Tools     []string `json:"tools"`
 	Attempt   int      `json:"attempt"`
-	// Kind is source (a zip) or image (a docker save tarball, Trivy only);
-	// Target is the image repository. Both are set by the worker from the scan row.
+	// Kind is source (a zip), image (a docker save tarball, Trivy only) or
+	// history (a git bundle, Gitleaks only); Target is the image repository,
+	// or HistoryTarget. Both are set by the worker from the scan row.
 	Kind   string `json:"kind,omitempty"`
 	Target string `json:"target,omitempty"`
 	// ProjectKey names the SBOM's root component (set by the worker from the database).
@@ -57,9 +61,13 @@ type Job struct {
 
 // Scan kinds (scan.kind).
 const (
-	KindSource = "source"
-	KindImage  = "image"
+	KindSource  = "source"
+	KindImage   = "image"
+	KindHistory = "history"
 )
+
+// HistoryTarget is every history scan's target (migration 00011).
+const HistoryTarget = fingerprint.HistoryPath
 
 func (j Job) kind() string {
 	if j.Kind == "" {
@@ -82,8 +90,18 @@ type Outcome struct {
 	// SBOM: Trivy's CycloneDX SBOM, stamped; nil when there is none.
 	SBOM *sbom.Stamped
 	// SPDX: Trivy's SPDX SBOM, stamped; nil when there is none.
-	SPDX     *sbom.Stamped
+	SPDX *sbom.Stamped
+	// History: how many commits a history scan read, when Gitleaks succeeded.
+	History  *History
 	Warnings []string
+}
+
+// History is what warden-gitleaks reports about a history scan
+// (sandbox.ArtifactHistory): the commits Gitleaks read, and whether
+// HistoryMaxCommits cut the history short.
+type History struct {
+	Commits   int
+	Truncated bool
 }
 
 // Limits come from the configuration (scan.*).
@@ -91,6 +109,11 @@ type Limits struct {
 	Zip zipcheck.Limits
 	// ImageMaxBytes caps image tarballs (scan.image_upload_max_mb).
 	ImageMaxBytes int64
+	// HistoryMaxBytes caps git bundles (scan.history_upload_max_mb), and
+	// HistoryMaxCommits how many commits a history scan reads
+	// (scan.history_max_commits, the newest).
+	HistoryMaxBytes   int64
+	HistoryMaxCommits int
 }
 
 // Deps is everything the orchestrator needs from storage, the database and Docker.
@@ -136,14 +159,10 @@ func Execute(ctx context.Context, job Job, deps Deps) (out *Outcome, err error) 
 }
 
 func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome, error) {
-	image := job.Kind == KindImage
-	tools := sandbox.Tools
-	if image {
-		tools = sandbox.ImageTools
-	}
+	kind := job.kind()
 	for _, t := range job.Tools {
-		if _, ok := tools[t]; !ok {
-			return nil, fmt.Errorf("unknown tool %q for a %s scan", t, job.kind())
+		if !knownTool(kind, t) {
+			return nil, fmt.Errorf("unknown tool %q for a %s scan", t, kind)
 		}
 	}
 	if err := deps.SetStatus(ctx, job.ScanID, Running); err != nil {
@@ -155,9 +174,18 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 	srcDir := filepath.Join(scanDir, "src")
 	var src *prepared
 	var err error
-	if image {
-		src, err = prepareImage(ctx, job, deps, scanDir, srcDir)
-	} else {
+	switch kind {
+	case KindImage:
+		src, err = prepareFile(ctx, job, deps, scanDir, srcDir, "image.tar", func(p string) error {
+			_, err := imagecheck.Check(p, imagecheck.Limits{MaxBytes: deps.Limits().ImageMaxBytes})
+			return err
+		})
+	case KindHistory:
+		src, err = prepareFile(ctx, job, deps, scanDir, srcDir, "repo.bundle", func(p string) error {
+			_, err := bundlecheck.Check(p, bundlecheck.Limits{MaxBytes: deps.Limits().HistoryMaxBytes})
+			return err
+		})
+	default:
 		src, err = prepareSource(ctx, job, deps, scanDir, srcDir)
 	}
 	if code, ok := rejection(job, err); ok {
@@ -181,6 +209,9 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 	if cancelled {
 		return &Outcome{Status: Cancelled, Warnings: src.warnings}, nil
 	}
+	if code, ok := historyRejection(job, runs); ok {
+		return &Outcome{Status: Failed, ErrorCode: code, Runs: runs}, nil
+	}
 
 	out := &Outcome{Runs: runs, Warnings: src.warnings, Findings: map[string][]sarif.Finding{}}
 	for i := range runs {
@@ -188,7 +219,10 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		if run.Status != sandbox.Succeeded || run.Sarif == "" {
 			continue
 		}
-		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target)
+		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory)
+		if err == nil && kind == KindHistory {
+			out.History, err = loadHistory(run.Artifacts[sandbox.ArtifactHistory], deps.Limits().HistoryMaxCommits)
+		}
 		if err != nil {
 			slog.Warn("scanner output rejected", "scan_id", job.ScanID, "tool", run.Tool, "err", err)
 			run.Status, run.Error = sandbox.Failed, err.Error()
@@ -234,7 +268,91 @@ func rejection(job Job, err error) (string, bool) {
 		slog.Info("scan rejected", "scan_id", job.ScanID, "code", ir.Code, "detail", ir.Detail)
 		return ir.Code, true
 	}
+	var br *bundlecheck.Rejected
+	if errors.As(err, &br) {
+		slog.Info("scan rejected", "scan_id", job.ScanID, "code", br.Code, "detail", br.Detail)
+		return br.Code, true
+	}
 	return "", false
+}
+
+// knownTool: image scans run Trivy only, history scans Gitleaks only.
+func knownTool(kind, tool string) bool {
+	switch kind {
+	case KindImage:
+		_, ok := sandbox.ImageTools[tool]
+		return ok
+	case KindHistory:
+		return slices.Contains(sandbox.HistoryToolNames, tool)
+	}
+	_, ok := sandbox.Tools[tool]
+	return ok
+}
+
+// historyRejection: git, in the sandbox, found the bundle unusable. bundlecheck
+// reads only the header and the pack's framing, so a shallow clone's bundle
+// (no prerequisites, but the boundary's parents missing) or objects that fail
+// fsck show up only there; they are rejections of the upload like the others.
+func historyRejection(job Job, runs []sandbox.ToolRun) (string, bool) {
+	if job.kind() != KindHistory {
+		return "", false
+	}
+	for _, r := range runs {
+		if r.Tool != "gitleaks" || r.Status != sandbox.Failed {
+			continue
+		}
+		code := ""
+		switch r.ExitCode {
+		case sandbox.ExitHistoryIncomplete:
+			code = bundlecheck.CodeIncomplete
+		case sandbox.ExitHistoryUnreadable:
+			code = bundlecheck.CodeInvalid
+		default:
+			continue
+		}
+		slog.Info("scan rejected", "scan_id", job.ScanID, "code", code, "detail", "git could not fetch the bundle")
+		return code, true
+	}
+	return "", false
+}
+
+// maxHistoryArtifact bounds history.json; the sandbox caps it too.
+const maxHistoryArtifact = 256
+
+// loadHistory reads the history report warden-gitleaks wrote: exactly
+// {"commits": n, "truncated": b}, n at most the commit limit. It comes out of
+// the sandbox, so it is checked like any scanner output; without it the
+// run's results can't be trusted to cover the history.
+func loadHistory(path string, maxCommits int) (*History, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%w: gitleaks wrote no history report (or one over the size cap)", sarif.ErrSARIF)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxHistoryArtifact+1))
+	if err != nil {
+		return nil, err
+	}
+	var v struct {
+		Commits   *int  `json:"commits"`
+		Truncated *bool `json:"truncated"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	err = dec.Decode(&v)
+	if err == nil {
+		if _, terr := dec.Token(); !errors.Is(terr, io.EOF) {
+			err = errors.New("trailing data")
+		}
+	}
+	if err != nil || len(raw) > maxHistoryArtifact || v.Commits == nil || v.Truncated == nil ||
+		*v.Commits < 0 || *v.Commits > maxCommits {
+		return nil, fmt.Errorf("%w: invalid history report", sarif.ErrSARIF)
+	}
+	return &History{Commits: *v.Commits, Truncated: *v.Truncated}, nil
 }
 
 // prepareSource downloads the zip, verifies and extracts it into src/.
@@ -253,24 +371,26 @@ func prepareSource(ctx context.Context, job Job, deps Deps, scanDir, srcDir stri
 	return &prepared{rootDir: extracted.RootDir, warnings: extracted.Warnings}, nil
 }
 
-// prepareImage downloads the tarball, verifies it (imagecheck: it is never
-// extracted) and puts it at src/image.tar, read-only, for the sandbox to mount.
-func prepareImage(ctx context.Context, job Job, deps Deps, scanDir, srcDir string) (*prepared, error) {
-	tarPath := filepath.Join(scanDir, "image.tar")
-	if err := deps.Download(ctx, job.ObjectKey, tarPath); err != nil {
+// prepareFile downloads an upload that is scanned as one file (an image
+// tarball, a git bundle), verifies its checksum and checks it (imagecheck,
+// bundlecheck: it is never extracted), then puts it at src/<name>, read-only,
+// for the sandbox to mount. No scanner runs unless check passed.
+func prepareFile(ctx context.Context, job Job, deps Deps, scanDir, srcDir, name string, check func(string) error) (*prepared, error) {
+	path := filepath.Join(scanDir, name)
+	if err := deps.Download(ctx, job.ObjectKey, path); err != nil {
 		return nil, err
 	}
-	if err := zipcheck.VerifyChecksum(tarPath, job.SHA256); err != nil {
+	if err := zipcheck.VerifyChecksum(path, job.SHA256); err != nil {
 		return nil, err
 	}
-	if _, err := imagecheck.Check(tarPath, imagecheck.Limits{MaxBytes: deps.Limits().ImageMaxBytes}); err != nil {
+	if err := check(path); err != nil {
 		return nil, err
 	}
 	if err := os.Mkdir(srcDir, 0o755); err != nil {
 		return nil, err
 	}
-	dest := filepath.Join(srcDir, "image.tar")
-	if err := os.Rename(tarPath, dest); err != nil {
+	dest := filepath.Join(srcDir, name)
+	if err := os.Rename(path, dest); err != nil {
 		return nil, err
 	}
 	// The sandbox user (65532) reads it; nobody writes it. RemoveAll undoes this.
@@ -289,9 +409,10 @@ func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipch
 
 // parseRun parses a tool's SARIF and, for Trivy, its JSON report: the
 // licenses and packages (returned with FilePath set), and for image scans the
-// OS that names OS package findings. imageTarget is "" for source scans.
-func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string) ([]sarif.Finding, *trivyjson.Report, error) {
-	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir}
+// OS that names OS package findings. imageTarget is "" for source scans;
+// history is set for history scans (Gitleaks in git mode).
+func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool) ([]sarif.Finding, *trivyjson.Report, error) {
+	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history}
 	var rep *trivyjson.Report
 	if run.Tool == "trivy" {
 		// The SARIF is converted from this report: without it (or with a

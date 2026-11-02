@@ -25,6 +25,8 @@ type Config struct {
 	UploadMaxBytes int64
 	// ImageUploadMaxBytes caps file_size of image scans.
 	ImageUploadMaxBytes int64
+	// HistoryUploadMaxBytes caps file_size of history scans (git bundles).
+	HistoryUploadMaxBytes int64
 	// RateLimitPerHour caps scans created per user per hour (≤ 0: unlimited).
 	RateLimitPerHour int
 	// UploadURLTTL is how long a presigned upload URL is valid.
@@ -37,6 +39,8 @@ type Config struct {
 	RequireMFARoles []rbac.Role
 	// SignIn is shown on the Sign-in settings page.
 	SignIn SignInConfig
+	// Webhooks: secrets.key and the URL checks (webhooks.go).
+	Webhooks WebhookConfig
 }
 
 type Service struct {

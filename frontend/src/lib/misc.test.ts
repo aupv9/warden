@@ -44,7 +44,7 @@ describe("scan display", () => {
     expect(withDefaults({ upload_max_mb: 50 } as never)).toMatchObject({ upload_max_mb: 50, image_upload_max_mb: 2048 });
   });
   it("uses the server limits in messages and falls back for unknown codes", () => {
-    const limits = { upload_max_mb: 50, unzip_max_mb: 2048, unzip_max_files: 5000, scan_timeout_minutes: 45, scans_per_hour: 5, image_upload_max_mb: 2048 };
+    const limits = { ...withDefaults(null), upload_max_mb: 50, unzip_max_mb: 2048, unzip_max_files: 5000, scan_timeout_minutes: 45, scans_per_hour: 5 };
     expect(scanErrorMessages("ZIP_TOO_LARGE", limits).short).toBe("archive over 50 MB");
     expect(scanErrorMessages("ZIP_BOMB", limits).full).toMatch(/more than 2 GB/);
     expect(scanErrorMessages("TIMEOUT", limits).short).toBe("took over 45 min");

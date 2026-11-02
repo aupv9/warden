@@ -40,9 +40,10 @@ go under `[Unreleased]` in `CHANGELOG.md`.
 ## Rules
 - This is a security product, and its own security beats features. Keep the invariants in
   README "Security invariants".
-- Hostile-input code (`zipcheck`, `imagecheck`, `sarif`, `trivyjson`, `sbom`, `redact`, `intel`) must
-  have tests for the attack, not just the happy path. Only `zipcheck` extracts archives; `imagecheck`
-  validates `docker save` tarballs without unpacking them (Trivy reads them in the sandbox).
+- Hostile-input code (`zipcheck`, `imagecheck`, `bundlecheck`, `sarif`, `trivyjson`, `sbom`, `redact`,
+  `intel`, `webhook` URL checks, the CLI's PR/MR comment text) must have tests for the attack, not just
+  the happy path. Only `zipcheck` extracts archives; `imagecheck` validates `docker save` tarballs and
+  `bundlecheck` git bundles without unpacking them (Trivy / git read them in the sandbox).
 - New scanner flags or images: verify against real scanner output with
   `go -C backend run ./cmd/selfscan -root .. -zip <sample.zip>`, and check that no raw secret
   appears in any SARIF. Pin new images by digest to a release ≥ 2 weeks old.

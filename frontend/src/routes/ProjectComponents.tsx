@@ -38,6 +38,7 @@ const EMPTY: ProjectComponentFilters = { search: "", ecosystem: "", target: "", 
 /** v0.4: the target filter's options: every target, source code, then each image repository
  *  from GET …/targets (only well-formed ones; a URL value stays listed). */
 export function targetOptions(targets: ProjectTarget[] | undefined, current: string): Option[] {
+  // v0.4 wave 2: (history) is left out: history scans have no components.
   const images = (targets ?? []).filter((t) => t.kind === "image" && isImageTarget(t.target)).map((t) => t.target);
   const hasSource = (targets ?? []).some((t) => t.target === "");
   const opts: Option[] = [{ value: "", label: "All targets" }];

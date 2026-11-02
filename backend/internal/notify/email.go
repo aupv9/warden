@@ -45,7 +45,9 @@ type Content struct {
 	Overdue    int    `json:"overdue,omitempty"`
 	DueSoon    int    `json:"due_soon,omitempty"`
 	Items      []Item `json:"items,omitempty"`
-	Link       string `json:"link"` // app path, e.g. /orgs/…/issues/…
+	// WebhookName: webhook.disabled.
+	WebhookName string `json:"webhook_name,omitempty"`
+	Link        string `json:"link"` // app path, e.g. /orgs/…/issues/…
 }
 
 // Mail is a rendered email.
@@ -78,6 +80,8 @@ Organization: {{.OrgName}}
 {{- end}}
 {{else}}
 Organization: {{.OrgName}}
+{{- if .WebhookName}}
+Webhook:      {{.WebhookName}}{{end}}
 {{- if .ProjectKey}}
 Project:      {{.ProjectKey}}{{end}}
 {{- if .Status}}
@@ -95,6 +99,8 @@ const htmlTmpl = `<!doctype html>
 <p style="font-size:16px;font-weight:600">{{.Title}}</p>
 <table cellpadding="4" style="border-collapse:collapse">
 <tr><td style="color:#59636e">Organization</td><td>{{.OrgName}}</td></tr>
+{{- if .WebhookName}}
+<tr><td style="color:#59636e">Webhook</td><td>{{.WebhookName}}</td></tr>{{end}}
 {{- if .ProjectKey}}
 <tr><td style="color:#59636e">Project</td><td>{{.ProjectKey}}</td></tr>{{end}}
 {{- if .IssueKey}}

@@ -38,7 +38,11 @@ func (f *Fake) ProjectTargets(_ context.Context, projectID uuid.UUID) ([]service
 		}
 		seen[s.Target] = true
 		kind := service.KindSource
-		if s.Target != "" {
+		switch s.Target {
+		case "":
+		case service.HistoryTarget:
+			kind = service.KindHistory
+		default:
 			kind = service.KindImage
 		}
 		out = append(out, service.ProjectTarget{Target: s.Target, Kind: kind})

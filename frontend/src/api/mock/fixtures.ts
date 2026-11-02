@@ -28,6 +28,9 @@ import type {
   SignInSettings,
   UserRef,
   VulnData,
+  Webhook,
+  WebhookDelivery,
+  WebhookDeliveryError,
 } from "../types";
 
 const DAY = 86_400_000;
@@ -59,6 +62,9 @@ const ENG_ROLE: OrgRole = ROLE_PARAM === "org_admin" || ROLE_PARAM === "member" 
 const KEYS_PARAM = PARAMS.get("mock_keys");
 /** `?mock_vuln=fresh`, `stale` or `missing` changes the vulnerability data card (default: EPSS is stale). */
 const VULN_PARAM = PARAMS.get("mock_vuln");
+/** v0.4 wave 2: `?mock_integrations=unavailable` answers `available: false` (no secrets.key).
+ *  An object, so tests can switch it. */
+export const mockFlags = { integrationsUnavailable: PARAMS.get("mock_integrations") === "unavailable" };
 
 const u = (display_name: string, email: string): UserRef => ({ id: uuid(), display_name, email });
 export const users = {
@@ -83,7 +89,16 @@ export const me: Me = {
     { id: ORG2_ID, name: "Acme Labs", role: "member" },
     { id: ORG3_ID, name: "Acme Security", role: "org_admin" },
   ],
-  limits: { upload_max_mb: 200, unzip_max_mb: 1024, unzip_max_files: 100000, scan_timeout_minutes: 30, scans_per_hour: 20, image_upload_max_mb: 2048 },
+  limits: {
+    upload_max_mb: 200,
+    unzip_max_mb: 1024,
+    unzip_max_files: 100000,
+    scan_timeout_minutes: 30,
+    scans_per_hour: 20,
+    image_upload_max_mb: 2048,
+    history_upload_max_mb: 1024,
+    history_max_commits: 50000,
+  },
   mfa_required_orgs: [ORG3_ID],
 };
 
@@ -250,6 +265,7 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
     target: "",
     image_ref: null,
     sbom: null,
+    history: null,
     ...partial,
   };
   // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
@@ -337,6 +353,40 @@ export const scans: Scan[] = [
   ),
   // v0.4: Acme Labs' project (scans[11]).
   scan(LAB, { file_name: "notebooks-main.zip", tools: ["gitleaks", "trivy"], created_by: users.huy, stats: { new: 0, fixed: 2, reopened: 0, total: 3 } }, 5 * H),
+  // v0.4 wave 2: history scans (a git bundle from `warden scan --history`, Gitleaks only, target
+  // "(history)"), from the nightly CI job (scans[12], scans[13]).
+  scan(
+    WEB,
+    {
+      kind: "history",
+      target: "(history)",
+      file_name: "storefront.bundle",
+      file_size: 96 * 1024 * 1024,
+      tools: ["gitleaks"],
+      created_by: users.linh,
+      via_token: { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" },
+      stats: { new: 2, fixed: 0, reopened: 0, total: 2 },
+      tool_runs: [{ tool: "gitleaks", tool_version: "8.28.0", status: "succeeded", findings_count: 4, duration_ms: 212_000, error: null }],
+      history: { commits: 2481, truncated: false },
+    },
+    10 * H,
+  ),
+  scan(
+    WEB,
+    {
+      kind: "history",
+      target: "(history)",
+      file_name: "storefront.bundle",
+      file_size: 2 * 1024 * 1024,
+      tools: ["gitleaks"],
+      via_token: { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" },
+      status: "failed",
+      error_code: "BUNDLE_INCOMPLETE",
+      tool_runs: [],
+      finished_at: ago(2 * DAY - 9_000),
+    },
+    2 * DAY,
+  ),
 ];
 
 const issueN: Record<string, number> = { WEB: 40, PAY: 6, INFRA: 3, LAB: 7 };
@@ -367,6 +417,8 @@ interface IssueSeed {
   licenseCategory?: LicenseCategory;
   /** v0.4: when the issue was found (default 7 days ago, with the first scan). */
   foundAgo?: number;
+  /** v0.4 wave 2: secrets in git history: the oldest commit that added it. */
+  commit?: Issue["commit"];
 }
 
 function issue(s: IssueSeed): Issue {
@@ -411,11 +463,15 @@ function issue(s: IssueSeed): Issue {
     epss: s.epss?.[0] ?? null,
     epss_percentile: s.epss?.[1] ?? null,
     license_category: s.licenseCategory ?? null,
+    commit: s.commit ?? null,
   };
 }
 
 // The masked value is built at runtime from a fixed prefix plus asterisks, like redact.Mask.
 const masked = ["AK", "IA"].join("") + "****";
+const maskedSlack = ["xo", "xb"].join("") + "****";
+/** A made-up commit id: hex from the seeded generator (40 characters, like git's SHA-1). */
+const fakeCommit = (seed: number) => fakeSha256(seed).slice(0, 40);
 
 export const issues: Issue[] = [
   issue({
@@ -648,6 +704,41 @@ export const issues: Issue[] = [
     description: "Malicious code in acme-dataloader (PyPI). Every version is a typosquat of an internal package; importing it reads cloud credentials from the home directory.",
     remediation: "",
   }),
+  // ---- v0.4 wave 2: secrets in git history (target "(history)"); the snippets are masked. ----
+  issue({
+    p: WEB,
+    title: "AWS access key in git history",
+    severity: "critical",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "aws-access-token",
+    file_path: "scripts/deploy.sh",
+    start_line: 7,
+    snippet: `export AWS_ACCESS_KEY_ID=${masked}`,
+    target: "(history)",
+    commit: { sha: fakeCommit(7101), committed_at: ago(412 * DAY), count: 3 },
+    dueIn: 5 * DAY,
+    cwe: ["CWE-798"],
+    description: "An AWS access key ID was found in a commit. The file no longer has it, but every clone of the repository still does.",
+    remediation: "",
+  }),
+  issue({
+    p: WEB,
+    title: "Slack bot token in git history",
+    severity: "high",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "slack-bot-token",
+    file_path: "tools/notify/config.yml",
+    start_line: 3,
+    snippet: `token: ${maskedSlack}`,
+    target: "(history)",
+    commit: { sha: fakeCommit(7102), committed_at: ago(96 * DAY), count: 1 },
+    dueIn: 26 * DAY,
+    cwe: ["CWE-798"],
+    description: "A Slack bot token was found in a commit.",
+    remediation: "",
+  }),
 ];
 // The advisories give no fix text: the UI says what to do (remove, rotate credentials).
 for (const i of issues) if (i.remediation === "") i.remediation = null;
@@ -686,6 +777,13 @@ for (const i of issues) {
   pay.first_seen_scan = { id: scans[6]!.id, created_at: scans[6]!.created_at };
   pay.last_seen_scan = pay.first_seen_scan;
   pay.occurrences = 1;
+  // v0.4 wave 2: the history issues came from the nightly history scan.
+  for (const h of issues.filter((i) => i.target === "(history)")) {
+    h.first_seen_scan = { id: scans[12]!.id, created_at: scans[12]!.created_at };
+    h.last_seen_scan = h.first_seen_scan;
+    h.occurrences = 1;
+    events[h.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: scans[12]!.finished_at! }];
+  }
 }
 comments[issues[0]!.id] = [
   { id: uuid(), author: users.minh, body: "Key is rotated in IAM. Removing the file from the repo in the next release.", created_at: ago(DAY), edited_at: null },
@@ -1061,6 +1159,8 @@ export const notifications: Notification[] = [
     DAY - 30 * 60_000,
     false,
   ),
+  // v0.4 wave 2: Warden turned the ticket relay off (sent to org admins and security leads).
+  notification("webhook.disabled", "Webhook “Ticket relay” turned off after 12 failed deliveries", `/orgs/${ORG_ID}/integrations`, null, 2 * H - 60_000, true),
   notification(
     "component.malicious",
     "Malicious package in LAB: acme-dataloader 0.4.2 (MAL-2026-2290)",
@@ -1077,6 +1177,92 @@ if (BULK) {
     notifications.push(notification(t, `WEB-${100 + i} assigned to you`, issueLink(issues[i % issues.length]!), users.minh, (6 + i) * DAY, i % 4 !== 0));
   }
 }
+
+// ---- v0.4 wave 2: webhooks and Slack (Acme Engineering) ----
+
+export const webhooks: Record<string, Webhook[]> = {
+  [ORG_ID]: [
+    {
+      id: uuid(),
+      kind: "slack",
+      name: "#security-alerts",
+      url_hint: "https://hooks.slack.com",
+      events: ["scan.finished", "issue.reopened", "component.malicious"],
+      project_ids: [],
+      min_severity: "critical",
+      enabled: true,
+      disabled_reason: null,
+      consecutive_failures: 0,
+      last_delivery: { at: ago(5 * 60_000), state: "delivered", status_code: 200 },
+      created_by: users.linh,
+      created_at: ago(20 * DAY),
+      updated_at: ago(20 * DAY),
+    },
+    {
+      id: uuid(),
+      kind: "generic",
+      name: "Ticket relay",
+      url_hint: "https://relay.acme.example",
+      events: ["scan.finished", "issue.assigned", "issue.reopened", "exception.requested", "exception.decided", "component.malicious"],
+      project_ids: [WEB.id, PAY.id],
+      min_severity: null,
+      enabled: false,
+      disabled_reason: "failures",
+      consecutive_failures: 12,
+      last_delivery: { at: ago(2 * H), state: "failed", status_code: 500 },
+      created_by: users.huy,
+      created_at: ago(35 * DAY),
+      updated_at: ago(2 * H),
+    },
+  ],
+  [ORG2_ID]: [],
+};
+
+function delivery(d: Partial<WebhookDelivery> & Pick<WebhookDelivery, "type" | "state">, createdAgo: number): WebhookDelivery {
+  const created = ago(createdAgo);
+  return {
+    id: uuid(),
+    attempts: 1,
+    status_code: d.state === "delivered" ? 200 : null,
+    error: null,
+    created_at: created,
+    last_attempt_at: d.state === "pending" && !d.attempts ? null : created,
+    next_attempt_at: null,
+    delivered_at: d.state === "delivered" ? created : null,
+    ...d,
+  };
+}
+
+const [SLACK_HOOK, RELAY_HOOK] = webhooks[ORG_ID]! as [Webhook, Webhook];
+const failed = (error: WebhookDeliveryError, createdAgo: number, status_code: number | null = null) =>
+  delivery({ type: "issue.reopened", state: "failed", attempts: 7, error, status_code }, createdAgo);
+
+/** Delivery logs, newest first. The relay's mixes every state and error; Slack's is long enough
+ *  to page ("Load older"). */
+export const deliveries: Record<string, WebhookDelivery[]> = {
+  [SLACK_HOOK.id]: [
+    delivery({ type: "scan.finished", state: "delivered" }, 5 * 60_000),
+    delivery({ type: "component.malicious", state: "delivered" }, DAY - 30 * 60_000),
+    delivery({ type: "webhook.test", state: "failed", error: "http_status", status_code: 404 }, 20 * DAY - H),
+    ...Array.from({ length: 56 }, (_, n) =>
+      delivery({ type: n % 3 === 0 ? "issue.reopened" : "scan.finished", state: "delivered" }, DAY + (n + 1) * 7 * H),
+    ),
+  ],
+  [RELAY_HOOK.id]: [
+    delivery({ type: "issue.assigned", state: "failed", attempts: 0, error: "disabled" }, 50 * 60_000),
+    failed("http_status", 2 * H, 500),
+    delivery({ type: "exception.requested", state: "pending", attempts: 3, error: "timeout", next_attempt_at: ahead(25 * 60_000) }, 2 * H + 10 * 60_000),
+    failed("timeout", 5 * H),
+    failed("connect", 9 * H),
+    failed("dns", DAY),
+    failed("tls", DAY + 4 * H),
+    failed("redirect", 2 * DAY, 302),
+    failed("blocked_address", 3 * DAY),
+    failed("key_unavailable", 4 * DAY),
+    delivery({ type: "webhook.test", state: "delivered", status_code: 204 }, 6 * DAY),
+    delivery({ type: "scan.finished", state: "delivered" }, 7 * DAY),
+  ],
+};
 
 /** Email preference per type; missing = the default (on, except scan.finished). */
 export const notificationPrefs: Partial<Record<NotificationType, boolean>> = { "sla.due_soon": false };

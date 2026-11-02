@@ -99,6 +99,10 @@ type fakeSandbox struct {
 	empty   bool // tools find nothing
 	// files tools write besides their SARIF (file name -> content), reported as artifacts
 	files map[string]string
+	// docs: the SARIF a tool writes instead of the default one; exitCode: a
+	// failed tool's exit status.
+	docs     map[string]st.M
+	exitCode int
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.RunConfig) sandbox.ToolRun {
@@ -115,11 +119,14 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.
 		}
 	}
 	if s, ok := f.status[spec.Name]; ok && s != sandbox.Succeeded {
-		return sandbox.ToolRun{Tool: spec.Name, Status: s, Error: "exit 1: printing source line password=hunter2"}
+		return sandbox.ToolRun{Tool: spec.Name, Status: s, Error: "exit 1: printing source line password=hunter2", ExitCode: f.exitCode}
 	}
 	out := filepath.Join(c.ScanDir, "out", spec.Name)
 	_ = os.MkdirAll(out, 0o700)
 	doc := st.Doc([]any{st.M{"ruleId": "r1", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}}})
+	if d, ok := f.docs[spec.Name]; ok {
+		doc = d
+	}
 	if f.empty {
 		doc = st.Doc([]any{})
 	}
