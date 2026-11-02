@@ -3,7 +3,7 @@ import { api } from "../client";
 import type { QueryParams } from "../client";
 import { qk } from "../keys";
 import { useCursorList } from "../paging";
-import type { ComponentSummary, ComponentUsage, ItemList, Page, ProjectComponent, ProjectTarget } from "../types";
+import type { ComponentSummary, ComponentUsage, EcosystemCount, ItemList, OrgTarget, Page, ProjectComponent, ProjectTarget } from "../types";
 import type { ComponentApiQuery, ProjectComponentApiQuery } from "../../lib/components";
 
 // v0.4: the component inventory. Every list is cursor-paginated like the issue list.
@@ -33,6 +33,26 @@ export function useComponentUsage(orgId: string, c: ComponentRef | null) {
 export function useProjectComponents(orgId: string, projectId: string, query: ProjectComponentApiQuery) {
   const q = query as unknown as QueryParams;
   return useCursorList<Page<ProjectComponent>>(qk.projectComponents(orgId, projectId, q), `${projectBase(orgId, projectId)}/components`, q);
+}
+
+/** v0.5 wave 2: GET /orgs/{org}/targets?kind=image, every visible project's image repositories,
+ *  for the issue list's Image filter when no project is in scope. */
+export function useOrgImageTargets(orgId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.orgTargets(orgId, "image"),
+    queryFn: ({ signal }) => api<ItemList<OrgTarget>>(`${orgBase(orgId)}/targets`, { query: { kind: "image" }, signal }),
+    select: (d) => d.items,
+    enabled,
+  });
+}
+
+/** v0.5 wave 2: GET /orgs/{org}/components/ecosystems, with counts, for the ecosystem filter. */
+export function useComponentEcosystems(orgId: string) {
+  return useQuery({
+    queryKey: qk.componentEcosystems(orgId),
+    queryFn: ({ signal }) => api<ItemList<EcosystemCount>>(`${orgBase(orgId)}/components/ecosystems`, { signal }),
+    select: (d) => d.items,
+  });
 }
 
 /** GET /orgs/{org}/projects/{p}/targets: source code ("") and each scanned image repository.

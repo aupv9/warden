@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
-import { useComponents, useComponentUsage } from "../api/hooks/components";
+import { useComponentEcosystems, useComponents, useComponentUsage } from "../api/hooks/components";
 import type { ComponentRef } from "../api/hooks/components";
 import { useProjects } from "../api/hooks/projects";
 import { flattenPages } from "../api/paging";
@@ -61,6 +61,8 @@ export function ComponentsPage() {
   const apiQuery = useMemo(() => componentFiltersToApiQuery(filters), [filters]);
   const list = useComponents(orgId, apiQuery);
   const projects = useProjects(orgId);
+  // v0.5 wave 2: the inventory's ecosystems with counts; the fixed list until they load.
+  const ecosystems = useComponentEcosystems(orgId);
   const items = flattenPages(list.data?.pages);
   const [selected, setSelected] = useState<ComponentSummary | null>(null);
   const [sheet, setSheet] = useState(false);
@@ -79,6 +81,7 @@ export function ComponentsPage() {
   };
 
   const projectOptions: Option[] = [{ value: "", label: "All projects" }, ...(projects.data ?? []).map((p) => ({ value: p.id, label: `${p.key} · ${p.name}` }))];
+  const ecoOptions = ecosystemOptions(filters.ecosystem, ecosystems.data);
   const { version } = splitSearch(filters.search);
   const otherCount = (filters.ecosystem ? 1 : 0) + (filters.project ? 1 : 0) + (filters.malicious ? 1 : 0);
   const projectName = (projects.data ?? []).find((p) => p.id === filters.project)?.name;
@@ -167,7 +170,7 @@ export function ComponentsPage() {
         ) : (
           <section className="comp-filters" aria-label="Filters">
             {search}
-            <Select dense aria-label="Ecosystem" value={filters.ecosystem} onChange={(e) => update({ ...filters, ecosystem: e.target.value })} options={ecosystemOptions(filters.ecosystem)} />
+            <Select dense aria-label="Ecosystem" value={filters.ecosystem} onChange={(e) => update({ ...filters, ecosystem: e.target.value })} options={ecoOptions} />
             <Select dense aria-label="Project" value={filters.project} onChange={(e) => update({ ...filters, project: e.target.value })} options={projectOptions} />
             {malToggle}
             {hasComponentFilters(filters) && (
@@ -195,7 +198,7 @@ export function ComponentsPage() {
 
       <Dialog open={sheet} onClose={() => setSheet(false)} title="Filters" className="dialog sheet">
         <div className="form-grid">
-          <Select label="Ecosystem" value={filters.ecosystem} onChange={(e) => update({ ...filters, ecosystem: e.target.value })} options={ecosystemOptions(filters.ecosystem)} />
+          <Select label="Ecosystem" value={filters.ecosystem} onChange={(e) => update({ ...filters, ecosystem: e.target.value })} options={ecoOptions} />
           <Select label="Project" value={filters.project} onChange={(e) => update({ ...filters, project: e.target.value })} options={projectOptions} />
           <label className="check-row">
             <input type="checkbox" className="check" checked={filters.malicious} onChange={(e) => update({ ...filters, malicious: e.target.checked })} />

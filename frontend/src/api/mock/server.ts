@@ -289,6 +289,21 @@ function listComponents(orgId: string, url: URL) {
   return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
 }
 
+/** GET /components/ecosystems: distinct (name, version) pairs per ecosystem in the visible
+ *  inventory, most first. */
+function componentEcosystems(orgId: string) {
+  const ids = new Set(visibleProjects(orgId).map((p) => p.id));
+  const pairs = new Map<string, Set<string>>();
+  for (const r of db.inventory) {
+    if (!ids.has(r.project_id)) continue;
+    const set = pairs.get(r.ecosystem) ?? new Set<string>();
+    set.add(`${matchName(r.ecosystem, r.name)}\u0000${r.version}`);
+    pairs.set(r.ecosystem, set);
+  }
+  const items = [...pairs.entries()].map(([ecosystem, s]) => ({ ecosystem, components: s.size }));
+  return { items: items.sort((a, b) => b.components - a.components || a.ecosystem.localeCompare(b.ecosystem)) };
+}
+
 function componentUsage(orgId: string, url: URL) {
   const sp = url.searchParams;
   const eco = sp.get("ecosystem") ?? "";
@@ -456,7 +471,7 @@ function memberUser(userId: string) {
 }
 
 function audit(action: string, target_type: string, target_id: string, data: unknown) {
-  db.audit.unshift({ id: db.uuid(), actor: { id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email }, action, target_type, target_id, ip: "127.0.0.1", data, created_at: new Date().toISOString() });
+  db.audit.unshift({ id: db.nextAuditId(), actor: { id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email }, action, target_type, target_id, ip: "127.0.0.1", data, created_at: new Date().toISOString() });
 }
 
 function orgOf(id: string | undefined) {
@@ -649,6 +664,22 @@ const routes: [string, RegExp, Handler][] = [
   ["GET", new RegExp(`^${O}/components/usage$`), (m, url) => componentUsage(m[1]!, url)],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/components$`), (m, url) => projectComponents(m[1]!, orgProject(m[1]!, m[2]!), url)],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/targets$`), (m) => projectTargets(orgProject(m[1]!, m[2]!))],
+  // v0.5 wave 2: every visible project's targets (the issue list's visibility), ?kind=.
+  [
+    "GET",
+    new RegExp(`^${O}/targets$`),
+    (m, url) => {
+      const kind = url.searchParams.get("kind");
+      if (kind !== null && !["source", "image", "history"].includes(kind)) throw new Fail(422, "VALIDATION_FAILED", { kind: "source, image or history" });
+      const items = [...visibleProjects(m[1]!)]
+        .sort((a, b) => a.key.localeCompare(b.key))
+        .flatMap((p) => projectTargets(p).items.map((t) => ({ project_id: p.id, project_key: p.key, project_name: p.name, ...t })))
+        .filter((t) => !kind || t.kind === kind);
+      return { items };
+    },
+  ],
+  // v0.5 wave 2: the ecosystems in the visible inventory, most components first.
+  ["GET", new RegExp(`^${O}/components/ecosystems$`), (m) => componentEcosystems(m[1]!)],
   // ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
   ["GET", new RegExp(`^${O}/webhooks$`), (m) => ({ items: requireIntegrations(m[1]!), available: !db.mockFlags.integrationsUnavailable })],
   [
@@ -657,7 +688,8 @@ const routes: [string, RegExp, Handler][] = [
     (m, _u, body) => {
       const list = requireIntegrations(m[1]!);
       const b = (body ?? {}) as Record<string, unknown>;
-      if (db.mockFlags.integrationsUnavailable || list.length >= 20) throw new Fail(409, "CONFLICT");
+      if (db.mockFlags.integrationsUnavailable) throw new Fail(409, "SECRETS_KEY_MISSING");
+      if (list.length >= 20) throw new Fail(409, "WEBHOOK_LIMIT");
       const fields: Record<string, string> = {};
       for (const k of Object.keys(b)) if (!["kind", "name", "url", "events", "project_ids", "min_severity"].includes(k)) fields[k] = "unknown field";
       const kind = b.kind === "slack" || b.kind === "generic" ? b.kind : null;
@@ -776,7 +808,10 @@ const routes: [string, RegExp, Handler][] = [
     new RegExp(`^${O}/webhooks/([^/]+)/deliveries$`),
     (m, url) => {
       const w = findWebhook(m[1]!, m[2]!);
-      const log = (db.deliveries[w.id] ?? []).map((d) => advanceDelivery(m[1]!, w.id, d));
+      const state = url.searchParams.get("state");
+      // v0.5 wave 2: ?state=pending|delivered|failed.
+      if (state !== null && !["pending", "delivered", "failed"].includes(state)) throw new Fail(422, "VALIDATION_FAILED", { state: "pending, delivered or failed" });
+      const log = (db.deliveries[w.id] ?? []).map((d) => advanceDelivery(m[1]!, w.id, d)).filter((d) => !state || d.state === state);
       const { items, next_cursor } = page(log, url);
       return { items: items.map(({ _t: _omit, ...d }: WebhookDelivery & { _t?: number }) => d), next_cursor };
     },
@@ -1169,45 +1204,13 @@ const routes: [string, RegExp, Handler][] = [
     "GET",
     new RegExp(`^${O}/issues$`),
     (m, url) => {
-      const sp = url.searchParams;
-      const statuses = sp.getAll("status");
-      const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
-      const q = (sp.get("q") ?? "").toLowerCase();
-      const base = db.issues.filter(
-        (i) =>
-          want.includes(i.status) &&
-          inOrg(m[1]!, i.project_id) &&
-          (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
-          (!sp.get("tool") || i.tool === sp.get("tool")) &&
-          (sp.get("past_sla") !== "true" || i.past_sla) &&
-          // v0.3
-          (sp.get("kev") !== "true" || i.kev) &&
-          (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
-          (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
-          // v0.4 wave 2: history issues have the target "(history)".
-          (!sp.get("source") ||
-            (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
-          (!sp.get("target") || i.target === sp.get("target")) &&
-          (!sp.get("assignee") ||
-            (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
-          (!q || [i.title, i.rule_id, i.file_path ?? "", i.key].some((s) => s.toLowerCase().includes(q))),
-      );
-      const sev = sp.getAll("severity");
-      const filtered = sev.length ? base.filter((i) => sev.includes(i.severity)) : base;
-      const sort = sp.get("sort") ?? "due_at";
-      const sorted = [...filtered].sort((a, b) =>
-        sort === "-epss"
-          ? (b.epss ?? -1) - (a.epss ?? -1) || (a.due_at ?? "9").localeCompare(b.due_at ?? "9")
-          : sort === "-severity"
-          ? SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)
-          : sort === "-updated_at"
-            ? b.updated_at.localeCompare(a.updated_at)
-            : (a.due_at ?? "9").localeCompare(b.due_at ?? "9"),
-      );
+      const { base, sorted } = queryIssues(m[1]!, url.searchParams);
       const { items, next_cursor } = page(sorted, url);
       return { items: items.map(({ id }) => summary(findIssue(id))), next_cursor, counts_by_severity: counts(base) };
     },
   ],
+  // v0.5 wave 2: before /issues/{id}, which would take "export.csv" for an id.
+  ["GET", new RegExp(`^${O}/issues/export\\.csv$`), (m, url) => exportCsv(m[1]!, url)],
   [
     "POST",
     new RegExp(`^${O}/issues/assign$`),
@@ -1215,16 +1218,23 @@ const routes: [string, RegExp, Handler][] = [
       const b = body as { issue_ids: string[]; assignee_id: string };
       const user = memberUser(b.assignee_id).user;
       let updated = 0;
+      let skipped = 0;
       for (const id of b.issue_ids) {
         const i = findIssue(id);
-        if (!["open", "reopened", "assigned", "in_progress"].includes(i.status)) continue;
+        // v0.5 wave 2: skipped, not refused: a status that can't be assigned, or a project the
+        // assignee isn't a member of.
+        const member = (db.projectMembers[i.project_id] ?? []).some((x) => x.user.id === user.id);
+        if (!["open", "reopened", "assigned", "in_progress"].includes(i.status) || !member) {
+          skipped += 1;
+          continue;
+        }
         if (i.status === "open" || i.status === "reopened") i.status = "assigned";
         i.assignee = { id: user.id, email: user.email, display_name: user.display_name };
         i.version += 1;
         updated += 1;
       }
       audit("issue.assigned", "issue", b.issue_ids[0]!, { count: updated, assignee_name: user.display_name });
-      return { updated };
+      return { updated, skipped };
     },
   ],
   ["GET", new RegExp(`^${O}/issues/([^/]+)$`), (m) => issueView(findIssue(m[2]!))],
@@ -1350,7 +1360,121 @@ const routes: [string, RegExp, Handler][] = [
       return page(list, url);
     },
   ],
+  // v0.5 wave 2: view_audit_log, 10 per org per hour, recorded as audit.verified.
+  // `?mock_audit=broken` finds a changed entry (one on the first page of the log).
+  [
+    "POST",
+    new RegExp(`^${O}/audit-log/verify$`),
+    (m) => {
+      const orgId = m[1]!;
+      const role = callerRole(orgId);
+      if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+      const hourAgo = db.now() - 3_600_000;
+      const runs = (verifyRuns[orgId] = (verifyRuns[orgId] ?? []).filter((t) => t > hourAgo));
+      if (runs.length >= 10) throw new Fail(429, "RATE_LIMITED");
+      runs.push(db.now());
+      const bad = db.mockFlags.auditBroken ? (db.audit[Math.min(3, db.audit.length - 1)]?.id ?? null) : null;
+      const result = { ok: bad === null, entries: db.audit.length, first_bad_id: bad, verified_at: new Date().toISOString() };
+      audit("audit.verified", "org", orgId, { ok: result.ok, entries: result.entries, first_bad_id: result.first_bad_id });
+      return result;
+    },
+  ],
 ];
+
+const verifyRuns: Record<string, number[]> = {};
+
+/** GET /issues and (v0.5 wave 2) GET /issues/export.csv: the same filters and order. */
+function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorted: Issue[] } {
+  const statuses = sp.getAll("status");
+  const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
+  const q = (sp.get("q") ?? "").toLowerCase();
+  const base = db.issues.filter(
+    (i) =>
+      want.includes(i.status) &&
+      inOrg(orgId, i.project_id) &&
+      (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
+      (!sp.get("tool") || i.tool === sp.get("tool")) &&
+      (sp.get("past_sla") !== "true" || i.past_sla) &&
+      // v0.3
+      (sp.get("kev") !== "true" || i.kev) &&
+      (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
+      (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
+      // v0.4 wave 2: history issues have the target "(history)".
+      (!sp.get("source") ||
+        (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
+      (!sp.get("target") || i.target === sp.get("target")) &&
+      (!sp.get("assignee") ||
+        (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
+      (!q || [i.title, i.rule_id, i.file_path ?? "", i.key].some((s) => s.toLowerCase().includes(q))),
+  );
+  const sev = sp.getAll("severity");
+  const filtered = sev.length ? base.filter((i) => sev.includes(i.severity)) : base;
+  const sort = sp.get("sort") ?? "due_at";
+  const sorted = [...filtered].sort((a, b) =>
+    sort === "-epss"
+      ? (b.epss ?? -1) - (a.epss ?? -1) || (a.due_at ?? "9").localeCompare(b.due_at ?? "9")
+      : sort === "-severity"
+      ? SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)
+      : sort === "-updated_at"
+        ? b.updated_at.localeCompare(a.updated_at)
+        : (a.due_at ?? "9").localeCompare(b.due_at ?? "9"),
+  );
+  return { base, sorted };
+}
+
+const CSV_COLUMNS = ["key", "project", "title", "severity", "status", "tool", "rule_id", "file_path", "line", "target", "cve", "kev", "epss", "assignee", "due_at", "created_at", "updated_at"];
+
+/** A CSV cell as the server writes it: a spreadsheet would read a cell starting with =, +, -, @,
+ *  tab or carriage return as a formula, so those get an apostrophe; then RFC 4180 quoting. */
+function csvCell(v: string | number | boolean | string[] | null | undefined): string {
+  let s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(" ") : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** GET /issues/export.csv: the list's filters, fixed columns, an attachment. `?mock_export=`
+ *  marks it truncated or makes it fail (fixtures.ts mockFlags). */
+function exportCsv(orgId: string, url: URL): Response {
+  const flag = db.mockFlags.export;
+  if (flag === "rate_limited") return envelope(429, null, { code: "RATE_LIMITED", message: "rate limited" }, { "Retry-After": "120" });
+  const epss = url.searchParams.get("epss_min");
+  if (flag === "invalid" || (epss !== null && !(Number(epss) >= 0 && Number(epss) <= 1))) {
+    return envelope(422, null, { code: "VALIDATION_FAILED", message: "validation failed", metadata: { fields: { epss_min: "a number from 0 to 1" } } });
+  }
+  const { sorted } = queryIssues(orgId, url.searchParams);
+  const rows = sorted.map((i) =>
+    [
+      i.key,
+      findProject(i.project_id).key,
+      i.title,
+      i.severity,
+      i.status,
+      i.tool,
+      i.rule_id,
+      i.file_path,
+      i.start_line,
+      i.target,
+      i.cve,
+      i.kev,
+      i.epss,
+      i.assignee?.email,
+      i.due_at,
+      // The mock's issues have no created_at; the first scan that found it stands in.
+      i.first_seen_scan.created_at,
+      i.updated_at,
+    ]
+      .map(csvCell)
+      .join(","),
+  );
+  const org = orgOf(orgId);
+  const slug = org.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const headers: Record<string, string> = {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="warden-issues-${slug}-${new Date().toISOString().slice(0, 10)}.csv"`,
+  };
+  if (flag === "truncated") headers["X-Warden-Truncated"] = "true";
+  return new Response([CSV_COLUMNS.join(","), ...rows, ""].join("\r\n"), { status: 200, headers });
+}
 
 /** v0.4: Trivy issues are license-policy issues, malicious packages or vulnerabilities. */
 function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
@@ -1368,7 +1492,7 @@ function nextForcedError(method: string): string | null {
   return code && /^[A-Z_]+$/.test(code) ? code : null;
 }
 
-const STATUS: Record<string, number> = { MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
+const STATUS: Record<string, number> = { WEBHOOK_LIMIT: 409, SECRETS_KEY_MISSING: 409, MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
 
 export const mockFetch: typeof fetch = async (input, init) => {
   await new Promise((r) => setTimeout(r, LATENCY));
@@ -1389,6 +1513,8 @@ export const mockFetch: typeof fetch = async (input, init) => {
     if (match[1] === db.ORG3_ID) return envelope(403, null, { code: "MFA_REQUIRED", message: "Your role requires two-factor sign-in." });
     try {
       const out = handler(match, url, body);
+      // A file (v0.5 wave 2: the CSV export) is answered as it is, not in the envelope.
+      if (out instanceof Response) return out;
       if (Array.isArray(out) && out.length === 2 && typeof out[0] === "number") return envelope(out[0], out[1], null);
       return envelope(200, out, null);
     } catch (e) {

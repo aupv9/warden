@@ -84,7 +84,7 @@ type ProjectComponentQuery = NonNullable<import("./schema").operations["listProj
 export type Q6 = Fits<keyof ProjectComponentQuery, keyof import("../lib/components").ProjectComponentApiQuery>;
 // Every error code the server sends is one the UI knows, and the server's list has the newest.
 export type E1 = Fits<T.ApiErrorCode, S["Error"]["code"]>;
-export type E2 = Fits<S["Error"]["code"], "MFA_NOT_ENABLED">;
+export type E2 = Fits<S["Error"]["code"], "WEBHOOK_LIMIT" | "SECRETS_KEY_MISSING">;
 // UI request bodies must fit what the server accepts.
 export type R1 = Fits<S["AddMemberRequest"], T.AddOrgMemberBody>;
 export type R2 = Fits<S["CreateProjectRequest"], T.CreateProjectBody>;
@@ -102,4 +102,24 @@ export type R12 = Fits<S["LicensePolicyRequest"], T.LicensePolicyInput>;
 export type R13 = Fits<S["CreateWebhookRequest"], T.CreateWebhookBody>;
 export type R14 = Fits<S["UpdateWebhookRequest"], T.UpdateWebhookBody>;
 type DeliveriesQuery = NonNullable<Ops["listWebhookDeliveries"]["parameters"]["query"]>;
-export type Q7 = Fits<keyof DeliveriesQuery, "limit" | "cursor">;
+export type Q7 = Fits<keyof DeliveriesQuery, "limit" | "cursor" | "state">;
+// v0.5 wave 2
+// `data` of a JSON response; a string (which no object type fits) if the shape isn't there.
+type Json<O extends keyof Ops, C extends keyof Ops[O]["responses"]> = Ops[O]["responses"][C] extends { content: { "application/json": { data: infer D } } }
+  ? D
+  : "no JSON data";
+export type C61 = Fits<T.OrgTarget, S["OrgTarget"]>;
+export type C62 = Fits<T.ItemList<T.OrgTarget>, Json<"listOrgTargets", 200>>;
+export type C63 = Fits<T.ItemList<T.EcosystemCount>, Json<"listComponentEcosystems", 200>>;
+export type C64 = Fits<T.AuditVerification, S["AuditVerification"]>;
+export type C65 = Fits<T.AuditVerification, Json<"verifyAuditLog", 200>>;
+export type C66 = Fits<T.BulkAssignResult, Json<"bulkAssignIssues", 200>>;
+export type Q8 = Fits<NonNullable<DeliveriesQuery["state"]>, T.WebhookDeliveryState>;
+export type Q9 = Fits<T.WebhookDeliveryState, NonNullable<DeliveriesQuery["state"]>>;
+// The CSV export takes the issue list's filters, and the list takes every one the UI sends.
+type ExportQuery = NonNullable<Ops["exportIssuesCSV"]["parameters"]["query"]>;
+type FilterKeys = keyof import("../lib/issueFilters").IssueFilterQuery;
+export type Q10 = Fits<keyof ExportQuery, FilterKeys>;
+export type Q11 = Fits<keyof IssueListQuery, FilterKeys>;
+type OrgTargetsQuery = NonNullable<Ops["listOrgTargets"]["parameters"]["query"]>;
+export type Q12 = Fits<NonNullable<OrgTargetsQuery["kind"]>, "image">;

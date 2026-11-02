@@ -147,6 +147,14 @@ export function auditTargetSummary(e: Pick<AuditEntry, "action" | "target_type" 
       const until = str(d, "until");
       return until ? `${fallback} may move to a new sign-in identity until ${until}` : fallback;
     }
+    // v0.5 wave 2: someone ran "Verify chain" (or the API call behind it).
+    case "audit.verified": {
+      const entries = typeof d.entries === "number" ? `${d.entries.toLocaleString("en-US")} entries` : null;
+      const bad = str(d, "first_bad_id");
+      if (d.ok === true) return ["Chain intact", entries].filter(Boolean).join(" · ");
+      if (d.ok === false) return [bad ? `Chain broken at entry ${bad}` : "Chain broken", entries].filter(Boolean).join(" · ");
+      return fallback;
+    }
     default:
       return fallback;
   }
