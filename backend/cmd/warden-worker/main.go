@@ -1,13 +1,17 @@
 // warden-worker runs background jobs: scans (queue "scan"), notifications and
-// periodic sweeps (queue "default").
+// periodic sweeps (queue "default"). `warden-worker -healthcheck` probes a
+// running instance's admin listener (admin.addr), as the worker has no other
+// HTTP server and the container image has no shell or curl.
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/aupv9/common-go/health"
@@ -19,19 +23,32 @@ import (
 	"github.com/aupv9/warden/backend/internal/app"
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
+	"github.com/aupv9/warden/backend/internal/metrics"
+	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/worker"
 )
 
 func main() {
+	healthcheck := flag.Bool("healthcheck", false, "GET /healthz on admin.addr and exit 0 if healthy")
+	flag.Parse()
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	fx.New(
+	if *healthcheck {
+		os.Exit(app.ProbeAdmin(cfg.Admin.Addr))
+	}
+	fx.New(appOptions(cfg)).Run()
+}
+
+// appOptions is the worker's dependency graph.
+func appOptions(cfg *config.Config) fx.Option {
+	return fx.Options(
 		app.Core(cfg),
 		db.Module,
+		fx.Supply(app.AdminHealth(true)),
 		fx.Provide(
 			func() (*storage.Client, error) {
 				sc := storage.FromSection(cfg.Storage)
@@ -47,10 +64,12 @@ func main() {
 				return worker.NewClient(pool, worker.Options{ScanTimeout: cfg.Scan.Timeout, ScanSlots: cfg.Scan.SlotsPerNode, Env: env})
 			},
 		),
-		fx.Invoke(registerStorageCheck, run),
+		// In this order: readiness checks, then the host checks and cleanup
+		// (before any job can start a container), then River.
+		fx.Invoke(registerStorageCheck, registerDockerCheck, registerGauges, preflight, run),
 		// Running scans must finish their cleanup (source deletion) before exit.
 		fx.StopTimeout(cfg.Scan.Timeout+10*time.Minute),
-	).Run()
+	)
 }
 
 var errStorageUnavailable = errors.New("unavailable")
@@ -67,10 +86,52 @@ func registerStorageCheck(reg *health.Registry, store *storage.Client, log *slog
 	}})
 }
 
-func run(lc fx.Lifecycle, client *river.Client[pgx.Tx]) {
+func registerDockerCheck(c *config.Config, reg *health.Registry, log *slog.Logger) {
+	reg.Register(&worker.DockerChecker{Docker: sandbox.ExecRunner{}, Runtime: c.Scan.SandboxRuntime,
+		TTL: 15 * time.Second, Now: time.Now, Warn: log.Warn})
+}
+
+// registerGauges: the queue depth and feed ages are read from the database
+// on scrape; only the worker exports them, so several API replicas don't
+// repeat the same series.
+func registerGauges(pool *pgxpool.Pool, log *slog.Logger) error {
+	return metrics.Registry.Register(metrics.NewDBGauges(pool, log))
+}
+
+// preflight checks Docker, the runtime and the images, and removes what a
+// crashed worker left behind. In prod a failed check stops the worker.
+func preflight(c *config.Config, env *worker.Env) error {
+	return env.Preflight(context.Background(), sandbox.ExecRunner{}, c.App.Env == config.EnvProd)
+}
+
+// run starts River once the database schema is the binary's: on an older
+// one, jobs would fail on missing columns, so the worker waits (not ready)
+// until warden-migrate has run.
+func run(lc fx.Lifecycle, client *river.Client[pgx.Tx], gate *app.SchemaGate, sd fx.Shutdowner, log *slog.Logger) {
+	// Only the wait is cancelled on stop. River gets its own context: it is
+	// its lifetime, and cancelling it would cancel running scans instead of
+	// letting Stop wait for them.
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
 	lc.Append(fx.Hook{
-		// River's context is its lifetime; fx's OnStart context ends after startup.
-		OnStart: func(context.Context) error { return client.Start(context.Background()) },
-		OnStop:  client.Stop,
+		OnStart: func(context.Context) error {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if gate.Wait(waitCtx, 15*time.Second) != nil {
+					return // stopping
+				}
+				if err := client.Start(context.Background()); err != nil {
+					log.Error("job runner failed to start", "err", err)
+					_ = sd.Shutdown(fx.ExitCode(1))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			cancelWait()
+			wg.Wait()
+			return client.Stop(ctx) // a no-op if River never started
+		},
 	})
 }

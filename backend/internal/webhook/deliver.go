@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aupv9/warden/backend/internal/auditlog"
+	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/secretbox"
 )
@@ -171,7 +172,29 @@ func (s *Sender) deliver(ctx context.Context, org uuid.UUID, c claimed) (bool, e
 				"attempt", c.Attempts+1, "error", res.Error, "status", res.StatusCode, "final", o.final)
 		}
 	}
-	return s.record(ctx, org, c, o, test)
+	disabled, err := s.record(ctx, org, c, o, test)
+	if err == nil {
+		countDelivery(o, test)
+	}
+	return disabled, err
+}
+
+// countDelivery records a recorded outcome in the metrics: delivered,
+// retrying (a failure with a retry scheduled) or failed (for good, including
+// deliveries not sent because the webhook was off or the key unavailable). A
+// delivered real event is also a notification sent over the webhook channel.
+func countDelivery(o outcome, test bool) {
+	switch {
+	case o.result.Delivered():
+		metrics.WebhookDelivery("delivered")
+		if !test {
+			metrics.NotificationsSent(metrics.ChannelWebhook, 1)
+		}
+	case o.final:
+		metrics.WebhookDelivery("failed")
+	default:
+		metrics.WebhookDelivery("retrying")
+	}
 }
 
 // record stores the outcome, and for a final one of a real event updates the

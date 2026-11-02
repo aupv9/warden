@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/results"
@@ -98,6 +99,7 @@ func (e *Env) storeSBOM(ctx context.Context, org, scanID uuid.UUID, cdx, spdx *s
 // applied in one transaction with the final status, and a scan whose source is
 // already gone fails cleanly.
 func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) error {
+	started := time.Now()
 	org, err1 := uuid.Parse(job.OrgID)
 	scanID, err2 := uuid.Parse(job.ScanID)
 	if err := errors.Join(err1, err2); err != nil {
@@ -117,16 +119,18 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	}
 	log := e.Log.With("scan_id", scanID, "org_id", org, "attempt", attempt)
 
+	done := func(st orchestrator.ScanStatus, err error) error { return scanDone(sc.Kind, st, started, err) }
+
 	switch orchestrator.ScanStatus(sc.Status) {
 	case orchestrator.Cancelled:
-		return e.finishCancelled(ctx, org, scanID, sc)
+		return done(orchestrator.Cancelled, e.finishCancelled(ctx, org, scanID, sc))
 	case orchestrator.Completed, orchestrator.Partial, orchestrator.Failed:
 		return nil
 	case orchestrator.PendingUpload:
 		return river.JobCancel(errors.New("scan was never started"))
 	}
 	if sc.SourceDeleted || sc.ObjectKey == nil || sc.SHA256 == nil {
-		return e.finishFailed(ctx, org, scanID, sc.Tools, CodeSourceUnavailable)
+		return done(orchestrator.Failed, e.finishFailed(ctx, org, scanID, sc.Tools, CodeSourceUnavailable))
 	}
 
 	// The database is the source of truth; the job only points at the scan.
@@ -146,17 +150,17 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	defer cancelFin()
 	switch {
 	case errors.Is(err, errNotRunnable) || (err == nil && out.Status == orchestrator.Cancelled):
-		return e.finishCancelled(fin, org, scanID, sc)
+		return done(orchestrator.Cancelled, e.finishCancelled(fin, org, scanID, sc))
 	case err != nil:
 		code := errorCode(err, timedOut)
 		log.Error("scan failed", "code", code, "err", err)
-		return e.finishFailed(fin, org, scanID, sc.Tools, code)
+		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, code))
 	case out.Status == orchestrator.Failed:
 		code := out.ErrorCode
 		if timedOut {
 			code = CodeTimeout
 		}
-		return e.finishFailed(fin, org, scanID, sc.Tools, code)
+		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, code))
 	}
 
 	// The SBOM columns are set with the results, so they are never half set;
@@ -186,19 +190,30 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		}
 	}
 	if errors.Is(err, results.ErrScanNotRunning) {
-		return e.finishCancelled(fin, org, scanID, sc)
+		return done(orchestrator.Cancelled, e.finishCancelled(fin, org, scanID, sc))
 	}
 	if err != nil {
 		// The source is gone, so a retry couldn't rescan; fail the scan now.
 		log.Error("result processing failed", "err", err)
-		return e.finishFailed(fin, org, scanID, sc.Tools, CodeInternal)
+		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, CodeInternal))
 	}
+	metrics.ScanFinished(sc.Kind, string(out.Status), time.Since(started))
 	log.Info("scan finished", "status", out.Status, "new", plan.Stats.New, "fixed", plan.Stats.Fixed,
 		"reopened", plan.Stats.Reopened, "total", plan.Stats.Total, "needs_confirmation", plan.NeedsConfirmation)
 	if c := plan.Components; c != nil {
 		log.Info("component inventory replaced", "added", c.Added, "kept", c.Kept, "removed", c.Removed, "skipped", c.Skipped)
 	}
 	return nil
+}
+
+// scanDone records a scan's final status and its job's duration in the
+// metrics once the worker has written that status (err == nil). A job that
+// returns an error is retried and records when it ends.
+func scanDone(kind string, st orchestrator.ScanStatus, started time.Time, err error) error {
+	if err == nil {
+		metrics.ScanFinished(kind, string(st), time.Since(started))
+	}
+	return err
 }
 
 // history maps the orchestrator's history report onto the processor's.

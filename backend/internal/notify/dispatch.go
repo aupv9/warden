@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/metrics"
 )
 
 // TxFunc runs fn in one transaction with app.org_id set to org (db.WithOrg).
@@ -89,8 +90,9 @@ func (d *Dispatcher) DispatchOrg(ctx context.Context, org uuid.UUID) error {
 // notification insert is idempotent per (event, user) and dispatched_at is
 // set in the same transaction, so a retry never duplicates.
 func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, error) {
-	var n int
+	var n, inApp int
 	err := d.Tx(ctx, org, func(db DB) error {
+		inApp = 0 // counted once the transaction commits
 		rows, err := db.Query(ctx, `SELECT id, type, payload FROM outbox_event WHERE dispatched_at IS NULL
 			ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, outboxBatch)
 		if err != nil {
@@ -117,8 +119,12 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, err
 				return fmt.Errorf("outbox event %d: %w", ev.ID, err)
 			}
 			for _, nt := range notes {
-				if err := r.insert(ctx, ev, nt); err != nil {
+				added, err := r.insert(ctx, ev, nt)
+				if err != nil {
 					return err
+				}
+				if added {
+					inApp++
 				}
 			}
 			if d.Webhooks != nil && slices.Contains(WebhookTypes, ev.Type) {
@@ -132,6 +138,9 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, err
 		}
 		return nil
 	})
+	if err == nil {
+		metrics.NotificationsSent(metrics.ChannelInApp, inApp)
+	}
 	return n, err
 }
 
@@ -458,11 +467,12 @@ func recipient(ctx context.Context, db DB, org, user, project uuid.UUID) (bool, 
 	return ok, email, nil
 }
 
-func (r *resolver) insert(ctx context.Context, ev outboxRow, n note) error {
+// insert writes one notification; added is false when it already existed.
+func (r *resolver) insert(ctx context.Context, ev outboxRow, n note) (added bool, err error) {
 	email := DefaultEmail(n.content.Type)
-	err := r.db.QueryRow(ctx, `SELECT email FROM notification_pref WHERE user_id = $1 AND type = $2`, n.user, n.content.Type).Scan(&email)
+	err = r.db.QueryRow(ctx, `SELECT email FROM notification_pref WHERE user_id = $1 AND type = $2`, n.user, n.content.Type).Scan(&email)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
+		return false, err
 	}
 	state, next := "none", (*time.Time)(nil)
 	if email {
@@ -470,18 +480,18 @@ func (r *resolver) insert(ctx context.Context, ev outboxRow, n note) error {
 	}
 	payload, err := json.Marshal(n.content)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var actor *uuid.UUID
 	var p Payload
 	if json.Unmarshal(ev.Payload, &p) == nil {
 		actor = p.ActorID
 	}
-	_, err = r.db.Exec(ctx, `INSERT INTO notification (id, org_id, user_id, event_id, type, title, link, actor_id, payload,
+	tag, err := r.db.Exec(ctx, `INSERT INTO notification (id, org_id, user_id, event_id, type, title, link, actor_id, payload,
 			email_state, email_next_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (event_id, user_id) DO NOTHING`,
 		ids.New(), r.org, n.user, ev.ID, n.content.Type, n.content.Title, n.content.Link, actor, payload, state, next, r.now)
-	return err
+	return err == nil && tag.RowsAffected() > 0, err
 }
 
 type queuedEmail struct {
@@ -593,6 +603,9 @@ func (d *Dispatcher) sendOne(ctx context.Context, org uuid.UUID, q queuedEmail) 
 	})
 	if txErr != nil {
 		return txErr
+	}
+	if err == nil {
+		metrics.NotificationsSent(metrics.ChannelEmail, 1)
 	}
 	var ce *ConnError
 	if errors.As(err, &ce) {
