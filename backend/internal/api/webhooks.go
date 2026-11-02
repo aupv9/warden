@@ -94,7 +94,7 @@ func (h handlers) webhookDeliveries(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.WebhookDeliveries(c.Request.Context(), actor(c), id, page(c))
+	out, err := h.svc.WebhookDeliveries(c.Request.Context(), actor(c), id, service.DeliveryFilter{State: c.Query("state"), PageParams: page(c)})
 	reply(c, false, out, err)
 }
 

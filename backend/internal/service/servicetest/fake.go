@@ -103,6 +103,7 @@ type state struct {
 	Comments   []commentRow
 	Exceptions map[uuid.UUID]excRow
 	Audit      []service.AuditRecord
+	AuditAt    []time.Time // when each Audit entry was appended
 	Jobs       []worker.ScanArgs
 	Tokens     map[uuid.UUID]tokenRow
 	Seen       map[[2]uuid.UUID]bool // issue, scan: occurrences
@@ -127,6 +128,7 @@ func (s *state) clone() *state {
 	c.Comments = slices.Clone(s.Comments)
 	c.Exceptions = maps.Clone(s.Exceptions)
 	c.Audit = slices.Clone(s.Audit)
+	c.AuditAt = slices.Clone(s.AuditAt)
 	c.Jobs = slices.Clone(s.Jobs)
 	c.Tokens = maps.Clone(s.Tokens)
 	c.Seen = maps.Clone(s.Seen)
@@ -144,6 +146,8 @@ type Fake struct {
 	org uuid.UUID // app.org_id of the open transaction
 	// Fail makes the named Repo method (or "InOrg") return the error.
 	Fail map[string]error
+	// AuditBadID, when set, is the first entry VerifyAudit reports as broken.
+	AuditBadID int64
 	// Now is the fake database clock.
 	Now time.Time
 }
@@ -255,6 +259,21 @@ func (f *Fake) AddIssue(project uuid.UUID, severity, status string, assignee *uu
 	f.st.Issues[id] = IssueRow{OrgID: p.OrgID, ProjectID: project, Number: n, Title: "Issue " + severity, Severity: severity,
 		Status: status, Tool: "opengrep", RuleID: "rule." + severity, AssigneeID: assignee, Version: 1, ScanID: scan, UpdatedAt: f.tick()}
 	return id
+}
+
+// AddIssues adds count issues at once (AddIssue numbers each by scanning all).
+func (f *Fake) AddIssues(project uuid.UUID, count int, severity, status string) {
+	p := f.st.Projects[project]
+	n := 0
+	for _, i := range f.st.Issues {
+		if i.ProjectID == project {
+			n = max(n, i.Number)
+		}
+	}
+	for k := 1; k <= count; k++ {
+		f.st.Issues[ids.New()] = IssueRow{OrgID: p.OrgID, ProjectID: project, Number: n + k, Title: "Issue " + severity, Severity: severity,
+			Status: status, Tool: "opengrep", RuleID: "rule." + severity, Version: 1, UpdatedAt: f.tick()}
+	}
 }
 
 func (f *Fake) SetIssue(id uuid.UUID, fn func(*IssueRow)) {
@@ -1071,6 +1090,7 @@ func (f *Fake) AppendAudit(_ context.Context, r service.AuditRecord) error {
 		return err
 	}
 	f.st.Audit = append(f.st.Audit, r)
+	f.st.AuditAt = append(f.st.AuditAt, f.Now)
 	return nil
 }
 
