@@ -739,6 +739,7 @@ card (Project settings) builds both snippets for a project.
 | `make build` | Static binaries in `backend/bin` |
 | `make build-webui` | `warden-api` with the web UI bundled (`-tags webui`; `make web-dist` builds the UI) |
 | `make image` / `make image-smoke` | The container image `warden:dev`, and a smoke test of it: the UI and its CSP, `web-config`, the `docker` CLI |
+| `make fuzz` | Every fuzz target of the hostile-input parsers for `FUZZTIME` each (default `30s`); CI runs it on every pull request |
 | `make backup-drill` | Backup and restore rehearsal with throwaway Postgres containers (Docker only) |
 | `make e2e` | End-to-end smoke test against the running dev stack (`make up`, `migrate`, `api`, `worker`, `mirror`); creates a new org each run |
 

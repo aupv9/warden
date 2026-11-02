@@ -30,6 +30,20 @@ All notable changes to Warden are listed here. The format follows
 - A project's component list puts malicious components first; cursors from earlier versions
   are refused (`422`).
 - River keeps completed and cancelled jobs 7 days and discarded ones 30 days.
+- Fuzz targets for every hostile-input parser (26, each asserting a property), `make fuzz`
+  and a CI job `fuzz` (30 s per target on every pull request).
+
+### Fixed
+
+- Gitleaks output whose secret matched a SARIF key (`runs`, `results`, `ruleId`) was masked
+  into a document with no results, so the secret went unreported; such a document now fails
+  the scanner visibly.
+- A CycloneDX property with a repeated key (`{"name":"warden:scan_id","name":"x"}`) passed the
+  check on Warden's own properties and was kept as written; properties are now re-encoded from
+  what was checked, and `warden:` is matched in any case.
+- Archive entries with a path component over 255 bytes, a path too long for the file system, or
+  a name it can't store made extraction fail with an internal error instead of rejecting the
+  upload (`ZIP_PATH_TRAVERSAL`).
 
 ## [0.5.0-alpha.1] - 2026-11-02
 
