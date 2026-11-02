@@ -19,7 +19,9 @@ DO $$ BEGIN
     -- Token lookup before the org is known (see 00003_api_tokens.sql).
     GRANT EXECUTE ON FUNCTION warden_lookup_token(text) TO warden_app;
     -- The outbox and notifications are only ever appended and marked
-    -- (dispatched, read, emailed); the app never deletes them.
+    -- (dispatched, read, emailed); the app never deletes them. Old rows are
+    -- pruned only through this function (see 00013_notification_retention.sql).
     REVOKE DELETE, TRUNCATE ON outbox_event, notification FROM warden_app;
+    GRANT EXECUTE ON FUNCTION warden_prune_notifications(timestamptz, timestamptz, int) TO warden_app;
   END IF;
 END $$;
