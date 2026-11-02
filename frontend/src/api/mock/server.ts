@@ -777,7 +777,10 @@ const routes: [string, RegExp, Handler][] = [
     new RegExp(`^${O}/webhooks/([^/]+)/deliveries$`),
     (m, url) => {
       const w = findWebhook(m[1]!, m[2]!);
-      const log = (db.deliveries[w.id] ?? []).map((d) => advanceDelivery(m[1]!, w.id, d));
+      const state = url.searchParams.get("state");
+      // v0.5 wave 2: ?state=pending|delivered|failed.
+      if (state !== null && !["pending", "delivered", "failed"].includes(state)) throw new Fail(422, "VALIDATION_FAILED", { state: "pending, delivered or failed" });
+      const log = (db.deliveries[w.id] ?? []).map((d) => advanceDelivery(m[1]!, w.id, d)).filter((d) => !state || d.state === state);
       const { items, next_cursor } = page(log, url);
       return { items: items.map(({ _t: _omit, ...d }: WebhookDelivery & { _t?: number }) => d), next_cursor };
     },

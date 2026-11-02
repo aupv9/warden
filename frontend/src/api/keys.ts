@@ -43,6 +43,8 @@ export const qk = {
   // v0.4 wave 2. No key ever holds a webhook URL or signing secret (webhooks.test.ts).
   webhooks: (orgId: string) => ["org", orgId, "webhooks"] as const,
   webhookDeliveries: (orgId: string, webhookId: string) => ["org", orgId, "webhooks", webhookId, "deliveries"] as const,
+  // v0.5 wave 2: one log per state filter, under the prefix above (so a test refreshes all).
+  webhookDeliveryLog: (orgId: string, webhookId: string, state: string) => ["org", orgId, "webhooks", webhookId, "deliveries", state || "all"] as const,
   // Notifications belong to the user, not to an org.
   notificationsAll: ["notifications"] as const,
   unreadCount: ["notifications", "unread-count"] as const,
