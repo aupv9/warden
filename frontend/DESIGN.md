@@ -897,6 +897,11 @@ Below 800 px (screenshots in section 12):
 - **Sign-in settings (v0.5)** come only from the server's `GET /web-config`, checked field by
   field (`src/auth/webConfig.test.ts`); there are no build-time or built-in fallbacks. Tokens
   stay in memory.
+- **Content Security Policy (v0.5):** the server sends `script-src 'self'; style-src 'self';
+  font-src 'self'` for the UI. No inline `<script>` or `<style>`, no `style="…"` in HTML strings,
+  no `eval`, no library that injects `<style>` elements; React `style` props are fine (they
+  set CSSOM properties). Fonts are files, never `data:` URLs (`assetsInlineLimit` in
+  `vite.config.ts`).
 - Severity is never shown by color alone: every badge carries its label.
 - Uploads go straight to object storage. The UI never reads the archive's contents (it
   only hashes the bytes).
