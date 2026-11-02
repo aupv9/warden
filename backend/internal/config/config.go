@@ -309,6 +309,9 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: webhook.allow_hosts: %q must be a host name or IP address, without scheme or port", h)
 		}
 	}
+	if err := c.checkProd(); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
