@@ -1,0 +1,12 @@
+# Browsers and the CLI PUT uploads and GET SBOMs here with presigned URLs
+# (WARDEN_STORAGE__PUBLIC_ENDPOINT=https://{$WARDEN_S3_DOMAIN}). The Host
+# header must reach SeaweedFS unchanged, because SigV4 signs it; Caddy's
+# reverse_proxy passes it through by default. No size cap here: the presigned
+# URL pins each upload's exact length and SHA-256.
+{$WARDEN_S3_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy s3:8333
+}
