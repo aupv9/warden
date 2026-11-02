@@ -70,6 +70,11 @@ export const mockFlags = {
   /** v0.5: `?mock_web_config=unavailable` (a 500) or `invalid` (a plain-http issuer on a real
    *  host) shows "Can't reach the server's sign-in settings". */
   webConfig: PARAMS.get("mock_web_config"),
+  /** v0.5 wave 2: `?mock_export=truncated` marks the CSV as cut at 50,000 rows;
+   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. */
+  export: PARAMS.get("mock_export"),
+  /** v0.5 wave 2: `?mock_audit=broken` makes "Verify chain" find a changed entry. */
+  auditBroken: PARAMS.get("mock_audit") === "broken",
 };
 
 /** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */

@@ -14,7 +14,7 @@ import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Select } from "../components/Field";
 import type { Option } from "../components/Field";
-import { BackIcon, ChevronIcon, ChevronRightIcon, CloseIcon, FilterIcon, PlusIcon, SearchIcon } from "../components/Icons";
+import { BackIcon, ChevronIcon, ChevronRightIcon, CloseIcon, DownloadIcon, FilterIcon, PlusIcon, SearchIcon } from "../components/Icons";
 import { Kbd, PageHeader, Segmented } from "../components/PageHeader";
 import { Popover } from "../components/Popover";
 import { EmptyState, ErrorState, SkeletonRows } from "../components/States";
@@ -30,6 +30,7 @@ import {
   hasActiveFilters,
   ISSUE_KINDS,
   ISSUE_SOURCES,
+  issueFilterQuery,
   issueFiltersToApiQuery,
   issueFiltersToSearch,
   issueHref,
@@ -45,6 +46,7 @@ import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, Statu
 import { formatEpss, isImageTarget, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
 import { isMaliciousIssue } from "../lib/malicious";
 import { isHistoryIssue } from "../lib/history";
+import { runIssueExport } from "../lib/issueExport";
 import { useIssueCounts } from "../api/hooks/metrics";
 import type { IssueCounts } from "../api/types";
 import { can } from "../lib/permissions";
@@ -391,6 +393,7 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
             </button>
           </span>
         )}
+        <ExportButton orgId={orgId} filters={filters} fixedProject={fixedProject?.id} empty={matchCount === 0} />
         <label className="inline-select">
           <span>Group by</span>
           <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupBy)}>
@@ -613,6 +616,7 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
       <Dialog open={sheet} onClose={() => setSheet(false)} title="Filters" className="dialog sheet">
         <div className="form-grid">
           {phoneFilters}
+          <ExportButton orgId={orgId} filters={filters} fixedProject={fixedProject?.id} empty={matchCount === 0} />
           <div className="dialog-actions">
             <Button onClick={() => update({ ...DEFAULT_FILTERS, q: filters.q, sort: filters.sort })}>Clear</Button>
             <Button variant="primary" onClick={() => setSheet(false)}>
@@ -622,6 +626,25 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         </div>
       </Dialog>
     </div>
+  );
+}
+
+/** v0.5 wave 2: the issue list with its current filters as CSV. Everyone who sees the list may
+ *  export it (the server applies the same visibility); the file is saved, never shown. */
+function ExportButton({ orgId, filters, fixedProject, empty }: { orgId: string; filters: IssueFilters; fixedProject?: string; empty: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      await runIssueExport(orgId, issueFilterQuery(filters, fixedProject));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button size="sm" busy={busy} disabled={empty} onClick={() => void run()} title={empty ? "No issues match these filters" : "Download these issues as a CSV file"}>
+      <DownloadIcon /> {busy ? "Exporting…" : "Export CSV"}
+    </Button>
   );
 }
 
