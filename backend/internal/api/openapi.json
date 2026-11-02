@@ -3760,10 +3760,94 @@
         ],
         "additionalProperties": false,
         "description": "The body of a generic webhook. It carries what a notification email may show and no more: never snippets, descriptions, file contents, comments, emails or secrets. Fields may be added; receivers should ignore unknown ones. webhook.test has org only."
+      },
+      "WebConfig": {
+        "type": "object",
+        "description": "OIDC settings for the browser's authorization-code flow with PKCE. issuer is the server's oidc.issuer, so the UI and the API always trust the same provider.",
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "format": "uri",
+            "description": "OIDC issuer URL (WARDEN_OIDC__ISSUER)."
+          },
+          "client_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Public OIDC client of the web UI (WARDEN_WEB__OIDC_CLIENT_ID)."
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Scopes the UI requests (WARDEN_WEB__OIDC_SCOPE), space-separated; includes openid."
+          },
+          "audience": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent as the `audience` authorization parameter when set (WARDEN_WEB__OIDC_AUDIENCE; Auth0 needs it for a JWT access token). Null: not sent."
+          }
+        },
+        "required": [
+          "issuer",
+          "client_id",
+          "scope",
+          "audience"
+        ],
+        "additionalProperties": false
       }
     }
   },
   "paths": {
+    "/web-config": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "operationId": "getWebConfig",
+        "summary": "Sign-in settings for the web UI (public)",
+        "description": "What the bundled web UI needs before anyone signs in: the OIDC issuer and the public client it signs in with. Public on purpose (no token exists yet): it returns only values a browser sees during sign-in anyway, never a secret, and the same body to every caller.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WebConfig"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me": {
       "get": {
         "tags": [
