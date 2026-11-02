@@ -492,11 +492,15 @@ type BulkAssignInput struct {
 
 type BulkAssignResult struct {
 	Updated int `json:"updated"`
+	// Skipped counts the distinct requested issues left unchanged, whatever
+	// the reason: Updated + Skipped is the number of distinct ids.
+	Skipped int `json:"skipped"`
 }
 
 // BulkAssign assigns many issues to one project member. Issues the caller can't
 // see or assign, whose project the assignee isn't in, or whose status doesn't
-// allow assignment are skipped.
+// allow assignment are skipped and counted, never named: an issue the caller
+// can't see counts the same as one that doesn't exist.
 func (s *Service) BulkAssign(ctx context.Context, a *Actor, in BulkAssignInput) (BulkAssignResult, error) {
 	fe := fieldErrors{}
 	var issueIDs []uuid.UUID
@@ -544,6 +548,7 @@ func (s *Service) BulkAssign(ctx context.Context, a *Actor, in BulkAssignInput) 
 		for _, id := range issueIDs {
 			iss, err := r.Issue(ctx, id, true, s.now())
 			if errors.Is(err, ErrNotFound) {
+				out.Skipped++ // no such issue in this org
 				continue
 			}
 			if err != nil {
@@ -564,12 +569,14 @@ func (s *Service) BulkAssign(ctx context.Context, a *Actor, in BulkAssignInput) 
 				cache[iss.ProjectID] = acc
 			}
 			if !acc.canAsgn {
+				out.Skipped++ // not visible or assignable by the caller, or the assignee isn't a project member
 				continue
 			}
 			from := issuestate.Status(iss.Status)
 			switch from {
 			case issuestate.Open, issuestate.Reopened:
 				if _, err := issuestate.Check(from, issuestate.Assigned, workflowActors(a, acc.role, iss)...); err != nil {
+					out.Skipped++ // the workflow doesn't let this caller assign it
 					continue
 				}
 				if err := r.UpdateIssueState(ctx, iss.ID, string(issuestate.Assigned), &assignee); err != nil {
@@ -581,12 +588,14 @@ func (s *Service) BulkAssign(ctx context.Context, a *Actor, in BulkAssignInput) 
 				}
 			case issuestate.Assigned, issuestate.InProgress:
 				if sameUser(iss.AssigneeID, &assignee) {
+					out.Skipped++ // already theirs
 					continue
 				}
 				if err := r.UpdateIssueState(ctx, iss.ID, iss.Status, &assignee); err != nil {
 					return err
 				}
 			default:
+				out.Skipped++ // fixed, verified, false_positive or risk_accepted
 				continue
 			}
 			if err := r.InsertIssueEvent(ctx, NewEvent{OrgID: a.OrgID, IssueID: iss.ID, ActorID: &uid, Type: "assigned",
