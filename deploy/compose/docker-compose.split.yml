@@ -1,0 +1,20 @@
+# Core host of a split deployment, with the worker on a separate scan VM (see
+# the trust model in docker-compose.prod.yml):
+#
+#   core host: docker compose -f docker-compose.prod.yml -f docker-compose.split.yml --profile core --profile s3 up -d
+#   scan VM:   docker compose -f docker-compose.prod.yml --profile scanner up -d
+#              (WARDEN_DB_HOST=<core private address>, WARDEN_DB_SSLMODE=require,
+#               WARDEN_STORAGE__ENDPOINT=https://<WARDEN_S3_DOMAIN>)
+#
+# Postgres is published on the core host's private address only; firewall it
+# to the scan VM, and give Postgres a server certificate so the worker can use
+# sslmode=require (or stronger) across hosts. The object store needs nothing
+# here: the worker reaches it through Caddy over https.
+services:
+  postgres:
+    ports: ["${POSTGRES_PRIVATE_BIND:?set POSTGRES_PRIVATE_BIND to the core host's private address}:5432:5432"]
+    # The internal network has no gateway, so a published port needs this one.
+    networks: [internal, private]
+
+networks:
+  private: {}

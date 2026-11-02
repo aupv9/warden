@@ -1,0 +1,271 @@
+# Warden in production with Docker Compose. Run from deploy/compose/ after
+# `../../scripts/gen-secrets.sh` (fills .env from .env.example):
+#
+#   docker compose -f docker-compose.prod.yml --profile core --profile s3 --profile scanner up -d
+#   docker compose -f docker-compose.prod.yml --profile mirror run --rm mirror   # then daily (warden-mirror.timer)
+#
+# Profiles:
+#   core     postgres, migrate (one-shot), api (web UI + API), caddy (TLS)
+#   s3       SeaweedFS as the object store, plus a one-shot bucket init;
+#            leave it out and set WARDEN_STORAGE__* to external S3 instead
+#   scanner  the worker: runs every scanner with `docker run --runtime=runsc`
+#   mirror   one-shot sync of the offline scanner data (scripts/sync-mirror.sh)
+#
+# TRUST MODEL. The worker and the mirror job hold the Docker socket, which is
+# root on the host that runs them. Uploaded code is only ever read by
+# scanners inside gVisor (runsc) with no network, a read-only rootfs and no
+# capabilities, and Warden itself never runs it; but a flaw in the worker or
+# in gVisor would reach the whole host. Run `scanner` (and `mirror`) on a
+# dedicated scan VM when you can: nothing else of value on it, and only
+# `core` and `s3` on the other host (docker-compose.split.yml publishes
+# Postgres on the core host's private address; on the scan VM set
+# WARDEN_DB_HOST to it and WARDEN_STORAGE__ENDPOINT to https://<s3 domain>).
+# The API never gets the socket. The host running the worker needs runsc registered with its
+# Docker daemon (https://gvisor.dev/docs/user_guide/install/).
+#
+# HOST PATHS. The worker passes its scratch and mirror directories to
+# `docker run -v`, which the host's daemon resolves on the host: they must be
+# mounted at the same absolute path inside the container as on the host
+# (WARDEN_SCRATCH_DIR, WARDEN_MIRROR_DIR). Create them owned by 65532:
+#   install -d -o 65532 -g 65532 -m 700 /srv/warden/scratch
+#   install -d -o 65532 -g 65532 -m 755 /srv/warden/mirror
+#
+# Nothing but Caddy publishes a port by default. Every image is pinned by
+# digest to a release at least 2 weeks old when pinned; WARDEN_IMAGE should
+# be a release digest too (ghcr.io/aupv9/warden@sha256:…).
+name: warden
+
+x-app-env: &app-env
+  WARDEN_APP__ENV: prod
+  WARDEN_LOG__FORMAT: json
+  WARDEN_LOG__LEVEL: ${WARDEN_LOG__LEVEL:-info}
+  WARDEN_DATABASE__DSN: postgres://warden_app:${WARDEN_APP_PASSWORD:?run gen-secrets.sh}@${WARDEN_DB_HOST:-postgres}:5432/warden?sslmode=${WARDEN_DB_SSLMODE:-disable}
+  WARDEN_OIDC__ISSUER: ${WARDEN_OIDC__ISSUER:?set WARDEN_OIDC__ISSUER}
+  WARDEN_OIDC__AUDIENCE: ${WARDEN_OIDC__AUDIENCE:-warden-api}
+  WARDEN_OIDC__JWKS_URL: ${WARDEN_OIDC__JWKS_URL:-}
+  WARDEN_OIDC__ALGORITHMS: ${WARDEN_OIDC__ALGORITHMS:-RS256}
+  WARDEN_OIDC__REQUIRE_MFA_ROLES: ${WARDEN_OIDC__REQUIRE_MFA_ROLES:-org_admin,security_lead}
+  WARDEN_STORAGE__ENDPOINT: ${WARDEN_STORAGE__ENDPOINT:-http://s3:8333}
+  WARDEN_STORAGE__PUBLIC_ENDPOINT: ${WARDEN_STORAGE__PUBLIC_ENDPOINT:-https://${WARDEN_S3_DOMAIN:-}}
+  WARDEN_STORAGE__BUCKET: ${WARDEN_STORAGE__BUCKET:-warden-uploads}
+  WARDEN_STORAGE__ACCESS_KEY: ${WARDEN_STORAGE__ACCESS_KEY:?run gen-secrets.sh}
+  WARDEN_STORAGE__SECRET_KEY: ${WARDEN_STORAGE__SECRET_KEY:?run gen-secrets.sh}
+  WARDEN_SECRETS__KEY: ${WARDEN_SECRETS__KEY:?run gen-secrets.sh}
+  WARDEN_SMTP__HOST: ${WARDEN_SMTP__HOST:?set WARDEN_SMTP__HOST}
+  WARDEN_SMTP__PORT: ${WARDEN_SMTP__PORT:-587}
+  WARDEN_SMTP__FROM: ${WARDEN_SMTP__FROM:?set WARDEN_SMTP__FROM}
+  WARDEN_SMTP__USERNAME: ${WARDEN_SMTP__USERNAME:-}
+  WARDEN_SMTP__PASSWORD: ${WARDEN_SMTP__PASSWORD:-}
+  WARDEN_SMTP__PUBLIC_BASE_URL: https://${WARDEN_DOMAIN:?set WARDEN_DOMAIN}
+  # Internal listener: /metrics (both), /healthz and /readyz (worker). Never
+  # published; scrape it from the `internal` network.
+  WARDEN_ADMIN__ADDR: 0.0.0.0:9090
+
+x-warden: &warden
+  image: ${WARDEN_IMAGE:?set WARDEN_IMAGE (pinned by digest)}
+  restart: unless-stopped
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging: &logging
+    driver: json-file
+    options: { max-size: 20m, max-file: "5" }
+
+services:
+  postgres:
+    profiles: [core]
+    image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: warden
+      POSTGRES_USER: warden_owner
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?run gen-secrets.sh}
+      WARDEN_APP_PASSWORD: ${WARDEN_APP_PASSWORD:?run gen-secrets.sh}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    # Not published (docker-compose.split.yml does, for a separate scan VM).
+    networks: [internal]
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "warden_owner", "-d", "warden"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  # Applies migrations as the schema owner, then exits; api and worker wait for it.
+  migrate:
+    <<: *warden
+    profiles: [core]
+    restart: "no"
+    entrypoint: ["/usr/local/bin/warden-migrate"]
+    environment:
+      WARDEN_APP__ENV: prod
+      WARDEN_LOG__FORMAT: json
+      WARDEN_MIGRATE__DSN: postgres://warden_owner:${POSTGRES_OWNER_PASSWORD:?run gen-secrets.sh}@postgres:5432/warden?sslmode=disable
+    healthcheck: { disable: true }
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+
+  api:
+    <<: *warden
+    profiles: [core]
+    environment:
+      <<: *app-env
+      WARDEN_SERVER__HOST: 0.0.0.0
+      WARDEN_SERVER__PORT: "8000"
+      WARDEN_WEB__OIDC_CLIENT_ID: ${WARDEN_WEB__OIDC_CLIENT_ID:-warden-web}
+      WARDEN_WEB__OIDC_SCOPE: ${WARDEN_WEB__OIDC_SCOPE:-openid profile email}
+      WARDEN_WEB__OIDC_AUDIENCE: ${WARDEN_WEB__OIDC_AUDIENCE:-}
+    # The image's HEALTHCHECK runs `warden-api -healthcheck`. Reached only
+    # through Caddy.
+    stop_grace_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      s3-init: { condition: service_completed_successfully, required: false }
+    # internal: database and object store; egress: the identity provider's
+    # discovery and keys, SMTP.
+    networks: [internal, egress]
+
+  worker:
+    <<: *warden
+    profiles: [scanner]
+    entrypoint: ["/usr/local/bin/warden-worker"]
+    environment:
+      <<: *app-env
+      WARDEN_SCAN__SANDBOX_RUNTIME: runsc
+      WARDEN_SCAN__SCRATCH_DIR: ${WARDEN_SCRATCH_DIR:-/srv/warden/scratch}
+      WARDEN_SCAN__MIRROR_DIR: ${WARDEN_MIRROR_DIR:-/srv/warden/mirror}
+      WARDEN_SCAN__HMAC_KEY: ${WARDEN_SCAN__HMAC_KEY:?run gen-secrets.sh}
+      WARDEN_SCAN__TIMEOUT: ${WARDEN_SCAN__TIMEOUT:-30m}
+      WARDEN_SCAN__SLOTS_PER_NODE: ${WARDEN_SCAN__SLOTS_PER_NODE:-7}
+      # Pinned by digest, or local image IDs: scripts/scanner-images.sh. Empty
+      # ones stop the worker at startup (prod refuses a scanner without an image).
+      WARDEN_SCAN__IMAGES__GITLEAKS: ${WARDEN_SCAN__IMAGES__GITLEAKS:-}
+      WARDEN_SCAN__IMAGES__OPENGREP: ${WARDEN_SCAN__IMAGES__OPENGREP:-}
+      WARDEN_SCAN__IMAGES__TRIVY: ${WARDEN_SCAN__IMAGES__TRIVY:-}
+      WARDEN_SCAN__IMAGES__CHECKOV: ${WARDEN_SCAN__IMAGES__CHECKOV:-}
+    # The docker CLI in the image talks to the host daemon; the socket's group
+    # (DOCKER_GID, filled in by gen-secrets.sh) is the only extra right.
+    group_add: ["${DOCKER_GID:-}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same absolute path inside as on the host (see HOST PATHS above).
+      - ${WARDEN_SCRATCH_DIR:-/srv/warden/scratch}:${WARDEN_SCRATCH_DIR:-/srv/warden/scratch}
+      - ${WARDEN_MIRROR_DIR:-/srv/warden/mirror}:${WARDEN_MIRROR_DIR:-/srv/warden/mirror}:ro
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    # A running scan finishes on stop: scan.timeout plus 10 minutes, with margin.
+    # Raise it with WARDEN_SCAN__TIMEOUT.
+    stop_grace_period: 45m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/warden-worker", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully, required: false }
+      s3-init: { condition: service_completed_successfully, required: false }
+    # egress: webhooks, Slack and SMTP. Scanners themselves get --network=none.
+    networks: [internal, egress]
+
+  caddy:
+    profiles: [core]
+    image: caddy:2.11.6@sha256:3422ce6de165df66534f9b9ba50efaf457114ec961763cc52f5dbdaac2972d73
+    restart: unless-stopped
+    environment:
+      WARDEN_DOMAIN: ${WARDEN_DOMAIN:?set WARDEN_DOMAIN}
+      WARDEN_S3_DOMAIN: ${WARDEN_S3_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    ports:
+      - "${HTTP_BIND:-80}:80"
+      - "${HTTPS_BIND:-443}:443"
+      - "${HTTPS_BIND:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites:/etc/caddy/sites:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [internal, egress]
+    logging: *logging
+
+  s3:
+    profiles: [s3]
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    restart: unless-stopped
+    # Browser uploads are cross-origin PUTs: only the web UI's origin may.
+    command: ["server", "-s3", "-dir=/data", "-s3.config=/run/secrets/s3.json", "-s3.allowedOrigins=https://${WARDEN_DOMAIN:?set WARDEN_DOMAIN}"]
+    secrets: [s3.json]
+    volumes: [s3data:/data]
+    networks: [internal]
+    logging: *logging
+
+  # Creates the bucket (Warden's own S3 identity can't), then exits.
+  s3-init:
+    profiles: [s3]
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    restart: "no"
+    environment:
+      BUCKET: ${WARDEN_STORAGE__BUCKET:-warden-uploads}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $$(seq 90); do
+          if echo s3.bucket.list | weed shell -master=s3:9333 2>/dev/null | grep -qw "$$BUCKET"; then
+            echo "bucket $$BUCKET ready"; exit 0
+          fi
+          echo "s3.bucket.create -name $$BUCKET" | weed shell -master=s3:9333 >/dev/null 2>&1 || true
+          sleep 2
+        done
+        echo "could not create bucket $$BUCKET" >&2; exit 1
+    depends_on:
+      s3: { condition: service_started }
+    networks: [internal]
+
+  # The offline scanner data: Trivy DB, Opengrep rules, Gitleaks config,
+  # KEV/EPSS/OSV feeds. Same host-path rule as the worker: sync-mirror.sh
+  # runs the Trivy image with -v "$MIRROR/trivy:/data".
+  mirror:
+    profiles: [mirror]
+    build: ./mirror
+    image: warden-mirror:local
+    restart: "no"
+    user: "65532:65532"
+    group_add: ["${DOCKER_GID:-}"]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,size=512m"]
+    environment:
+      HOME: /tmp
+      MIRROR: ${WARDEN_MIRROR_DIR:-/srv/warden/mirror}
+      WARDEN_KEV_URL: ${WARDEN_KEV_URL:-}
+      WARDEN_KEV_FALLBACK_URL: ${WARDEN_KEV_FALLBACK_URL:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${WARDEN_MIRROR_DIR:-/srv/warden/mirror}:${WARDEN_MIRROR_DIR:-/srv/warden/mirror}
+      - ../../scripts:/opt/warden/scripts:ro
+      - ../../scanners:/opt/warden/scanners:ro
+      - ../../rules:/opt/warden/rules:ro
+    networks: [egress]
+
+secrets:
+  # SeaweedFS identities, written by gen-secrets.sh (mode 600).
+  s3.json:
+    file: ./secrets/s3.json
+
+networks:
+  # Database, object store and the services that use them: no route out.
+  internal:
+    internal: true
+  egress: {}
+
+volumes:
+  pgdata:
+  s3data:
+  caddy_data:
+  caddy_config:
