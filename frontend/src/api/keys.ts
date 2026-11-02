@@ -23,6 +23,7 @@ export const qk = {
   issueComments: (orgId: string, issueId: string) => ["org", orgId, "issue", issueId, "comments"] as const,
   exceptionLists: (orgId: string) => ["org", orgId, "exceptions"] as const,
   exceptions: (orgId: string, tab: string) => ["org", orgId, "exceptions", tab] as const,
+  auditLogs: (orgId: string) => ["org", orgId, "audit"] as const,
   auditLog: (orgId: string, query: QueryParams) => ["org", orgId, "audit", query] as const,
   // v0.2
   projectList: (orgId: string, includeArchived: boolean) => ["org", orgId, "projects", { include_archived: includeArchived }] as const,
@@ -40,9 +41,14 @@ export const qk = {
   componentUsage: (orgId: string, query: QueryParams) => ["org", orgId, "components", "usage", query] as const,
   projectComponents: (orgId: string, projectId: string, query: QueryParams) => ["org", orgId, "projects", projectId, "components", query] as const,
   projectTargets: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId, "targets"] as const,
+  // v0.5 wave 2
+  orgTargets: (orgId: string, kind: string) => ["org", orgId, "targets", kind] as const,
+  componentEcosystems: (orgId: string) => ["org", orgId, "components", "ecosystems"] as const,
   // v0.4 wave 2. No key ever holds a webhook URL or signing secret (webhooks.test.ts).
   webhooks: (orgId: string) => ["org", orgId, "webhooks"] as const,
   webhookDeliveries: (orgId: string, webhookId: string) => ["org", orgId, "webhooks", webhookId, "deliveries"] as const,
+  // v0.5 wave 2: one log per state filter, under the prefix above (so a test refreshes all).
+  webhookDeliveryLog: (orgId: string, webhookId: string, state: string) => ["org", orgId, "webhooks", webhookId, "deliveries", state || "all"] as const,
   // Notifications belong to the user, not to an org.
   notificationsAll: ["notifications"] as const,
   unreadCount: ["notifications", "unread-count"] as const,

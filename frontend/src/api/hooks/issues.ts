@@ -2,7 +2,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { api } from "../client";
 import type { QueryParams } from "../client";
 import { qk } from "../keys";
-import type { BulkAssignBody, Comment, Issue, IssueEvent, IssuePage, ItemList, TransitionBody } from "../types";
+import type { BulkAssignBody, BulkAssignResult, Comment, Issue, IssueEvent, IssuePage, ItemList, TransitionBody } from "../types";
 
 const orgBase = (orgId: string) => `/orgs/${encodeURIComponent(orgId)}`;
 const issuePath = (orgId: string, issueId: string) => `${orgBase(orgId)}/issues/${encodeURIComponent(issueId)}`;
@@ -75,7 +75,7 @@ export function useBulkAssign(orgId: string) {
   const invalidate = useInvalidateIssueWork(orgId);
   return useMutation({
     mutationFn: (body: BulkAssignBody) =>
-      api<{ updated: number }>(`${orgBase(orgId)}/issues/assign`, { method: "POST", body }),
+      api<BulkAssignResult>(`${orgBase(orgId)}/issues/assign`, { method: "POST", body }),
     onSuccess: () => invalidate(),
   });
 }

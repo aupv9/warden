@@ -18,6 +18,21 @@ func TestHourlyAt(t *testing.T) {
 	}
 }
 
+// River's job retention is explicit, for insert-only and working clients alike.
+func TestConfigJobRetention(t *testing.T) {
+	for _, opts := range []Options{{}, {ScanSlots: 1, ScanTimeout: time.Minute}, {ScanSlots: 1, ScanTimeout: time.Minute, Env: &Env{}}} {
+		cfg, err := Config(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.CompletedJobRetentionPeriod != 7*24*time.Hour || cfg.CancelledJobRetentionPeriod != 7*24*time.Hour ||
+			cfg.DiscardedJobRetentionPeriod != 30*24*time.Hour {
+			t.Fatalf("%+v: retention %v / %v / %v", opts, cfg.CompletedJobRetentionPeriod,
+				cfg.CancelledJobRetentionPeriod, cfg.DiscardedJobRetentionPeriod)
+		}
+	}
+}
+
 func TestScanJobsRetryOnceOnScanQueue(t *testing.T) {
 	o := ScanArgs{}.InsertOpts()
 	if o.Queue != QueueScan || o.MaxAttempts != 2 {

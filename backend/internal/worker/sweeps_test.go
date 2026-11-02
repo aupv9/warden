@@ -255,6 +255,7 @@ func TestPeriodicWorkersDelegate(t *testing.T) {
 	for _, err := range []error{
 		(PurgeExpiredSourcesWorker{}).Work(context.Background(), nil),
 		(ReopenExpiredRiskAcceptedWorker{}).Work(context.Background(), nil),
+		(PruneNotificationsWorker{}).Work(context.Background(), nil),
 		(&ScanWorker{}).Work(context.Background(), &river.Job[ScanArgs]{JobRow: &rivertype.JobRow{}}),
 	} {
 		if !errors.As(err, &cancel) {
@@ -273,7 +274,7 @@ func TestConfig(t *testing.T) {
 		t.Fatal("no env: workers cancel, nothing periodic")
 	}
 	cfg, err = Config(Options{ScanTimeout: 30 * time.Minute, ScanSlots: 3, Env: &Env{}})
-	if err != nil || len(cfg.PeriodicJobs) != 7 || cfg.Queues[QueueScan].MaxWorkers != 3 {
+	if err != nil || len(cfg.PeriodicJobs) != 8 || cfg.Queues[QueueScan].MaxWorkers != 3 {
 		t.Fatalf("%+v %v", cfg, err)
 	}
 	// Rescue must not fire while a scan (timeout + finalization) can still be running.

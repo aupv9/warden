@@ -17,6 +17,7 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/secretbox"
 	"github.com/aupv9/warden/backend/internal/service"
+	"github.com/aupv9/warden/backend/internal/service/servicetest"
 	"github.com/aupv9/warden/backend/internal/webhook"
 )
 
@@ -107,7 +108,9 @@ func TestWebhooksUnavailableWithoutKey(t *testing.T) {
 	if r.obj()["available"] != false || len(r.items()) != 0 {
 		t.Fatal(r.body)
 	}
-	e.expect(e.do("POST", "/webhooks", admin, genericBody()), 409, "CONFLICT")
+	e.expect(e.do("POST", "/webhooks", admin, genericBody()), 409, "SECRETS_KEY_MISSING")
+	// The permission check comes first: others learn nothing about the server.
+	e.expect(e.do("POST", "/webhooks", owner, genericBody()), 403, "FORBIDDEN")
 }
 
 func TestCreateWebhook(t *testing.T) {
@@ -207,7 +210,7 @@ func TestCreateWebhookValidation(t *testing.T) {
 	for i := range 20 {
 		e.expect(e.do("POST", "/webhooks", admin, body(map[string]any{"name": fmt.Sprint("hook ", i)})), 201, "")
 	}
-	e.expect(e.do("POST", "/webhooks", admin, genericBody()), 409, "CONFLICT")
+	e.expect(e.do("POST", "/webhooks", admin, genericBody()), 409, "WEBHOOK_LIMIT")
 }
 
 func TestUpdateWebhook(t *testing.T) {
@@ -351,6 +354,28 @@ func TestWebhookTestAndDeliveries(t *testing.T) {
 	}
 	e.expect(e.do("GET", "/webhooks/"+id+"/deliveries?limit=101", lead, nil), 422, "VALIDATION_FAILED")
 	e.expect(e.do("GET", "/webhooks/"+id+"/deliveries?cursor=!!!", lead, nil), 422, "VALIDATION_FAILED")
+
+	// ?state= filters; anything but the three states is a 422.
+	delivered := service.Time(e.f.Now.Add(-2 * time.Hour)) // older than the tests: last_delivery stays theirs
+	e.f.AddDelivery(servicetest.DeliveryRow{OrgID: e.org, WebhookID: uuid.MustParse(id), WebhookDelivery: service.WebhookDelivery{
+		ID: uuid.New(), Type: "scan.finished", State: "delivered", Attempts: 1, CreatedAt: delivered, DeliveredAt: &delivered}})
+	for state, n := range map[string]int{"pending": 11, "delivered": 1, "failed": 0} {
+		r = e.do("GET", "/webhooks/"+id+"/deliveries?limit=100&state="+state, lead, nil)
+		e.expect(r, 200, "")
+		if len(r.items()) != n {
+			t.Fatal(state, r.body)
+		}
+		for _, d := range r.items() {
+			if d.(map[string]any)["state"] != state {
+				t.Fatal(state, r.body)
+			}
+		}
+	}
+	for _, bad := range []string{"bogus", "PENDING", "pending,failed", "%00"} {
+		e.expect(e.do("GET", "/webhooks/"+id+"/deliveries?state="+bad, lead, nil), 422, "VALIDATION_FAILED")
+	}
+	// The permission check comes before the validation.
+	e.expect(e.do("GET", "/webhooks/"+id+"/deliveries?state=bogus", owner, nil), 403, "FORBIDDEN")
 
 	// The last 30 days only.
 	e.f.Now = e.f.Now.Add(31 * 24 * time.Hour)

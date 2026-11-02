@@ -61,6 +61,14 @@ type Settings struct {
 	Webhook WebhookSection `koanf:"webhook"`
 	Web     WebSection     `koanf:"web"`
 	Admin   AdminSection   `koanf:"admin"`
+	Notify  NotifySection  `koanf:"notify"`
+}
+
+// NotifySection: how long in-app notifications are kept (job
+// prune_notifications). Audit log, scans and issues are never pruned.
+type NotifySection struct {
+	ReadRetention   time.Duration `koanf:"read_retention" validate:"min=24h"`
+	UnreadRetention time.Duration `koanf:"unread_retention" validate:"min=24h"`
 }
 
 // WebSection is what the bundled web UI signs in with, served unauthenticated
@@ -251,6 +259,7 @@ func settingsDefaults() *Settings {
 		},
 		Webhook: WebhookSection{FailureLimit: 10},
 		Web:     WebSection{OIDCClientID: "warden-web", OIDCScope: "openid profile email"},
+		Notify:  NotifySection{ReadRetention: 90 * 24 * time.Hour, UnreadRetention: 365 * 24 * time.Hour},
 	}
 }
 

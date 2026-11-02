@@ -196,13 +196,13 @@ func (f *Fake) WebhookTestsSince(_ context.Context, webhookID uuid.UUID, since t
 	return n, oldest, f.fail("WebhookTestsSince")
 }
 
-func (f *Fake) WebhookDeliveries(_ context.Context, webhookID uuid.UUID, since time.Time, after *service.DeliveryCursor, limit int) ([]service.WebhookDelivery, error) {
+func (f *Fake) WebhookDeliveries(_ context.Context, webhookID uuid.UUID, since time.Time, state string, after *service.DeliveryCursor, limit int) ([]service.WebhookDelivery, error) {
 	if err := f.fail("WebhookDeliveries"); err != nil {
 		return nil, err
 	}
 	var out []service.WebhookDelivery
 	for _, d := range f.st.hooks.Deliveries {
-		if d.WebhookID == webhookID && d.OrgID == f.org && !d.CreatedAt.T().Before(since) {
+		if d.WebhookID == webhookID && d.OrgID == f.org && !d.CreatedAt.T().Before(since) && (state == "" || d.State == state) {
 			out = append(out, d.WebhookDelivery)
 		}
 	}

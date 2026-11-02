@@ -104,6 +104,12 @@ export function scanErrorMessages(code: string, limits: Limits = DEFAULT_LIMITS)
         short: `took over ${limits.scan_timeout_minutes} min`,
         full: `The scan took longer than the ${limits.scan_timeout_minutes}-minute limit and was stopped.`,
       };
+    // v0.5: the server cancels a scan whose upload wasn't started within an hour (tab closed).
+    case "UPLOAD_ABANDONED":
+      return {
+        short: "upload never finished",
+        full: "The upload didn't finish within an hour, so Warden cancelled the scan. Nothing was scanned and no issues changed. Upload the file again.",
+      };
     default:
       return { short: "failed", full: `The scan failed (${code}). Tell your operator; the worker log has the details.` };
   }

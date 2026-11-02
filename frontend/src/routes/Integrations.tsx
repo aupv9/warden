@@ -12,6 +12,7 @@ import {
   useWebhookDeliveries,
   useWebhooks,
 } from "../api/hooks/webhooks";
+import type { DeliveryStateFilter } from "../api/hooks/webhooks";
 import { useProjects } from "../api/hooks/projects";
 import { qk } from "../api/keys";
 import { flattenPages } from "../api/paging";
@@ -24,7 +25,7 @@ import { CopyButton } from "../components/CopyButton";
 import { Dialog } from "../components/Dialog";
 import { focusFirstInvalid, Select, TextField } from "../components/Field";
 import { AlertIcon, CloseIcon, IntegrationsIcon, LockIcon, PlusIcon, SendIcon } from "../components/Icons";
-import { PageHeader } from "../components/PageHeader";
+import { PageHeader, Segmented } from "../components/PageHeader";
 import { Popover } from "../components/Popover";
 import { ActionError, Banner, EmptyState, ErrorState, ForbiddenState, SkeletonBlock, SkeletonRows } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
@@ -37,8 +38,10 @@ import {
   createBody,
   DELIVERY_POLL_FOR_MS,
   DELIVERY_POLL_MS,
+  DELIVERY_STATE_FILTERS,
   deliveryErrorText,
   deliveryTypeLabel,
+  emptyDeliveriesText,
   eventsText,
   formFromWebhook,
   INITIAL_SECRET_DIALOG,
@@ -457,13 +460,17 @@ export function DeliveryLog({
   onPolled?: () => void;
 }) {
   const { orgId } = useOrgCtx();
-  const log = useWebhookDeliveries(orgId, w.id, pollMs);
+  // v0.5 wave 2: show one state only (?state=), so a busy webhook's failures don't scroll away.
+  const [state, setState] = useState<DeliveryStateFilter>("");
+  const log = useWebhookDeliveries(orgId, w.id, pollMs, state);
   const items = flattenPages(log.data?.pages);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const headingId = useId();
   useEffect(() => {
     if (autoFocus) headingRef.current?.focus({ preventScroll: true });
   }, [autoFocus, w.id]);
+  // Another webhook's log starts on All.
+  useEffect(() => setState(""), [w.id]);
   // While polling, the list's "last delivery" follows the log.
   const polled = useRef(onPolled);
   polled.current = onPolled;
@@ -487,6 +494,13 @@ export function DeliveryLog({
           </button>
         )}
       </div>
+      <Segmented label="Delivery state" as="group">
+        {DELIVERY_STATE_FILTERS.map((f) => (
+          <button key={f.value || "all"} type="button" aria-pressed={state === f.value} className={state === f.value ? "active" : undefined} onClick={() => setState(f.value)}>
+            {f.label}
+          </button>
+        ))}
+      </Segmented>
       <p className="small muted" role="status" aria-live="polite">
         {pollMs ? "Checking for new deliveries every 5 seconds…" : ""}
       </p>
@@ -495,7 +509,7 @@ export function DeliveryLog({
       ) : log.isError ? (
         <ErrorState error={log.error} onRetry={() => void log.refetch()} what="the delivery log" />
       ) : items.length === 0 ? (
-        <p className="muted">No deliveries in the last 30 days. Send a test to see one here.</p>
+        <p className="muted">{emptyDeliveriesText(state)}</p>
       ) : (
         <>
           <ul className="usage-list delivery-list" aria-labelledby={headingId}>
@@ -721,10 +735,8 @@ function WebhookFormDialog({ webhook, projects, onDone }: { webhook: Webhook | n
       </p>
       <ActionError
         error={mutation.error}
-        overrides={{
-          CONFLICT: `Warden couldn't add it: the org already has ${WEBHOOK_MAX} webhooks, or webhooks were turned off on the server. Reload the page to see which.`,
-          VALIDATION_FAILED: "Some fields need attention.",
-        }}
+        // WEBHOOK_LIMIT and SECRETS_KEY_MISSING (409) have their own words in api/errors.ts.
+        overrides={{ VALIDATION_FAILED: "Some fields need attention." }}
       />
       {server.leftover.map((m) => (
         <div key={m} className="banner banner-error" role="alert">

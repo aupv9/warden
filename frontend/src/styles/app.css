@@ -2464,6 +2464,19 @@ button.fchip-main:hover {
 .banner-info > svg {
   color: var(--accent);
 }
+/* v0.5 wave 2: a passed check (the audit log's "Chain intact."); the text stays in the text
+   colour, only the check mark is green. */
+.banner-success {
+  background: var(--msg-info-bg);
+  border-color: var(--line);
+  color: var(--text-2);
+}
+.banner-success > svg {
+  color: var(--success-text);
+}
+.verify-block .banner + [role="status"] > .banner {
+  margin-top: 8px;
+}
 .toaster {
   position: fixed;
   right: 20px;
@@ -4394,6 +4407,12 @@ fieldset.policy-section > legend.policy-head + * {
   margin: 0;
   padding: 8px 10px;
   max-width: 260px;
+}
+/* v0.5 wave 2: a project heading in the org-wide Image filter. */
+.menu-group-label {
+  margin: 0;
+  padding: 8px 8px 2px;
+  font-weight: 500;
 }
 
 /* An on/off filter beside selects (desktop); the phone sheet uses a checkbox instead. */

@@ -78,9 +78,11 @@ const defaultDeps: ApiDeps = {
   refreshToken: () => (isMockMode ? Promise.resolve(null) : refreshAccessToken()),
 };
 
-export async function api<T>(path: string, opts: ApiOptions = {}, deps: ApiDeps = defaultDeps): Promise<T> {
+/** Sends the request with the bearer token, refreshing it once on 401 (DESIGN.md). The token
+ *  only ever travels in the Authorization header, never in the URL. */
+async function request(path: string, opts: ApiOptions, deps: ApiDeps, accept: string): Promise<Response> {
   const send = async (token: string | null): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = { Accept: accept };
     if (opts.body !== undefined) headers["Content-Type"] = "application/json";
     if (token) headers.Authorization = `Bearer ${token}`;
     try {
@@ -105,26 +107,47 @@ export async function api<T>(path: string, opts: ApiOptions = {}, deps: ApiDeps 
     const fresh = await deps.refreshToken();
     if (fresh) res = await send(fresh);
   }
+  return res;
+}
 
-  if (res.status === 204) return undefined as T;
+function errorFrom(res: Response, env: Envelope<unknown> | null, path: string): ApiError {
+  // The org's MFA rule: the org layout swaps in its full-page explanation (lib/mfa.ts).
+  if (env?.error?.code === "MFA_REQUIRED") reportMfaRequired(path);
+  return new ApiError(
+    res.status,
+    env?.error ?? { code: HTTP_ERROR, message: res.statusText || `HTTP ${res.status}` },
+    env?.meta?.request_id ?? res.headers.get("X-Request-ID") ?? undefined,
+    parseRetryAfter(res.headers.get("Retry-After")),
+  );
+}
 
-  let env: Envelope<T> | null = null;
+async function readEnvelope<T>(res: Response): Promise<Envelope<T> | null> {
   try {
-    env = (await res.json()) as Envelope<T>;
+    return (await res.json()) as Envelope<T>;
   } catch {
     // Not JSON (e.g. a proxy error page). Never surface its body: treat it as a bare HTTP error.
+    return null;
   }
-  if (!res.ok || !env || env.error) {
-    // The org's MFA rule: the org layout swaps in its full-page explanation (lib/mfa.ts).
-    if (env?.error?.code === "MFA_REQUIRED") reportMfaRequired(path);
-    throw new ApiError(
-      res.status,
-      env?.error ?? { code: HTTP_ERROR, message: res.statusText || `HTTP ${res.status}` },
-      env?.meta?.request_id ?? res.headers.get("X-Request-ID") ?? undefined,
-      parseRetryAfter(res.headers.get("Retry-After")),
-    );
-  }
+}
+
+export async function api<T>(path: string, opts: ApiOptions = {}, deps: ApiDeps = defaultDeps): Promise<T> {
+  const res = await request(path, opts, deps, "application/json");
+  if (res.status === 204) return undefined as T;
+  const env = await readEnvelope<T>(res);
+  if (!res.ok || !env || env.error) throw errorFrom(res, env, path);
   return env.data as T;
+}
+
+/** v0.5: a file the API answers with (the issue list as CSV). The body is handed back as a Blob
+ *  and never read or parsed here; errors still come as the JSON envelope. */
+export async function apiFile(
+  path: string,
+  opts: ApiOptions & { accept: string },
+  deps: ApiDeps = defaultDeps,
+): Promise<{ blob: Blob; headers: Headers }> {
+  const res = await request(path, opts, deps, opts.accept);
+  if (!res.ok) throw errorFrom(res, await readEnvelope(res), path);
+  return { blob: await res.blob(), headers: res.headers };
 }
 
 /** Retry-After in seconds (the API sends seconds; an HTTP date is also accepted). */
