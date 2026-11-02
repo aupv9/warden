@@ -1227,7 +1227,7 @@ export interface paths {
         };
         /**
          * The issue list as CSV (same filters and visibility)
-         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens.
+         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. If the server fails after the first row was sent, the download ends early (over HTTP/1.1 the connection is reset; over HTTP/2 the response may simply end): a file with fewer data rows than the export's audit entry is incomplete.
          */
         get: operations["exportIssuesCSV"];
         put?: never;
@@ -6619,6 +6619,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            /** @description SECRETS_KEY_MISSING: webhooks are unavailable on this server (no secrets.key). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             /** @description Validation failed or invalid transition. */
             422: {
                 headers: {
@@ -6685,6 +6694,15 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description SECRETS_KEY_MISSING: webhooks are unavailable on this server (no secrets.key). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
