@@ -1,0 +1,10 @@
+# TLS in front of Warden (deploy/compose/docker-compose.prod.yml). Caddy gets
+# and renews certificates from Let's Encrypt for each site in sites/, so
+# ports 80 and 443 must reach this host and the names must resolve to it.
+{
+	email {$ACME_EMAIL}
+}
+
+# sites/warden.caddy: the web UI and API. sites/s3.caddy: the bundled object
+# store (profile s3); delete it when using external S3.
+import /etc/caddy/sites/*.caddy
