@@ -17,7 +17,10 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS build
-ARG TARGETOS=linux TARGETARCH=amd64 VERSION=dev COMMIT=none BUILD_TIME=unknown
+# No defaults for TARGETOS/TARGETARCH: a default wins over the value BuildKit
+# sets for each --platform, and an arm64 image would get amd64 binaries.
+ARG TARGETOS TARGETARCH
+ARG VERSION=dev COMMIT=none BUILD_TIME=unknown
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
@@ -35,7 +38,7 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -tags webui -o /out/ \
 # each scanner with `docker run --runtime=runsc` against the host's daemon.
 # Docker 29.9.1, published 2026-10-14; SHA-256 of the upstream tarballs.
 FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS dockercli
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 ARG DOCKER_VERSION=29.9.1
 ARG DOCKER_SHA256_AMD64=c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57
 ARG DOCKER_SHA256_ARM64=3e93cc6d1a686456a3b18eefdde26467a837a7a2b257af22e27cba1dbc1b2018
