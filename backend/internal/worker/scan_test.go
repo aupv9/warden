@@ -23,6 +23,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
@@ -321,8 +322,16 @@ func (h *harness) failedWith(code string) {
 
 func TestRunScanHappyPath(t *testing.T) {
 	h := newHarness(t, "queued")
+	scans := metrics.Value("warden_scans_total", map[string]string{"status": "completed", "kind": "source"})
+	durations := metrics.Value("warden_scan_duration_seconds", map[string]string{"kind": "source"})
+	runs := metrics.Value("warden_tool_runs_total", map[string]string{"tool": "opengrep", "status": "succeeded"})
 	if err := h.run(1); err != nil {
 		t.Fatal(err)
+	}
+	if metrics.Value("warden_scans_total", map[string]string{"status": "completed", "kind": "source"}) != scans+1 ||
+		metrics.Value("warden_scan_duration_seconds", map[string]string{"kind": "source"}) != durations+1 ||
+		metrics.Value("warden_tool_runs_total", map[string]string{"tool": "opengrep", "status": "succeeded"}) != runs+1 {
+		t.Fatal("scan metrics not recorded")
 	}
 	fin := h.db.Calls("UPDATE scan SET status = $2, error_code = NULL")
 	if len(fin) != 1 || fin[0].Args[1] != "completed" {
