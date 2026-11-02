@@ -32,6 +32,20 @@ describe("error code → message", () => {
     expect(errorMessage(err(404, "USER_NOT_FOUND"))).toMatch(/signed in to Warden yet/);
   });
 
+  it("v0.5 wave 2: the add-webhook dialog tells the two 409s apart, in a banner in the dialog", () => {
+    const limit = err(409, "WEBHOOK_LIMIT");
+    const noKey = err(409, "SECRETS_KEY_MISSING");
+    // The dialog passes only a VALIDATION_FAILED override, as Integrations.tsx does.
+    const overrides = { VALIDATION_FAILED: "Some fields need attention." };
+    expect(errorMessage(limit, overrides)).toBe("This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one.");
+    expect(errorMessage(noKey, overrides)).toBe(
+      "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY.",
+    );
+    // Shown where the problem is (ActionError in the dialog), not as a toast.
+    expect(isToastedActionError(limit)).toBe(false);
+    expect(isToastedActionError(noKey)).toBe(false);
+  });
+
   it("lets a screen override a code", () => {
     expect(errorMessage(err(409, "CONFLICT"), { CONFLICT: "A project with key WEB already exists." })).toBe("A project with key WEB already exists.");
   });

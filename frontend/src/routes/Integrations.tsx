@@ -721,10 +721,8 @@ function WebhookFormDialog({ webhook, projects, onDone }: { webhook: Webhook | n
       </p>
       <ActionError
         error={mutation.error}
-        overrides={{
-          CONFLICT: `Warden couldn't add it: the org already has ${WEBHOOK_MAX} webhooks, or webhooks were turned off on the server. Reload the page to see which.`,
-          VALIDATION_FAILED: "Some fields need attention.",
-        }}
+        // WEBHOOK_LIMIT and SECRETS_KEY_MISSING (409) have their own words in api/errors.ts.
+        overrides={{ VALIDATION_FAILED: "Some fields need attention." }}
       />
       {server.leftover.map((m) => (
         <div key={m} className="banner banner-error" role="alert">
