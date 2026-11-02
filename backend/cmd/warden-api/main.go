@@ -82,21 +82,39 @@ func appOptions(cfg *config.Config) fx.Option {
 			}
 			return service.New(store.New(pool, jobs), objects, sc, log)
 		}),
-		fx.Invoke(func(e *gin.Engine, v cgauth.Verifier, svc *service.Service, c *config.Config, objects *storage.Client) error {
-			opts, err := webOptions(c, objects, webui.Embedded())
+		fx.Invoke(func(lc fx.Lifecycle, e *gin.Engine, v cgauth.Verifier, svc *service.Service, c *config.Config,
+			objects *storage.Client, keys *auth.JWKS, log *slog.Logger) error {
+			dist := webui.Embedded()
+			opts, err := webOptions(c, objects, keys.BrowserEndpoints, dist)
 			if err != nil {
 				return err
 			}
 			api.Register(e, v, svc, opts...)
+			if dist != nil {
+				// Read discovery now, so the UI's CSP names the provider's token
+				// endpoint before the first sign-in. In the background: an
+				// unreachable provider must not stop the API from starting
+				// (the CSP falls back to the issuer's origin until it answers).
+				lc.Append(fx.StartHook(func() {
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						if err := keys.Warm(ctx); err != nil {
+							log.Warn("OIDC discovery for the web UI failed; retried on the next token", slog.String("status", keys.Status().Err))
+						}
+					}()
+				}))
+			}
 			return nil
 		}),
 	)
 }
 
 // webOptions are the web UI's sign-in settings, and the UI itself when this
-// binary bundles one (built with -tags webui). Its CSP allows the issuer and
-// the origin presigned URLs point at, both from server configuration.
-func webOptions(c *config.Config, objects *storage.Client, dist fs.FS) ([]api.Option, error) {
+// binary bundles one (built with -tags webui). Its CSP allows the issuer, the
+// endpoints its discovery document names (read on each response, so it
+// follows the key cache's refreshes), and the origin presigned URLs point at.
+func webOptions(c *config.Config, objects *storage.Client, endpoints func() auth.BrowserEndpoints, dist fs.FS) ([]api.Option, error) {
 	wc := api.WebConfig{Issuer: c.OIDC.Issuer, ClientID: c.Web.OIDCClientID, Scope: c.Web.OIDCScope}
 	if c.Web.OIDCAudience != "" {
 		aud := c.Web.OIDCAudience
@@ -110,9 +128,20 @@ func webOptions(c *config.Config, objects *storage.Client, dist fs.FS) ([]api.Op
 	if err != nil {
 		return nil, err
 	}
-	csp, err := webui.CSP(c.OIDC.Issuer, storageOrigin)
+	base := webui.Policy{Issuer: c.OIDC.Issuer, Storage: storageOrigin}
+	// Issuer and storage are checked once, here: a bad value stops startup.
+	fallback, err := base.CSP()
 	if err != nil {
 		return nil, fmt.Errorf("web UI: %w", err)
+	}
+	csp := func() string {
+		p := base
+		e := endpoints()
+		p.Authorization, p.Token, p.UserInfo, p.EndSession = e.Authorization, e.Token, e.UserInfo, e.EndSession
+		if s, err := p.CSP(); err == nil {
+			return s
+		}
+		return fallback
 	}
 	ui, err := webui.New(dist, csp)
 	if err != nil {

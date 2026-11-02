@@ -20,13 +20,13 @@ import (
 	"github.com/aupv9/warden/backend/internal/storage"
 )
 
-func webServer(t *testing.T, c *config.Config, dist fs.FS) http.Handler {
+func webServer(t *testing.T, c *config.Config, endpoints func() auth.BrowserEndpoints, dist fs.FS) http.Handler {
 	t.Helper()
 	objects, err := storage.New(storage.FromSection(c.Storage))
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts, err := webOptions(c, objects, dist)
+	opts, err := webOptions(c, objects, endpoints, dist)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +38,8 @@ func webServer(t *testing.T, c *config.Config, dist fs.FS) http.Handler {
 		service.New(servicetest.New(), nil, service.Config{}, nil), opts...)
 	return srv.Engine()
 }
+
+func noEndpoints() auth.BrowserEndpoints { return auth.BrowserEndpoints{} }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
@@ -67,13 +69,21 @@ func TestWebUIFromConfig(t *testing.T) {
 		"WARDEN_STORAGE__PUBLIC_ENDPOINT": "https://s3.warden.example",
 		"WARDEN_WEB__OIDC_AUDIENCE":       "warden-api",
 	})
-	h := webServer(t, c, fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}})
+	var discovered auth.BrowserEndpoints
+	h := webServer(t, c, func() auth.BrowserEndpoints { return discovered }, fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}})
 	w := get(h, "/projects")
 	csp := w.Header().Get("Content-Security-Policy")
 	if w.Code != 200 || w.Body.String() != "<!doctype html>" ||
 		!strings.Contains(csp, "connect-src 'self' https://sso.warden.example https://s3.warden.example;") ||
 		strings.Contains(csp, "s3:8333") {
 		t.Fatalf("%d %q %s", w.Code, csp, w.Body)
+	}
+	// Once discovery has been read, the next response allows its endpoints.
+	discovered = auth.BrowserEndpoints{Token: "https://tokens.warden.example/token", Authorization: "https://login.warden.example/auth"}
+	csp = get(h, "/").Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "connect-src 'self' https://sso.warden.example https://tokens.warden.example https://s3.warden.example;") ||
+		!strings.Contains(csp, "frame-src 'self' https://sso.warden.example https://login.warden.example;") {
+		t.Fatal(csp)
 	}
 	w = get(h, "/api/v1/web-config")
 	var body struct{ Data api.WebConfig }
@@ -88,7 +98,7 @@ func TestWebUIFromConfig(t *testing.T) {
 }
 
 func TestNoWebUIWithoutBundle(t *testing.T) {
-	h := webServer(t, loadConfig(t, map[string]string{}), nil)
+	h := webServer(t, loadConfig(t, map[string]string{}), noEndpoints, nil)
 	if w := get(h, "/"); w.Code != 404 || strings.Contains(w.Body.String(), "html") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
@@ -105,7 +115,7 @@ func TestWebUIRefusesUnsafeOrigins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := webOptions(c, objects, fstest.MapFS{"index.html": {}}); err == nil {
+	if _, err := webOptions(c, objects, noEndpoints, fstest.MapFS{"index.html": {}}); err == nil {
 		t.Fatal("issuer with a CSP directive accepted")
 	}
 }

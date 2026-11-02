@@ -22,7 +22,7 @@ func testUI(t *testing.T) http.Handler {
 		".env":                 {Data: []byte("SECRET=1")},
 		"robots.txt":           {Data: []byte("User-agent: *")},
 		"assets/sub/deep-1.js": {Data: []byte("deep")},
-	}, "default-src 'self'")
+	}, fixed("default-src 'self'"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,64 +135,16 @@ func TestOnlyGetAndHead(t *testing.T) {
 }
 
 func TestNewRefusesIncompleteBuilds(t *testing.T) {
-	if _, err := New(nil, "default-src 'self'"); err == nil {
+	if _, err := New(nil, fixed("default-src 'self'")); err == nil {
 		t.Fatal("nil FS accepted")
 	}
-	if _, err := New(fstest.MapFS{"assets/a.js": {}}, "default-src 'self'"); err == nil {
+	if _, err := New(fstest.MapFS{"assets/a.js": {}}, fixed("default-src 'self'")); err == nil {
 		t.Fatal("a build without index.html accepted")
 	}
-	if _, err := New(fstest.MapFS{"index.html": {}}, ""); err == nil {
+	if _, err := New(fstest.MapFS{"index.html": {}}, fixed("")); err == nil {
 		t.Fatal("empty CSP accepted")
 	}
-}
-
-func TestCSP(t *testing.T) {
-	got, err := CSP("https://SSO.example.com/realms/warden", "https://s3.example.com:8443", "", "https://sso.example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; " +
-		"connect-src 'self' https://sso.example.com https://s3.example.com:8443; frame-ancestors 'none'; base-uri 'none'; " +
-		"form-action 'self' https://sso.example.com; object-src 'none'"
-	if got != want {
-		t.Fatalf("\n got %s\nwant %s", got, want)
-	}
-	for _, s := range []string{"unsafe-inline", "unsafe-eval", "*", "blob:"} {
-		if strings.Contains(got, s) {
-			t.Fatalf("policy allows %s", s)
-		}
-	}
-	if got, _ := CSP("http://[::1]:8180/realms/warden"); !strings.Contains(got, "connect-src 'self' http://[::1]:8180;") {
-		t.Fatal(got)
-	}
-}
-
-// Configuration values are pasted into a header: nothing may add a directive or a source.
-func TestCSPRefusesInjection(t *testing.T) {
-	for _, bad := range []string{
-		"",
-		"sso.example.com",
-		"javascript:alert(1)",
-		"ftp://sso.example.com",
-		"https://sso.example.com; script-src *",
-		"https://sso.example.com%3B%20script-src%20*",
-		"https://sso.example.com,evil.example",
-		"https://user:pw@sso.example.com",
-		"https://*.example.com",
-		"https://sso.example.com:99999999",
-		"https://sso.example.com 'unsafe-inline'",
-	} {
-		if p, err := CSP(bad); err == nil {
-			t.Errorf("issuer %q accepted: %s", bad, p)
-		}
-		if p, err := CSP("https://sso.example.com", bad); err == nil && bad != "" {
-			t.Errorf("storage %q accepted: %s", bad, p)
-		}
-	}
-}
-
-func TestEmbeddedWithoutTagIsNil(t *testing.T) {
-	if Embedded() != nil {
-		t.Skip("built with -tags webui")
+	if _, err := New(fstest.MapFS{"index.html": {}}, nil); err == nil {
+		t.Fatal("empty CSP accepted")
 	}
 }

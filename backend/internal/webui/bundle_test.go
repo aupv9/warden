@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// The real build must work under CSP() without 'unsafe-inline': no inline
+// The real build must work under Policy.CSP without 'unsafe-inline': no inline
 // script or style, no event-handler or style attributes in the HTML, and
 // every script and stylesheet loaded from /assets/. The Dockerfile runs this
 // test on every image build.
@@ -52,8 +52,10 @@ func TestBundleNeedsNoInlineCode(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, m := range regexp.MustCompile(`url\(\s*['"]?([a-z]+:)`).FindAllStringSubmatch(string(b), -1) {
-			if m[1] != "data:" {
+		// img-src allows data:, font-src doesn't (frontend/vite.config.ts keeps
+		// fonts as files); nothing may load from another origin.
+		for _, m := range regexp.MustCompile(`url\(\s*['"]?([a-z]+:[a-z]*)`).FindAllStringSubmatch(string(b), -1) {
+			if m[1] != "data:image" {
 				t.Errorf("%s loads from %s", p, m[1])
 			}
 		}
