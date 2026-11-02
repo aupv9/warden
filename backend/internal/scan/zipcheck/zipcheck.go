@@ -286,6 +286,16 @@ func Extract(zipPath, dest string, limits Limits) (*Result, error) {
 	return res, makeReadOnly(destReal)
 }
 
+// pathErr makes a path the file system refuses as too long (PATH_MAX: 4096
+// bytes on Linux, 1024 on macOS, with dest's own path included) a rejected
+// upload. archpath caps paths in runes, and up to 4 bytes each can pass.
+func pathErr(err error) error {
+	if errors.Is(err, syscall.ENAMETOOLONG) {
+		return reject("ZIP_PATH_TRAVERSAL", "entry path too long for the file system")
+	}
+	return err
+}
+
 // mkdirs creates the missing parents of p one level at a time and refuses to
 // walk through anything that isn't a real directory.
 func mkdirs(p string, made map[string]bool) error {
@@ -297,7 +307,7 @@ func mkdirs(p string, made map[string]bool) error {
 		d := missing[i]
 		if err := os.Mkdir(d, 0o755); err != nil {
 			if !errors.Is(err, fs.ErrExist) {
-				return err
+				return pathErr(err)
 			}
 			st, err := os.Lstat(d)
 			if err != nil || !st.IsDir() {
@@ -318,7 +328,7 @@ func extractEntry(f *zip.File, target, name string, limits Limits, res *Result) 
 			res.Warnings = append(res.Warnings, fmt.Sprintf("duplicate entry %q skipped", name))
 			return false, nil
 		}
-		return false, err
+		return false, pathErr(err)
 	}
 	defer func() {
 		if cerr := out.Close(); cerr != nil && err == nil {

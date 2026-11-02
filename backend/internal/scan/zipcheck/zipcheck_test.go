@@ -173,6 +173,29 @@ func TestPathComponentTooLong(t *testing.T) {
 	}
 }
 
+// Found by FuzzExtractNames: archpath caps a path at 1024 runes, which in
+// 4-byte characters (plus dest's own path) exceeds PATH_MAX; the write failed
+// with ENAMETOOLONG instead of the upload being rejected.
+func TestPathTooLongForFileSystem(t *testing.T) {
+	part := strings.Repeat("\U0001F600", 63) // 252 bytes, under MaxNameBytes
+	parts := make([]string, 15)              // 961 runes with "/f", under archpath.MaxPathLen
+	for i := range parts {
+		parts[i] = part
+	}
+	base := filepath.Join(t.TempDir(), strings.Repeat("d", 200))
+	if err := os.Mkdir(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(base, "out")
+	t.Cleanup(func() { MakeWritable(dest) })
+	_, err := Extract(makeZip(t, entry{name: "ok.py", data: []byte("1")}, entry{name: strings.Join(parts, "/") + "/f", data: []byte("1")}),
+		dest, DefaultLimits())
+	var r *Rejected
+	if !errors.As(err, &r) || r.Code != "ZIP_PATH_TRAVERSAL" || !strings.Contains(r.Detail, "too long for the file system") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestNULInName(t *testing.T) {
 	zp := makeZip(t, entry{name: "aXb.py", data: []byte("1")})
 	patchFile(t, zp, func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("aXb.py"), []byte("a\x00b.py")) })
