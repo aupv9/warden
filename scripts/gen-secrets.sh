@@ -9,9 +9,9 @@
 # bundled SeaweedFS identity) from the storage keys, and DOCKER_GID when it is
 # empty and this host has a Docker socket.
 #
-# Secrets go only into files created with mode 600 (directory 700); the
-# script prints variable names, never values, and passes no secret on a
-# command line.
+# Secrets go only into files created with mode 600 (secrets/s3.json: 644 in a
+# directory of mode 700, see below); the script prints variable names, never
+# values, and passes no secret on a command line.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="${1:-$ROOT/deploy/compose}"
@@ -69,7 +69,11 @@ if [ -n "$ak" ] && [ "$ak" != CHANGE_ME ] && [[ "$ak$sk" =~ ^[A-Za-z0-9_-]+$ ]];
   mkdir -p "$DIR/secrets" && chmod 700 "$DIR/secrets"
   printf '{"identities":[{"name":"warden","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Read","Write","List","Tagging"]}]}\n' \
     "$ak" "$sk" > "$DIR/secrets/s3.json"
-  chmod 600 "$DIR/secrets/s3.json"
+  # 644 inside a 700 directory: other host users still can't reach it, but
+  # SeaweedFS's entrypoint drops to its own user (uid 1000) before reading the
+  # bind-mounted file, so 600 owned by whoever ran this script fails to start
+  # it ("permission denied") unless that happens to be uid 1000.
+  chmod 644 "$DIR/secrets/s3.json"
   echo "wrote $DIR/secrets/s3.json"
 else
   echo "skipped secrets/s3.json: storage keys aren't generated (external S3?)"
