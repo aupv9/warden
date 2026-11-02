@@ -196,6 +196,17 @@ func TestPathTooLongForFileSystem(t *testing.T) {
 	}
 }
 
+// Found by FuzzExtractNames on macOS: APFS refuses an unassigned code point
+// (U+058C) with EILSEQ. Linux stores it; either way the result is an
+// extraction or a rejected upload, never an internal error.
+func TestNameTheFileSystemRefuses(t *testing.T) {
+	_, err := Extract(makeZip(t, entry{name: "֌.py", data: []byte("1")}), outDir(t), DefaultLimits())
+	var r *Rejected
+	if err != nil && (!errors.As(err, &r) || r.Code != "ZIP_PATH_TRAVERSAL") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestNULInName(t *testing.T) {
 	zp := makeZip(t, entry{name: "aXb.py", data: []byte("1")})
 	patchFile(t, zp, func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("aXb.py"), []byte("a\x00b.py")) })
