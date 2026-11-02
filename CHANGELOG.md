@@ -6,37 +6,10 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0-alpha.1] - 2026-11-02
+
 ### Added
 
-- Org-wide component inventory: every package of each project's current scan per target,
-  searchable by name, ecosystem and version ("which projects use xz 5.6.0?") with where each
-  one is used, plus a Components tab per project and `GET …/projects/{id}/targets`.
-- Malicious-package detection from OSV `MAL-` advisories (mirrored per ecosystem by
-  `make mirror`): a matching package is a Critical issue with a `component.malicious`
-  notification, at scan time and, for packages already in the inventory, as soon as a new
-  advisory is loaded. Issue filter `kind=malicious`, a "Malicious" view and an Overview banner.
-- SPDX 2.3 JSON SBOM next to the CycloneDX one (`GET …/sbom?format=spdx`,
-  `warden scan --sbom-format spdx`).
-- `license_category` on license-policy issues (existing issues are backfilled).
-- `make e2e`: an end-to-end smoke test against the running dev stack.
-- Secrets in git history: `warden scan --history` uploads a `git bundle` (checked by
-  `bundlecheck` without being unpacked, read by git only inside the Gitleaks sandbox) and scans
-  every commit with Gitleaks. One issue per rule and secret under the target `(history)`, with
-  the oldest commit that added it; author, email and commit message never leave the sandbox.
-  Issue filter `source=history`, scan errors `BUNDLE_*`, `WARDEN_SCAN__HISTORY_UPLOAD_MAX_MB`
-  and `__HISTORY_MAX_COMMITS`, and `selfscan -bundle`.
-- Webhooks and Slack (Organization → Integrations, `/orgs/{org_id}/webhooks`, org admins and
-  security leads): signed generic webhooks (Standard Webhooks) and Slack Incoming Webhooks for
-  scan, issue, exception and malicious-package events, with project and severity filters, a
-  test button and a 30-day delivery log. URLs and secrets are encrypted under
-  `WARDEN_SECRETS__KEY` (`warden-admin secrets rotate`); delivery refuses internal addresses,
-  proxies and redirects; failing webhooks are turned off after `WARDEN_WEBHOOK__FAILURE_LIMIT`
-  failures (or `410`) with a "Webhook turned off" notification.
-- `warden scan --comment auto|github|gitlab`: one summary comment on the pull or merge request,
-  updated on every run, with hostile text escaped; the CI token goes only to the CI's API.
-  `Gate.blocking_new` marks the blocking issues a scan created or reopened.
-- Web UI: history issues ("Found in git history"), the Integrations page, and CI setup switches
-  for PR/MR comments and nightly history scans.
 - Production deployment with Docker Compose (`deploy/compose/`): profiles `core` (Postgres,
   migrate, API with the web UI, Caddy with automatic TLS), `s3` (SeaweedFS), `scanner` (the
   worker on `runsc`, ideally on a dedicated scan VM) and `mirror` (daily sync, systemd timer);
@@ -76,6 +49,45 @@ All notable changes to Warden are listed here. The format follows
 
 - The arm64 release image contained amd64 binaries (`ARG TARGETARCH=amd64` overrode
   BuildKit's value).
+
+## [0.4.0-alpha.2] - 2026-11-02
+
+### Added
+
+- Secrets in git history: `warden scan --history` uploads a `git bundle` (checked by
+  `bundlecheck` without being unpacked, read by git only inside the Gitleaks sandbox) and scans
+  every commit with Gitleaks. One issue per rule and secret under the target `(history)`, with
+  the oldest commit that added it; author, email and commit message never leave the sandbox.
+  Issue filter `source=history`, scan errors `BUNDLE_*`, `WARDEN_SCAN__HISTORY_UPLOAD_MAX_MB`
+  and `__HISTORY_MAX_COMMITS`, and `selfscan -bundle`.
+- Webhooks and Slack (Organization → Integrations, `/orgs/{org_id}/webhooks`, org admins and
+  security leads): signed generic webhooks (Standard Webhooks) and Slack Incoming Webhooks for
+  scan, issue, exception and malicious-package events, with project and severity filters, a
+  test button and a 30-day delivery log. URLs and secrets are encrypted under
+  `WARDEN_SECRETS__KEY` (`warden-admin secrets rotate`); delivery refuses internal addresses,
+  proxies and redirects; failing webhooks are turned off after `WARDEN_WEBHOOK__FAILURE_LIMIT`
+  failures (or `410`) with a "Webhook turned off" notification.
+- `warden scan --comment auto|github|gitlab`: one summary comment on the pull or merge request,
+  updated on every run, with hostile text escaped; the CI token goes only to the CI's API.
+  `Gate.blocking_new` marks the blocking issues a scan created or reopened.
+- Web UI: history issues ("Found in git history"), the Integrations page, and CI setup switches
+  for PR/MR comments and nightly history scans.
+
+## [0.4.0-alpha.1] - 2026-11-02
+
+### Added
+
+- Org-wide component inventory: every package of each project's current scan per target,
+  searchable by name, ecosystem and version ("which projects use xz 5.6.0?") with where each
+  one is used, plus a Components tab per project and `GET …/projects/{id}/targets`.
+- Malicious-package detection from OSV `MAL-` advisories (mirrored per ecosystem by
+  `make mirror`): a matching package is a Critical issue with a `component.malicious`
+  notification, at scan time and, for packages already in the inventory, as soon as a new
+  advisory is loaded. Issue filter `kind=malicious`, a "Malicious" view and an Overview banner.
+- SPDX 2.3 JSON SBOM next to the CycloneDX one (`GET …/sbom?format=spdx`,
+  `warden scan --sbom-format spdx`).
+- `license_category` on license-policy issues (existing issues are backfilled).
+- `make e2e`: an end-to-end smoke test against the running dev stack.
 
 ## [0.3.0-alpha.1] - 2026-10-28
 
@@ -172,6 +184,9 @@ Tagged, but the release workflow failed, so no binaries or image were published 
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
 
-[Unreleased]: https://github.com/aupv9/warden/compare/v0.3.0-alpha.1...HEAD
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...HEAD
+[0.5.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.2...v0.5.0-alpha.1
+[0.4.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.1...v0.4.0-alpha.2
+[0.4.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
 [0.3.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.1.0-alpha.1...v0.3.0-alpha.1
 [0.1.0-alpha.1]: https://github.com/aupv9/warden/releases/tag/v0.1.0-alpha.1
