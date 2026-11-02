@@ -21,8 +21,8 @@ var dsnPassword = regexp.MustCompile(`(?:^|\s)password\s*=\s*(?:'((?:[^'\\]|\\.)
 
 // checkProd refuses settings that are fine on a laptop but not in production
 // (app.env=prod): a sandbox without gVisor, plain-http links and endpoints
-// that carry tokens or uploads, secrets still holding a template placeholder,
-// and scanners with no image (a scan would silently skip them). Every error
+// that carry tokens or uploads, and secrets still holding a template
+// placeholder (scanner images are the worker's check: MissingImages). Every error
 // names the setting, never its value: these are often secrets. All problems
 // are reported at once so an operator fixes them in one round.
 func (c *Config) checkProd() error {
@@ -71,13 +71,21 @@ func (c *Config) checkProd() error {
 			fail(s.name + " still holds a placeholder value; set a real secret")
 		}
 	}
+	return errors.Join(errs...)
+}
 
+// MissingImages lists the scanners with no image. In prod the worker refuses
+// to start with any (a scan would silently skip that scanner); the check lives
+// there, not in Load, so warden-api, warden-migrate and warden-admin don't
+// need scanner settings.
+func (c *Config) MissingImages() []string {
+	var out []string
 	for _, t := range Scanners {
 		if c.Scan.Images[t] == "" {
-			fail("scan.images." + t + " is not set; every scanner needs a digest-pinned image")
+			out = append(out, t)
 		}
 	}
-	return errors.Join(errs...)
+	return out
 }
 
 // IsPlaceholder reports whether a secret is a template placeholder. A

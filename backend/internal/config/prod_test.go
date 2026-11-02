@@ -78,8 +78,6 @@ func TestProdRefusals(t *testing.T) {
 		{"secrets key whole", func(c *Config) { c.Secrets.Key = "__WARDEN_SECRETS_KEY__" }, "secrets.key", "__WARDEN_SECRETS_KEY__"},
 		{"old keys", func(c *Config) { c.Secrets.OldKeys = Secret(c.Secrets.Key.Reveal() + ",k0:CHANGE_ME") }, "secrets.old_keys", "CHANGE_ME"},
 		{"smtp password", func(c *Config) { c.SMTP.Password = "  CHANGE_ME  " }, "smtp.password", "CHANGE_ME"},
-		{"missing image", func(c *Config) { delete(c.Scan.Images, "checkov") }, "scan.images.checkov", ""},
-		{"empty image", func(c *Config) { c.Scan.Images["trivy"] = "" }, "scan.images.trivy", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := validProd()
@@ -150,7 +148,19 @@ func TestLoadRefusesDevDefaultsInProd(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("WARDEN_APP__ENV", "prod")
 	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "oidc.issuer") || !strings.Contains(err.Error(), "scan.images.gitleaks") {
+	if err == nil || !strings.Contains(err.Error(), "oidc.issuer") || strings.Contains(err.Error(), "scan.images") {
 		t.Fatal(err)
+	}
+}
+
+func TestMissingImages(t *testing.T) {
+	c := validProd()
+	if got := c.MissingImages(); len(got) != 0 {
+		t.Fatal(got)
+	}
+	delete(c.Scan.Images, "checkov")
+	c.Scan.Images["trivy"] = ""
+	if got := c.MissingImages(); strings.Join(got, ",") != "trivy,checkov" {
+		t.Fatal(got)
 	}
 }
