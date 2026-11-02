@@ -23,6 +23,7 @@ export const qk = {
   issueComments: (orgId: string, issueId: string) => ["org", orgId, "issue", issueId, "comments"] as const,
   exceptionLists: (orgId: string) => ["org", orgId, "exceptions"] as const,
   exceptions: (orgId: string, tab: string) => ["org", orgId, "exceptions", tab] as const,
+  auditLogs: (orgId: string) => ["org", orgId, "audit"] as const,
   auditLog: (orgId: string, query: QueryParams) => ["org", orgId, "audit", query] as const,
   // v0.2
   projectList: (orgId: string, includeArchived: boolean) => ["org", orgId, "projects", { include_archived: includeArchived }] as const,

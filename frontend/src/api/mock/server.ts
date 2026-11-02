@@ -456,7 +456,7 @@ function memberUser(userId: string) {
 }
 
 function audit(action: string, target_type: string, target_id: string, data: unknown) {
-  db.audit.unshift({ id: db.uuid(), actor: { id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email }, action, target_type, target_id, ip: "127.0.0.1", data, created_at: new Date().toISOString() });
+  db.audit.unshift({ id: db.nextAuditId(), actor: { id: db.me.id, email: db.me.email, display_name: db.me.name ?? db.me.email }, action, target_type, target_id, ip: "127.0.0.1", data, created_at: new Date().toISOString() });
 }
 
 function orgOf(id: string | undefined) {
@@ -1329,7 +1329,28 @@ const routes: [string, RegExp, Handler][] = [
       return page(list, url);
     },
   ],
+  // v0.5 wave 2: view_audit_log, 10 per org per hour, recorded as audit.verified.
+  // `?mock_audit=broken` finds a changed entry (one on the first page of the log).
+  [
+    "POST",
+    new RegExp(`^${O}/audit-log/verify$`),
+    (m) => {
+      const orgId = m[1]!;
+      const role = callerRole(orgId);
+      if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+      const hourAgo = db.now() - 3_600_000;
+      const runs = (verifyRuns[orgId] = (verifyRuns[orgId] ?? []).filter((t) => t > hourAgo));
+      if (runs.length >= 10) throw new Fail(429, "RATE_LIMITED");
+      runs.push(db.now());
+      const bad = db.mockFlags.auditBroken ? (db.audit[Math.min(3, db.audit.length - 1)]?.id ?? null) : null;
+      const result = { ok: bad === null, entries: db.audit.length, first_bad_id: bad, verified_at: new Date().toISOString() };
+      audit("audit.verified", "org", orgId, { ok: result.ok, entries: result.entries, first_bad_id: result.first_bad_id });
+      return result;
+    },
+  ],
 ];
+
+const verifyRuns: Record<string, number[]> = {};
 
 /** GET /issues and (v0.5 wave 2) GET /issues/export.csv: the same filters and order. */
 function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorted: Issue[] } {

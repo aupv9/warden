@@ -1104,3 +1104,54 @@ describe("v0.5: sign-in settings from the server", () => {
     expect(t).not.toContain("unreachable");
   });
 });
+
+describe("v0.5 wave 2: export, verify, filters", () => {
+  const org = () => `/orgs/${db.ORG_ID}`;
+  const call = async (method: string, path: string, body?: unknown) => {
+    const { mockFetch } = await import("../api/mock/server");
+    return mockFetch(`/api/v1${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+  };
+  type J = { data: ({ items?: Record<string, unknown>[] } & Record<string, unknown>) | null; error: { code: string } | null };
+  const json = async (r: Response) => (await r.json()) as J;
+
+  it("audit log: Verify chain replaces the bare guarantee; the mock verifies, breaks, limits and records it", async () => {
+    const t = text(await render(`${org()}/audit-log`));
+    expect(t).toContain("Append-only and hash-chained.");
+    expect(t).toContain("Verify chain");
+    expect(t).toContain("Verify the chain to recompute every hash now.");
+
+    const before = db.audit.length;
+    try {
+      const ok = await json(await call("POST", `/orgs/${db.ORG_ID}/audit-log/verify`));
+      expect(ok.data).toMatchObject({ ok: true, entries: before, first_bad_id: null, verified_at: expect.any(String) });
+      // Recorded as audit.verified, with a numeric id like every entry.
+      expect(db.audit[0]).toMatchObject({ action: "audit.verified", data: { ok: true } });
+      expect(db.audit.every((e) => /^\d+$/.test(e.id))).toBe(true);
+      expect(text(await render(`${org()}/audit-log`))).toContain(`Chain intact · ${before} entries`);
+
+      db.mockFlags.auditBroken = true;
+      const broken = await json(await call("POST", `/orgs/${db.ORG_ID}/audit-log/verify`));
+      expect(broken.data).toMatchObject({ ok: false, first_bad_id: expect.stringMatching(/^\d+$/) });
+      // The bad entry is one the first page of the log shows (the UI links to it).
+      const page1 = await json(await call("GET", `/orgs/${db.ORG_ID}/audit-log`));
+      expect(page1.data!.items!.map((e) => e.id)).toContain(broken.data!.first_bad_id);
+
+      // Members can't verify; ten checks an hour per org, then 429 with Retry-After.
+      const eng = db.me.orgs.find((o) => o.id === db.ORG_ID)!;
+      const role = eng.role;
+      eng.role = "member";
+      try {
+        expect((await call("POST", `/orgs/${db.ORG_ID}/audit-log/verify`)).status).toBe(403);
+      } finally {
+        eng.role = role;
+      }
+      for (let i = 2; i < 10; i++) expect((await call("POST", `/orgs/${db.ORG_ID}/audit-log/verify`)).status).toBe(200);
+      const limited = await call("POST", `/orgs/${db.ORG_ID}/audit-log/verify`);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("Retry-After")).toMatch(/^\d+$/);
+    } finally {
+      db.mockFlags.auditBroken = false;
+      db.audit.splice(0, db.audit.length - before);
+    }
+  });
+});

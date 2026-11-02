@@ -865,6 +865,14 @@ export const audit: AuditEntry[] = [
   { id: uuid(), actor: null, action: "issue.transitioned", target_type: "issue", target_id: issues[10]!.id, ip: null, data: { issue_key: issues[10]!.key, from: "open", to: "fixed" }, created_at: ago(7 * DAY) },
   { id: uuid(), actor: users.huy, action: "project.created", target_type: "project", target_id: PAY.id, ip: "10.20.4.2", data: { project_key: "PAY", name: "Payments API" }, created_at: ago(40 * DAY) },
 ];
+// Audit entry ids are numbers (as strings) in the contract, counting up; the list is newest first.
+let auditSeq = 4800;
+audit.forEach((a, i) => (a.id = String(auditSeq + audit.length - i)));
+auditSeq += audit.length;
+export function nextAuditId(): string {
+  auditSeq += 1;
+  return String(auditSeq);
+}
 
 // ---- v0.3: license policy per org, and the vulnerability data the mirror loaded ----
 

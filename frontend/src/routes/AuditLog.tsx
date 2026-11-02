@@ -1,15 +1,20 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { useAuditLog } from "../api/hooks/audit";
+import { supportReference } from "../api/errors";
+import { useAuditLog, verifyAuditLog } from "../api/hooks/audit";
 import type { AuditFilters } from "../api/hooks/audit";
 import { useOrgMembers } from "../api/hooks/orgs";
+import { qk } from "../api/keys";
 import { flattenPages } from "../api/paging";
 import { AUDIT_ACTIONS } from "../api/types";
-import type { AuditEntry } from "../api/types";
+import type { AuditEntry, AuditVerification } from "../api/types";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { Select, TextField } from "../components/Field";
-import { ChevronIcon, LockIcon } from "../components/Icons";
+import { AlertIcon, CheckIcon, ChevronIcon, LockIcon } from "../components/Icons";
+import { badEntryHint, verificationSummary, verifyErrorText } from "../lib/auditVerify";
 import { LoadMore, Table } from "../components/Table";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState, ErrorState, ForbiddenState, SkeletonRows } from "../components/States";
@@ -66,6 +71,10 @@ export function AuditLogPage() {
   const members = useOrgMembers(orgId, allowed);
   const items = flattenPages(log.data?.pages);
   const [open, setOpen] = useState<string | null>(null);
+  const qc = useQueryClient();
+  // v0.5 wave 2: the last "Verify chain" result (or its error), shown under the note.
+  const [verify, setVerify] = useState<{ busy: boolean; result?: AuditVerification; error?: unknown }>({ busy: false });
+  const tableRef = useRef<HTMLDivElement>(null);
 
   if (!allowed)
     return (
@@ -89,19 +98,57 @@ export function AuditLogPage() {
     p.from || p.to
       ? `${p.from ? formatDate(fromDateInput(p.from)) : "Start"} – ${p.to ? formatDate(fromDateInput(p.to)) : "now"}`
       : "All entries";
+  const filtered = !!(p.action || p.actor || p.from || p.to);
+
+  const runVerify = async () => {
+    setVerify((v) => ({ ...v, busy: true }));
+    try {
+      const result = await verifyAuditLog(orgId);
+      setVerify({ busy: false, result });
+    } catch (error) {
+      setVerify({ busy: false, error });
+    }
+    // The check is recorded as audit.verified.
+    void qc.invalidateQueries({ queryKey: qk.auditLogs(orgId) });
+  };
+
+  /** Scroll to the first bad entry and open its details (when it is loaded). */
+  const showEntry = (id: string) => {
+    setOpen(id);
+    const row = tableRef.current?.querySelector<HTMLElement>(`[data-entry="${CSS.escape(id)}"]`);
+    row?.scrollIntoView({ block: "center" });
+    row?.querySelector<HTMLElement>("button[aria-expanded]")?.focus({ preventScroll: true });
+  };
 
   return (
     <div className="page">
       <PageHeader title="Audit log" />
       <div className="page-body">
       <p className="faint small">Every change made in {org.name}: who did it, to what, from where. Visible to org admins and security leads.</p>
-      <div className="banner banner-info">
-        <LockIcon />
-        <span>
-          <strong>Append-only and hash-chained.</strong> Entries can't be edited or deleted, not even by an org admin or the
-          database role Warden runs as. Each entry's hash covers the one before it, so a changed or missing entry breaks the
-          chain.
-        </span>
+      {/* A block, not a flex column: the empty live region below takes no space or gap. */}
+      <div className="verify-block">
+        <div className="banner banner-info">
+          <LockIcon />
+          <div className="stack" style={{ gap: 10 }}>
+            <span>
+              <strong>Append-only and hash-chained.</strong> Entries can't be edited or deleted, not even by an org admin or the
+              database role Warden runs as. Each entry's hash covers the one before it, so a changed or missing entry breaks the
+              chain. Verify the chain to recompute every hash now.
+            </span>
+            <span>
+              <Button size="sm" busy={verify.busy} onClick={() => void runVerify()}>
+                {verify.busy ? "Verifying…" : "Verify chain"}
+              </Button>
+            </span>
+          </div>
+        </div>
+        <VerifyResult
+          result={verify.result}
+          error={verify.error}
+          loadedIds={items.map((e) => e.id)}
+          filtered={filtered}
+          onShow={showEntry}
+        />
       </div>
 
       <section className="card" aria-label="Filters">
@@ -146,7 +193,7 @@ export function AuditLogPage() {
         ) : items.length === 0 ? (
           <EmptyState title="No entries">{p.action || p.actor || p.from || p.to ? "Nothing matches these filters." : "Changes appear here as people use Warden."}</EmptyState>
         ) : (
-          <>
+          <div ref={tableRef}>
             <Table
               caption="Audit log entries"
               head={
@@ -163,7 +210,13 @@ export function AuditLogPage() {
               }
             >
               {items.map((e) => (
-                <AuditRow key={e.id} entry={e} open={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} />
+                <AuditRow
+                  key={e.id}
+                  entry={e}
+                  open={open === e.id}
+                  bad={!!verify.result && !verify.result.ok && verify.result.first_bad_id === e.id}
+                  onToggle={() => setOpen(open === e.id ? null : e.id)}
+                />
               ))}
             </Table>
             <LoadMore
@@ -173,7 +226,7 @@ export function AuditLogPage() {
               shown={items.length}
               label="Load older entries"
             />
-          </>
+          </div>
         )}
       </Card>
       </div>
@@ -181,12 +234,75 @@ export function AuditLogPage() {
   );
 }
 
-function AuditRow({ entry: e, open, onToggle }: { entry: AuditEntry; open: boolean; onToggle: () => void }) {
+/** v0.5 wave 2: the result of "Verify chain", in a live region so it is announced. */
+function VerifyResult({
+  result,
+  error,
+  loadedIds,
+  filtered,
+  onShow,
+}: {
+  result?: AuditVerification;
+  error?: unknown;
+  loadedIds: string[];
+  filtered: boolean;
+  onShow: (id: string) => void;
+}) {
+  let body: ReactNode = null;
+  if (error) {
+    const ref = supportReference(error);
+    body = (
+      <div className="banner banner-error">
+        <AlertIcon />
+        <span>
+          {verifyErrorText(error)}
+          {ref && <span className="mono faint small"> Request {ref}</span>}
+        </span>
+      </div>
+    );
+  } else if (result) {
+    const s = verificationSummary(result);
+    const hint = badEntryHint(s.badId, loadedIds, filtered);
+    body = (
+      <div className={s.ok ? "banner banner-success" : "banner banner-error"}>
+        {s.ok ? <CheckIcon /> : <AlertIcon />}
+        <div className="stack" style={{ gap: 8 }}>
+          <span>
+            <strong>{s.title}</strong> {s.text}
+          </span>
+          {s.badId && !hint && (
+            <span>
+              <Button size="sm" onClick={() => onShow(s.badId!)}>
+                Show entry {s.badId}
+              </Button>
+            </span>
+          )}
+          {hint && <span className="small">{hint}</span>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div role="status" aria-live="polite">
+      {body}
+    </div>
+  );
+}
+
+function AuditRow({ entry: e, open, bad, onToggle }: { entry: AuditEntry; open: boolean; bad: boolean; onToggle: () => void }) {
   const detailsId = `audit-${e.id}`;
   return (
     <Fragment>
-      <tr className={open ? "selected" : undefined}>
-        <td className="nowrap">{formatDateTime(e.created_at)}</td>
+      <tr className={open || bad ? "selected" : undefined} data-entry={e.id}>
+        <td className="nowrap">
+          {formatDateTime(e.created_at)}
+          {bad && (
+            <>
+              {" "}
+              <span className="tag tag-danger">Hash mismatch</span>
+            </>
+          )}
+        </td>
         <td data-label="Actor" className="nowrap">
           {e.actor ? userName(e.actor) : <span className="muted">System</span>}
         </td>
