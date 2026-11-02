@@ -147,19 +147,30 @@ func buildProjectComponents(q service.ProjectComponentQuery) (string, args) {
 	if len(q.Names) > 0 {
 		w = append(w, namesWhere(&a, q.Names))
 	}
+	// Malicious components first: the flag is computed for the project's
+	// rows (pc), then the keyset and the order use it; open issues are counted
+	// for the page only. The order is the cursor's (service.ProjectComponentCursor),
+	// ending in the table's unique key so every row has one position.
+	var o []string
 	if q.Malicious {
-		w = append(w, maliciousFor(`c.ecosystem`, `c.match_name`, `c.version`))
+		o = append(o, `pc.malicious`)
 	}
-	if c := q.After; c != nil {
-		w = append(w, `(c.target, c.match_name, c.ecosystem, c.version, c.path) > (`+a.add(c.Target)+`, `+a.add(c.MatchName)+`, `+
-			a.add(c.Ecosystem)+`, `+a.add(c.Version)+`, `+a.add(c.Path)+`)`)
+	if c := q.After; c != nil && c.Malicious != nil {
+		o = append(o, `(NOT pc.malicious, pc.match_name, pc.version, pc.ecosystem, pc.target, pc.path) > (`+a.add(!*c.Malicious)+`, `+
+			a.add(c.MatchName)+`, `+a.add(c.Version)+`, `+a.add(c.Ecosystem)+`, `+a.add(c.Target)+`, `+a.add(c.Path)+`)`)
 	}
-	sql := `SELECT c.ecosystem, c.name, c.version, c.purl, c.licenses, c.target, c.path, c.first_seen, c.match_name,
-		(SELECT count(*) FROM issue i WHERE i.project_id = c.project_id AND i.target = c.target
-			AND ` + openIssuesOn(`c.ecosystem`, `c.match_name`, `c.version`) + `),
-		` + maliciousFor(`c.ecosystem`, `c.match_name`, `c.version`) + `
-		FROM component c WHERE ` + strings.Join(w, " AND ") + `
-		ORDER BY c.target, c.match_name, c.ecosystem, c.version, c.path LIMIT ` + a.add(q.Limit)
+	outer := ""
+	if len(o) > 0 {
+		outer = ` WHERE ` + strings.Join(o, " AND ")
+	}
+	sql := `SELECT pc.ecosystem, pc.name, pc.version, pc.purl, pc.licenses, pc.target, pc.path, pc.first_seen, pc.match_name,
+		(SELECT count(*) FROM issue i WHERE i.project_id = pc.project_id AND i.target = pc.target
+			AND ` + openIssuesOn(`pc.ecosystem`, `pc.match_name`, `pc.version`) + `),
+		pc.malicious
+	FROM (SELECT c.project_id, c.ecosystem, c.name, c.version, c.purl, c.licenses, c.target, c.path, c.first_seen, c.match_name,
+			` + maliciousFor(`c.ecosystem`, `c.match_name`, `c.version`) + ` AS malicious
+		FROM component c WHERE ` + strings.Join(w, " AND ") + `) pc` + outer + `
+	ORDER BY NOT pc.malicious, pc.match_name, pc.version, pc.ecosystem, pc.target, pc.path LIMIT ` + a.add(q.Limit)
 	return sql, a
 }
 
@@ -174,26 +185,82 @@ func (r *Repo) ProjectComponents(ctx context.Context, q service.ProjectComponent
 	})
 }
 
+// maxOrgTargets bounds GET /targets the same way, across an org's projects.
+const maxOrgTargets = 5000
+
+// buildTargets lists every (project, target) with a scan that got past upload,
+// or an issue, for the projects that projects (SQL yielding id, key, name)
+// selects, optionally of one kind; by project key, then target.
+func buildTargets(a *args, projects, kind string, limit int) string {
+	var w string
+	switch kind {
+	case service.KindSource:
+		w = ` WHERE t.target = ''`
+	case service.KindHistory:
+		w = ` WHERE t.target = ` + a.add(service.HistoryTarget)
+	case service.KindImage:
+		w = ` WHERE t.target <> '' AND t.target <> ` + a.add(service.HistoryTarget)
+	}
+	return `WITH vp AS (` + projects + `), t AS (
+			SELECT s.project_id, s.target FROM scan s JOIN vp ON vp.id = s.project_id WHERE s.status <> 'pending_upload'
+			UNION SELECT i.project_id, i.target FROM issue i JOIN vp ON vp.id = i.project_id)
+		SELECT vp.id, vp.key, vp.name, t.target,
+			(SELECT max(s.created_at) FROM scan s WHERE s.project_id = t.project_id AND s.target = t.target AND s.status <> 'pending_upload'),
+			(SELECT count(*) FROM issue i WHERE i.project_id = t.project_id AND i.target = t.target AND i.status IN ` + activeStatuses + `)
+		FROM t JOIN vp ON vp.id = t.project_id` + w + `
+		ORDER BY vp.key, t.target LIMIT ` + a.add(limit)
+}
+
+func scanTarget(row pgx.CollectableRow) (service.OrgTarget, error) {
+	var t service.OrgTarget
+	err := row.Scan(&t.ProjectID, &t.ProjectKey, &t.ProjectName, &t.Target, &t.LastScanAt, &t.OpenIssues)
+	switch t.Target {
+	case "":
+		t.Kind = service.KindSource
+	case service.HistoryTarget:
+		t.Kind = service.KindHistory
+	default:
+		t.Kind = service.KindImage
+	}
+	return t, err
+}
+
 // ProjectTargets: every target with a scan that got past upload, or an issue.
 func (r *Repo) ProjectTargets(ctx context.Context, projectID uuid.UUID) ([]service.ProjectTarget, error) {
-	rows, _ := r.tx.Query(ctx, `WITH t AS (
-			SELECT target FROM scan WHERE project_id = $1 AND status <> 'pending_upload'
-			UNION SELECT target FROM issue WHERE project_id = $1)
-		SELECT t.target,
-			(SELECT max(s.created_at) FROM scan s WHERE s.project_id = $1 AND s.target = t.target AND s.status <> 'pending_upload'),
-			(SELECT count(*) FROM issue i WHERE i.project_id = $1 AND i.target = t.target AND i.status IN `+activeStatuses+`)
-		FROM t ORDER BY t.target LIMIT $2`, projectID, maxTargets)
+	var a args
+	sql := buildTargets(&a, `SELECT id, key, name FROM project WHERE id = `+a.add(projectID), "", maxTargets)
+	rows, _ := r.tx.Query(ctx, sql, a...)
 	return collect(rows, func(row pgx.CollectableRow) (service.ProjectTarget, error) {
-		var t service.ProjectTarget
-		err := row.Scan(&t.Target, &t.LastScanAt, &t.OpenIssues)
-		switch t.Target {
-		case "":
-			t.Kind = service.KindSource
-		case service.HistoryTarget:
-			t.Kind = service.KindHistory
-		default:
-			t.Kind = service.KindImage
-		}
-		return t, err
+		t, err := scanTarget(row)
+		return t.ProjectTarget, err
+	})
+}
+
+// OrgTargets: ProjectTargets over the visible, unarchived projects (the issue
+// list's scope).
+func (r *Repo) OrgTargets(ctx context.Context, q service.OrgTargetQuery) ([]service.OrgTarget, error) {
+	var a args
+	projects := `SELECT p.id, p.key, p.name FROM project p WHERE p.org_id = ` + a.add(q.Vis.OrgID) +
+		` AND p.archived_at IS NULL AND ` + visible(&a, q.Vis)
+	if q.ProjectID != nil {
+		projects += ` AND p.id = ` + a.add(*q.ProjectID)
+	}
+	sql := buildTargets(&a, projects, q.Kind, maxOrgTargets)
+	rows, _ := r.tx.Query(ctx, sql, a...)
+	return collect(rows, scanTarget)
+}
+
+// ComponentEcosystems: distinct (match name, version) per ecosystem, the
+// grouping of Components, most first.
+func (r *Repo) ComponentEcosystems(ctx context.Context, v service.Visibility, projectID *uuid.UUID) ([]service.EcosystemCount, error) {
+	var a args
+	sql := `SELECT c.ecosystem, count(DISTINCT (c.match_name, c.version))
+		FROM component c JOIN project p ON p.id = c.project_id
+		WHERE ` + componentScope(&a, v, projectID) + `
+		GROUP BY c.ecosystem ORDER BY 2 DESC, 1`
+	rows, _ := r.tx.Query(ctx, sql, a...)
+	return collect(rows, func(row pgx.CollectableRow) (service.EcosystemCount, error) {
+		var e service.EcosystemCount
+		return e, row.Scan(&e.Ecosystem, &e.Components)
 	})
 }
