@@ -495,6 +495,17 @@ func TestVerifyAuditChain(t *testing.T) {
 	if n, err := VerifyAuditChain(ctx, q, org); !errors.Is(err, ErrChainBroken) || n != 1 {
 		t.Fatal(n, err)
 	}
+	// The API's check counts the whole log and names the first bad entry.
+	tampered[0] = int64(7)
+	r3 := mk(r2[9].(string), `{}`, now.Add(2*time.Second))
+	q.answer = func(string, []any) ([][]any, error) { return [][]any{r1, tampered, r3}, nil }
+	var ce *ChainError
+	if c, err := CheckAuditChain(ctx, q, org); err != nil || c.Entries != 3 || c.Good != 1 || c.Bad == nil || c.Bad.ID != 7 ||
+		c.Bad.Reason != "was modified" {
+		t.Fatal(c, err)
+	} else if _, err := VerifyAuditChain(ctx, q, org); !errors.As(err, &ce) || ce.ID != 7 || !errors.Is(err, ErrChainBroken) {
+		t.Fatal(err)
+	}
 	unlinked := mk("bogus", `{}`, now)
 	q.answer = func(string, []any) ([][]any, error) { return [][]any{unlinked}, nil }
 	if _, err := VerifyAuditChain(ctx, q, org); !errors.Is(err, ErrChainBroken) {
