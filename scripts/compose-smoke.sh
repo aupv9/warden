@@ -52,12 +52,9 @@ if [ "${SMOKE_SCANNER:-}" = 1 ]; then
   set_env WARDEN_SCRATCH_DIR "${SMOKE_SCRATCH:?}"
   set_env WARDEN_MIRROR_DIR "${SMOKE_MIRROR:?}"
   set_env DOCKER_GID "$(stat -c %g /var/run/docker.sock)"
-  lock="$ROOT/scanners/images.lock.json"
-  # No scan runs: the worker only needs pinned references to start.
-  set_env WARDEN_SCAN__IMAGES__GITLEAKS "sha256:$(openssl rand -hex 32)"
-  set_env WARDEN_SCAN__IMAGES__OPENGREP "sha256:$(openssl rand -hex 32)"
-  set_env WARDEN_SCAN__IMAGES__TRIVY "$(jq -er .trivy.upstream "$lock")"
-  set_env WARDEN_SCAN__IMAGES__CHECKOV "$(jq -er .checkov.upstream "$lock")"
+  # The real scanner images, as an operator prepares them: in prod the
+  # worker's preflight refuses to start without every image present.
+  "$ROOT/scripts/scanner-images.sh" "$SMOKE_DIR/.env" >/dev/null
 fi
 
 echo "==> compose up (${profiles[*]})"
