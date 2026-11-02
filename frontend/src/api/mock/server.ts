@@ -657,7 +657,8 @@ const routes: [string, RegExp, Handler][] = [
     (m, _u, body) => {
       const list = requireIntegrations(m[1]!);
       const b = (body ?? {}) as Record<string, unknown>;
-      if (db.mockFlags.integrationsUnavailable || list.length >= 20) throw new Fail(409, "CONFLICT");
+      if (db.mockFlags.integrationsUnavailable) throw new Fail(409, "SECRETS_KEY_MISSING");
+      if (list.length >= 20) throw new Fail(409, "WEBHOOK_LIMIT");
       const fields: Record<string, string> = {};
       for (const k of Object.keys(b)) if (!["kind", "name", "url", "events", "project_ids", "min_severity"].includes(k)) fields[k] = "unknown field";
       const kind = b.kind === "slack" || b.kind === "generic" ? b.kind : null;
@@ -1215,16 +1216,23 @@ const routes: [string, RegExp, Handler][] = [
       const b = body as { issue_ids: string[]; assignee_id: string };
       const user = memberUser(b.assignee_id).user;
       let updated = 0;
+      let skipped = 0;
       for (const id of b.issue_ids) {
         const i = findIssue(id);
-        if (!["open", "reopened", "assigned", "in_progress"].includes(i.status)) continue;
+        // v0.5 wave 2: skipped, not refused: a status that can't be assigned, or a project the
+        // assignee isn't a member of.
+        const member = (db.projectMembers[i.project_id] ?? []).some((x) => x.user.id === user.id);
+        if (!["open", "reopened", "assigned", "in_progress"].includes(i.status) || !member) {
+          skipped += 1;
+          continue;
+        }
         if (i.status === "open" || i.status === "reopened") i.status = "assigned";
         i.assignee = { id: user.id, email: user.email, display_name: user.display_name };
         i.version += 1;
         updated += 1;
       }
       audit("issue.assigned", "issue", b.issue_ids[0]!, { count: updated, assignee_name: user.display_name });
-      return { updated };
+      return { updated, skipped };
     },
   ],
   ["GET", new RegExp(`^${O}/issues/([^/]+)$`), (m) => issueView(findIssue(m[2]!))],
@@ -1368,7 +1376,7 @@ function nextForcedError(method: string): string | null {
   return code && /^[A-Z_]+$/.test(code) ? code : null;
 }
 
-const STATUS: Record<string, number> = { MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
+const STATUS: Record<string, number> = { WEBHOOK_LIMIT: 409, SECRETS_KEY_MISSING: 409, MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
 
 export const mockFetch: typeof fetch = async (input, init) => {
   await new Promise((r) => setTimeout(r, LATENCY));

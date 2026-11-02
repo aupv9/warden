@@ -4,7 +4,7 @@ import type { FormEvent } from "react";
 import { api, isApiError } from "../api/client";
 import { useBulkAssign, useTransitionIssue } from "../api/hooks/issues";
 import { qk } from "../api/keys";
-import type { IssueStatus, ItemList, ProjectMember, UserRef } from "../api/types";
+import type { BulkAssignResult, IssueStatus, ItemList, ProjectMember, UserRef } from "../api/types";
 import { Avatar } from "../components/Avatar";
 import { Pill } from "../components/Badges";
 import { Button } from "../components/Button";
@@ -36,13 +36,16 @@ export function intersectMembers(lists: ProjectMember[][]): ProjectMember[] {
   return first!.filter((m) => sets.every((s) => s.has(m.user.id)));
 }
 
-/** Skipped = selected − updated, said in words for the toast. */
-export function assignResultText(updated: number, selected: number, name: string, key?: string): string {
-  if (selected === 1 && updated === 1 && key) return `${key} assigned to ${name}.`;
-  const skipped = selected - updated;
-  const head = `${updated} of ${selected} issue${selected === 1 ? "" : "s"} assigned to ${name}.`;
+/** The bulk-assign toast. v0.5 wave 2: the server says how many it skipped and the reasons are
+ *  the contract's (not assignable by the caller, a status that can't be assigned, or a project
+ *  the assignee isn't a member of); the UI can't tell which applied to which issue. */
+export function assignResultText(res: BulkAssignResult, name: string, key?: string): string {
+  const { updated, skipped } = res;
+  if (updated === 1 && skipped === 0 && key) return `${key} assigned to ${name}.`;
+  const head = updated === 0 ? `No issues assigned to ${name}.` : `${updated} issue${updated === 1 ? "" : "s"} assigned to ${name}.`;
   if (skipped <= 0) return head;
-  return `${head} ${skipped} ${skipped === 1 ? "was" : "were"} skipped because ${skipped === 1 ? "it is" : "they are"} already fixed or closed.`;
+  const one = skipped === 1;
+  return `${head} ${skipped} skipped: ${one ? "it" : "they"} can't be assigned (fixed or closed, or not yours to assign), or ${name} isn't a member of ${one ? "its" : "their"} project.`;
 }
 
 /** Assign dialog body. `version` (single issue) uses the transition endpoint with the
@@ -111,10 +114,9 @@ export function AssignForm({
       .mutateAsync({ issue_ids: issues.map((i) => i.id), assignee_id: chosen.user.id })
       .catch(() => undefined);
     if (res) {
-      const skipped = issues.length - res.updated;
       showToast({
-        tone: skipped > 0 ? "warning" : "success",
-        message: assignResultText(res.updated, issues.length, name, single?.key),
+        tone: res.skipped > 0 ? "warning" : "success",
+        message: assignResultText(res, name, single?.key),
       });
       onDone(true);
     }

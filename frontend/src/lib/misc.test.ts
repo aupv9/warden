@@ -17,10 +17,17 @@ describe("assign helpers", () => {
     expect(intersectMembers([[m("a"), m("b"), m("c")], [m("b"), m("c", "owner")], [m("c"), m("b")]]).map((x) => x.user.id)).toEqual(["b", "c"]);
     expect(intersectMembers([])).toEqual([]);
   });
-  it("reports skipped = selected − updated", () => {
-    expect(assignResultText(1, 1, "Minh Pham", "WEB-41")).toBe("WEB-41 assigned to Minh Pham.");
-    expect(assignResultText(2, 3, "Minh Pham")).toBe("2 of 3 issues assigned to Minh Pham. 1 was skipped because it is already fixed or closed.");
-    expect(assignResultText(1, 3, "An")).toMatch(/2 were skipped because they are/);
+  it("reports the server's skipped count and the contract's reasons", () => {
+    expect(assignResultText({ updated: 1, skipped: 0 }, "Minh Pham", "WEB-41")).toBe("WEB-41 assigned to Minh Pham.");
+    expect(assignResultText({ updated: 3, skipped: 0 }, "Minh Pham")).toBe("3 issues assigned to Minh Pham.");
+    expect(assignResultText({ updated: 2, skipped: 1 }, "Minh Pham")).toBe(
+      "2 issues assigned to Minh Pham. 1 skipped: it can't be assigned (fixed or closed, or not yours to assign), or Minh Pham isn't a member of its project.",
+    );
+    expect(assignResultText({ updated: 1, skipped: 2 }, "An")).toBe(
+      "1 issue assigned to An. 2 skipped: they can't be assigned (fixed or closed, or not yours to assign), or An isn't a member of their project.",
+    );
+    // A single issue that was skipped never reads as assigned.
+    expect(assignResultText({ updated: 0, skipped: 1 }, "An", "WEB-41")).toMatch(/^No issues assigned to An\. 1 skipped: /);
   });
 });
 

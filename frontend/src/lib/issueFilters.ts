@@ -116,8 +116,31 @@ export function issueFiltersToSearch(f: IssueFilters): URLSearchParams {
   return sp;
 }
 
+/** The filters as sent to the API: GET /issues adds `limit`; GET /issues/export.csv takes the same
+ *  filters (contract.check.ts checks both against the contract). */
+export type IssueFilterQuery = {
+  project_id: string | undefined;
+  status: IssueStatus[] | undefined;
+  severity: Severity[] | undefined;
+  assignee: string | undefined;
+  tool: Tool | undefined;
+  past_sla: "true" | undefined;
+  kind: IssueKindFilter | undefined;
+  kev: "true" | undefined;
+  epss_min: string | undefined;
+  source: IssueSourceFilter | undefined;
+  target: string | undefined;
+  q: string | undefined;
+  sort: IssueSort | undefined;
+};
+
 /** Query for GET /orgs/{org}/issues. `fixedProject` comes from the route on a project's Issues tab. */
 export function issueFiltersToApiQuery(f: IssueFilters, fixedProject?: string): QueryParams {
+  return { ...issueFilterQuery(f, fixedProject), limit: 50 };
+}
+
+/** v0.5 wave 2: the query for GET /orgs/{org}/issues/export.csv: the list's filters, no paging. */
+export function issueFilterQuery(f: IssueFilters, fixedProject?: string): IssueFilterQuery {
   const project = fixedProject ?? f.project;
   return {
     project_id: project || undefined,
@@ -133,7 +156,6 @@ export function issueFiltersToApiQuery(f: IssueFilters, fixedProject?: string): 
     target: f.target || undefined,
     q: f.q || undefined,
     sort: f.sort === DEFAULT_FILTERS.sort ? undefined : f.sort,
-    limit: 50,
   };
 }
 
