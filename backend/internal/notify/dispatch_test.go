@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/worker/dbtest"
 )
 
@@ -209,8 +210,12 @@ func TestDispatchResolvesRecipients(t *testing.T) {
 	w.events = append(w.events, []any{int64(13), "issue.assigned", []byte("{")}) // undecodable
 	w.event(14, "issue.exploded", Payload{})
 
+	inApp := metrics.Value("warden_notifications_sent_total", map[string]string{"channel": "in_app"})
 	if err := w.d.DispatchOrg(context.Background(), orgID); err != nil {
 		t.Fatal(err)
+	}
+	if got := metrics.Value("warden_notifications_sent_total", map[string]string{"channel": "in_app"}); got != inApp+7 {
+		t.Fatalf("in_app notifications counted %v, want 7", got-inApp)
 	}
 	got := map[string]bool{}
 	for _, n := range w.inserted() {
@@ -390,8 +395,12 @@ func TestSendEmails(t *testing.T) {
 		claimRow(last, bounce, c, MaxEmailAttempts-1),
 	}
 	w.mailer.fail["bounce@example.com"] = errors.New("550 no such user")
+	emails := metrics.Value("warden_notifications_sent_total", map[string]string{"channel": "email"})
 	if err := w.d.DispatchOrg(context.Background(), orgID); err != nil {
 		t.Fatal(err)
+	}
+	if got := metrics.Value("warden_notifications_sent_total", map[string]string{"channel": "email"}); got != emails+1 {
+		t.Fatalf("emails counted %v, want 1", got-emails)
 	}
 	if len(w.mailer.sent) != 1 || w.mailer.sent[0].To != "dev@example.com" || !strings.Contains(w.mailer.sent[0].Text, "https://warden.example/orgs/o/issues/i") {
 		t.Fatalf("%+v", w.mailer.sent)

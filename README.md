@@ -71,7 +71,7 @@ Requirements: Go 1.27, Docker (Colima works on macOS), Node.js 22, `jq`, `openss
 
 ```bash
 make setup      # Go modules + frontend deps (npm ci, scripts disabled)
-make up         # writes .env with random secrets; starts Postgres, Redis, S3 (SeaweedFS), Keycloak, Mailpit;
+make up         # writes .env with random secrets; starts Postgres, S3 (SeaweedFS), Keycloak, Mailpit;
                 # creates the upload bucket (browser uploads allowed from http://localhost:5173 only)
 make migrate    # schema as the owner role; the app connects as warden_app (RLS enforced)
 make api        # http://127.0.0.1:8010   (Keycloak http://localhost:8180, Mailpit http://localhost:8025)
@@ -102,6 +102,80 @@ another identity provider is `warden-admin user relink` (see "Sign-in and identi
 On macOS there is no gVisor, so local scans fall back to `runc` with a warning.
 CI and production must use `runsc`.
 
+## Running in production
+
+The release image `ghcr.io/aupv9/warden` holds `warden-api` (with the web UI bundled),
+`warden-worker`, `warden-migrate` and a pinned static `docker` CLI for the worker. A Docker
+Compose deployment is in [`deploy/compose/`](deploy/compose/); its header comment is the
+reference, this is the outline:
+
+```bash
+cd deploy/compose
+../../scripts/gen-secrets.sh                 # .env from .env.example: random secrets, mode 600, nothing printed
+$EDITOR .env                                 # domains, image digest, identity provider, mail
+../../scripts/scanner-images.sh .env         # scanner image digests, on the host that runs the worker
+docker compose -f docker-compose.prod.yml --profile mirror run --rm mirror      # offline scanner data
+docker compose -f docker-compose.prod.yml --profile core --profile s3 --profile scanner up -d
+```
+
+| Profile | Services |
+|---|---|
+| `core` | Postgres, `migrate` (one-shot; the others wait for it), `api` (web UI and API), Caddy (TLS with automatic certificates, HSTS) |
+| `s3` | SeaweedFS and a one-shot bucket init. Leave it out to use another S3 store (delete `sites/s3.caddy`; the bucket needs CORS `PUT` from the web UI's origin) |
+| `scanner` | the worker |
+| `mirror` | one-shot `scripts/sync-mirror.sh`; run it daily (`systemd/warden-mirror.timer`) |
+
+- **The worker is root on its host.** It holds the Docker socket to start scanner containers.
+  Uploaded code is read only by scanners under gVisor with no network, and Warden never runs
+  it, but a flaw in the worker or in gVisor reaches the whole host. Run `scanner` and `mirror`
+  on a dedicated scan VM when you can (`docker-compose.split.yml`), with `core` and `s3`
+  elsewhere. That host needs `runsc` registered with its Docker daemon. The API never gets
+  the socket.
+- **Same paths on host and container.** The worker passes its scratch and mirror directories
+  to `docker run -v`, which the daemon resolves on the host, so they are mounted at the same
+  absolute path on both sides (`WARDEN_SCRATCH_DIR`, `WARDEN_MIRROR_DIR`, owned by 65532).
+- **Stopping the worker** waits for running scans (`stop_grace_period: 45m`): a scan always
+  deletes its source, so don't shorten it below `WARDEN_SCAN__TIMEOUT` + 10 minutes.
+- **The web UI** reads its sign-in settings at run time from `GET /api/v1/web-config`
+  (`WARDEN_WEB__…`), so one image serves any identity provider. HTML is served with its own
+  Content Security Policy, built from the origins in the provider's discovery document;
+  API responses keep `default-src 'none'`. Silent token renewal needs the provider to issue
+  refresh tokens to the web client (Keycloak does by default; Authentik needs
+  `offline_access`): the UI can't be framed, so the iframe fallback doesn't work.
+- **Presigned uploads** go to `WARDEN_STORAGE__PUBLIC_ENDPOINT` (the store's public name);
+  the API and worker use `WARDEN_STORAGE__ENDPOINT`. A proxy in front of the store must pass
+  the `Host` header through unchanged, or signatures don't match.
+
+**Production guardrails.** With `WARDEN_APP__ENV=prod` no binary starts with a secret still
+holding a placeholder (`CHANGE_ME…` or `__NAME__`), and the API and worker also refuse `runc`
+as the sandbox runtime and an `http` issuer, public base URL or public storage endpoint (the
+internal storage endpoint may be `http` only to a host name without a dot, such as a Compose
+service). The worker also refuses a scanner without an image, checks that Docker has the runtime, pulls
+missing pinned images, and removes containers and scratch directories left by scans that are
+no longer running.
+
+**Schema version.** The API and worker refuse to start on a database migrated by a newer
+Warden. On an older schema the API reports not ready and the worker takes no jobs until
+`warden-migrate` has run; `warden-migrate status` prints both versions.
+
+**Health and metrics.** The API serves `/healthz` and `/readyz` (database, schema) on its
+port. `WARDEN_ADMIN__ADDR` opens an internal listener (keep it off the public network) with
+Prometheus `/metrics` on both binaries, and `/healthz` and `/readyz` (database, storage,
+schema, Docker and the runtime) on the worker; `warden-worker -healthcheck` probes it.
+Metrics have no org, project or user labels:
+
+| Metric | Labels |
+|---|---|
+| `warden_scans_total`, `warden_scan_duration_seconds` | `status`, `kind` / `kind` |
+| `warden_scan_queue_depth` (worker) | |
+| `warden_tool_runs_total` | `tool`, `status` |
+| `warden_webhook_deliveries_total` | `status` (`delivered`, `retrying`, `failed`) |
+| `warden_notifications_sent_total` | `channel` (`in_app`, `email`, `webhook`) |
+| `warden_intel_feed_age_seconds` (worker) | `source`; grows when the mirror stops being refreshed |
+
+**Upgrading.** Stop the worker (it finishes running scans), run `migrate`, then start the
+API and worker with the new image.
+
 ## Configuration
 
 Settings come from defaults, then an optional `config.yaml` (path in `WARDEN_CONFIG_FILE`),
@@ -110,7 +184,9 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 
 | Variable | Default | |
 |---|---|---|
+| `WARDEN_APP__ENV` | `local` | `prod` turns on the production guardrails (see "Running in production") |
 | `WARDEN_SERVER__HOST` / `WARDEN_SERVER__PORT` | `127.0.0.1` / `8010` | API listen address |
+| `WARDEN_ADMIN__ADDR` | | Internal listener for `/metrics` (and the worker's `/healthz`, `/readyz`), e.g. `127.0.0.1:9091`; empty turns it off. Never publish it |
 | `WARDEN_DATABASE__DSN` | | Runtime connection, as `warden_app` |
 | `WARDEN_MIGRATE__DSN` | | Schema owner; used only by `warden-migrate` |
 | `WARDEN_OIDC__ISSUER` / `WARDEN_OIDC__AUDIENCE` | Keycloak realm / `warden-api` | Any OIDC provider; the access token's `iss` and `aud` must match exactly. Keys come from the issuer's `/.well-known/openid-configuration` (see "Sign-in and identity providers") |
@@ -118,6 +194,8 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_OIDC__ALGORITHMS` | `RS256` | Accepted token signatures: `RS256` and/or `ES256` (anything else is refused at startup) |
 | `WARDEN_OIDC__MFA_AMR` / `WARDEN_OIDC__MFA_ACR` | `otp,mfa,hwk,webauthn` / | A token proves a second factor when its `amr` claim holds one of these, or its `acr` equals one of these (for providers that use `acr`) |
 | `WARDEN_OIDC__REQUIRE_MFA_ROLES` | `org_admin,security_lead` | Org roles that must sign in with a second factor (the token's `amr` claim: `otp`, `mfa`, `hwk` or `webauthn`); otherwise every request under the org is `403 MFA_REQUIRED`. Comma-separated (a YAML list in `config.yaml`); empty disables the rule, as `.env.example` does for the dev realm. Orgs can add roles, not remove these. API tokens are exempt |
+| `WARDEN_WEB__OIDC_CLIENT_ID` / `WARDEN_WEB__OIDC_SCOPE` | `warden-web` / `openid profile email` | Public client the web UI signs in with (authorization code + PKCE), served at `GET /api/v1/web-config` |
+| `WARDEN_WEB__OIDC_AUDIENCE` | | Sent as the `audience` sign-in parameter when set (Auth0) |
 | `WARDEN_OIDC__CONSOLE_URL` | | Optional link to the identity provider's admin console, shown to org admins on the Sign-in settings page (http or https; never fetched) |
 | `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
@@ -132,6 +210,7 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__SOURCE_RETENTION` | `1h` | Uploaded objects still present after this are deleted by a sweep (normally a scan deletes its own upload when it ends). Uploads never started within 1 hour are cancelled (`UPLOAD_ABANDONED`) |
 | `WARDEN_SCAN__AUTOCLOSE_GUARD_RATIO` | `0.5` | A scan that would auto-fix 5 or more issues may fix at most this fraction of the project's active issues; above it nothing is closed and the scan is flagged `needs_confirmation`. Fewer than 5 are always fixed |
 | `WARDEN_STORAGE__ENDPOINT` / `WARDEN_STORAGE__BUCKET` | `http://localhost:8333` / `warden-uploads` | S3-compatible store. Any non-AWS endpoint uses path-style URLs; for AWS use `https://s3.<region>.amazonaws.com` (the region is read from it). The bucket must exist and allow CORS `PUT` from the web UI's origin |
+| `WARDEN_STORAGE__PUBLIC_ENDPOINT` | | The store's address as browsers and the CLI reach it; only presigned URLs use it. Empty: `WARDEN_STORAGE__ENDPOINT` |
 | `WARDEN_STORAGE__ACCESS_KEY` / `WARDEN_STORAGE__SECRET_KEY` | | Needs object read, write and delete on the bucket only |
 | `WARDEN_SMTP__HOST` / `WARDEN_SMTP__PORT` | `localhost` / `1025` | Mail relay for notification email (Mailpit in development). STARTTLS is required unless the host is `localhost` or a loopback address |
 | `WARDEN_SMTP__FROM` | `warden@localhost` | Sender address |
@@ -168,9 +247,9 @@ accounts that share an address.
 **Another identity provider instead of Keycloak.** Any provider that issues JWT access tokens
 for an API works:
 
-| Provider | API side (`WARDEN_OIDC__…`) | Web side (build-time `VITE_OIDC_…`) |
+| Provider | API side (`WARDEN_OIDC__…`) | Web UI (`WARDEN_WEB__OIDC_…`) |
 |---|---|---|
-| Okta | `ISSUER=https://<org>.okta.com/oauth2/default`, `AUDIENCE=` the authorization server's audience | `ISSUER` same, `CLIENT_ID` of a SPA app |
+| Okta | `ISSUER=https://<org>.okta.com/oauth2/default`, `AUDIENCE=` the authorization server's audience | `CLIENT_ID` of a SPA app |
 | Microsoft Entra ID | `ISSUER=https://login.microsoftonline.com/<tenant>/v2.0`, `AUDIENCE=` the API's application ID; "Expose an API" with a scope | `SCOPE="openid profile email api://<api-app>/access"` |
 | Auth0 | `ISSUER=https://<tenant>.auth0.com/` (trailing slash), `AUDIENCE=` the API identifier | `AUDIENCE=` the same identifier |
 | Authentik, Zitadel, Keycloak elsewhere | issuer of the application/realm | client ID of a public SPA client |
@@ -219,7 +298,7 @@ of the web UI's origin with a trailing `/`, and a signing key (otherwise tokens 
 which Warden refuses). Its default `email` scope mapping sends `email_verified: false`, which
 Warden rejects; add a mapping that returns `true` only if your enrollment really verifies
 addresses. The issuer is `https://<host>/application/o/<slug>/` with the trailing slash, the
-audience is the client ID, and the web UI needs `VITE_OIDC_SCOPE="openid profile email
+audience is the client ID, and the web UI needs `WARDEN_WEB__OIDC_SCOPE="openid profile email
 offline_access"` for refresh tokens. Upstream logins (Google, Okta, …) are *Sources* in
 Authentik, shown on its sign-in page once added to the identification stage.
 
@@ -624,6 +703,8 @@ card (Project settings) builds both snippets for a project.
 | `make lint` | gofmt, go vet, staticcheck, tsc |
 | `make vulncheck` | govulncheck over dependencies and the Go toolchain |
 | `make build` | Static binaries in `backend/bin` |
+| `make build-webui` | `warden-api` with the web UI bundled (`-tags webui`; `make web-dist` builds the UI) |
+| `make image` / `make image-smoke` | The container image `warden:dev`, and a smoke test of it: the UI and its CSP, `web-config`, the `docker` CLI |
 | `make e2e` | End-to-end smoke test against the running dev stack (`make up`, `migrate`, `api`, `worker`, `mirror`); creates a new org each run |
 
 Code that handles hostile input (`zipcheck`, `imagecheck`, `sarif`, `trivyjson`, `sbom`,
@@ -669,12 +750,15 @@ backend/                 Go module
   internal/worker/       background jobs (River): scans, source and SBOM purge, risk-acceptance
                          expiry, notifications, SLA digest, exploit-data loading, malicious-package match,
                          webhook delivery and pruning
-  internal/migrations/   SQL migrations (goose), River tables, role grants
+  internal/migrations/   SQL migrations (goose), River tables, role grants, schema version
+  internal/metrics/      Prometheus metrics and the admin listener
+  internal/webui/        the web UI embedded in warden-api (-tags webui), with its CSP
+  internal/app/          wiring shared by the binaries: logging, health, schema gate
 frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
 rules/opengrep/          Warden's own guardrail rules, run on every self-scan
-deploy/                  Keycloak realm, Postgres role bootstrap
-scripts/                 mirror sync, local env generator
+deploy/                  Keycloak realm, Postgres role bootstrap; compose/: production Compose, Caddy, mirror timer
+scripts/                 mirror sync, env and secret generators, image and compose smoke tests
 ```
 
 Warden is built on [common-go](https://github.com/aupv9/common-go) (configuration,
@@ -687,7 +771,8 @@ logging, OpenTelemetry, health checks, the HTTP server and the response envelope
 Tags `vMAJOR.MINOR.PATCH` on `main` publish a [GitHub release](https://github.com/aupv9/warden/releases)
 after the full CI suite and the release self-scan gate pass: static Linux binaries
 (`warden-api`, `warden-worker`, `warden-migrate` and the `warden` CI client; amd64 and arm64) with SPDX SBOMs and
-checksums, and the image `ghcr.io/aupv9/warden` (amd64 and arm64). The version is stamped
+checksums, and the image `ghcr.io/aupv9/warden` (amd64 and arm64; the web UI is bundled in
+the image's `warden-api`, not in the binary tarballs). The version is stamped
 into the binaries and served at `/info`.
 
 ### Verifying a release
@@ -720,7 +805,11 @@ Changes that weaken one of these need an explicit discussion in the pull request
   OSV malicious-package advisories may create or reopen Critical issues for scanned or
   inventoried packages; no feed ever closes, hides or downgrades an issue.
 - Scanner containers run with `runsc`, `--network=none`, a read-only rootfs, a non-root
-  user and `--cap-drop=ALL`, with no Docker socket. Images are pinned by digest.
+  user and `--cap-drop=ALL`, with no Docker socket. Images are pinned by digest. Only the
+  worker (and the mirror job) holds the Docker socket; the API never does. `app.env=prod`
+  refuses `runc`, plain-http sign-in and public URLs, and placeholder secrets.
+- The admin listener (`/metrics`, worker health) is internal only, and metrics carry no
+  org, project or user labels.
 - Gitleaks is the only secret scanner, and raw secrets never leave its sandbox.
 - Uploaded code can't configure its own scan.
 - Every business table has `org_id` under forced RLS. The app role has no `BYPASSRLS` and

@@ -62,15 +62,18 @@ type ObjectStore = service.ObjectStore
 
 var ErrObjectNotFound = service.ErrObjectNotFound
 
-// Register mounts Warden's routes on the engine.
-func Register(e *gin.Engine, v cgauth.Verifier, svc *service.Service) {
+// Register mounts Warden's routes on the engine, and the web UI when an
+// option supplies one.
+func Register(e *gin.Engine, v cgauth.Verifier, svc *service.Service, opts ...Option) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	e.HandleMethodNotAllowed = true
 	// No proxy is trusted: X-Forwarded-For would otherwise let clients choose
 	// the IP that gets logged. (The audit log uses the peer address regardless.)
 	_ = e.SetTrustedProxies(nil)
-	e.NoRoute(func(c *gin.Context) {
-		response.Error(c.Writer, c.Request, apperrors.NotFound("NOT_FOUND", "not found"))
-	})
+	e.NoRoute(noRoute(o.ui))
 	e.NoMethod(func(c *gin.Context) {
 		response.Error(c.Writer, c.Request,
 			apperrors.Invalid("METHOD_NOT_ALLOWED", "method not allowed").WithHTTPStatus(http.StatusMethodNotAllowed))
@@ -78,6 +81,8 @@ func Register(e *gin.Engine, v cgauth.Verifier, svc *service.Service) {
 	e.GET(Prefix+"/openapi.json", func(c *gin.Context) {
 		c.Data(http.StatusOK, "application/json", openAPI)
 	})
+	// Read before sign-in, so outside authenticate (like the OpenAPI document).
+	e.GET(Prefix+"/web-config", webConfig(o.web))
 
 	v1 := e.Group(Prefix, authenticate(v, svc, newRateLimiter(tokenRequestsPerMinute, time.Minute)))
 	handlers{svc: svc}.routes(v1)

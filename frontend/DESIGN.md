@@ -716,6 +716,28 @@ inventory to the caller's projects.
   answers 404 for objects in orgs or projects the caller can't see, so the UI must not suggest
   which case it is.
 - **Sign-in failed / session ended:** one message for every cause (see Security rules).
+- **Sign-in settings unavailable (v0.5):** see below.
+
+### Sign-in settings unavailable (v0.5)
+
+The UI has no identity-provider settings of its own: at startup it reads them from the server it
+is served by (`GET /api/v1/web-config`: issuer, client ID, scope, audience), before anything
+signs in or calls the API. Until the answer arrives the sign-in card shows its skeleton (after
+the usual 300 ms). If the request fails, answers anything but 200 with JSON, or any field is not
+what the contract says (the issuer must be an `https` URL without credentials, query or fragment;
+`http` only for `localhost`, `127.0.0.1` or `[::1]`, in `npm run dev` or when the UI itself is
+on a loopback address; client ID and scope non-empty, the scope including `openid`; audience a
+string or `null`), the same centered card shows one full-page state for every cause:
+
+- Danger icon, title "Can't reach the server's sign-in settings".
+- Text: "Warden loads them from its server before you can sign in, and that didn't work. Check
+  your connection and try again. If it keeps happening, contact your Warden operator."
+- A primary "Try again" button, which loads the settings again (skeleton, then the app or this
+  state). No status code, request ID or response text is shown, and nothing is logged.
+
+The request is same-origin, carries no token or cookie and refuses redirects. Mock mode answers it
+from the fixtures; `?mock_web_config=unavailable` (a 500) or `?mock_web_config=invalid` (a
+plain-http issuer) shows this state.
 
 ### Messages
 - **Toasts** confirm a finished action or report an action that failed with no better place
@@ -872,6 +894,14 @@ Below 800 px (screenshots in section 12):
   `redact.Mask`) and say that Warden does not keep the secret.
 - The comment box warns people not to paste secrets.
 - Show authentication errors as one generic message; the reason goes to the server logs.
+- **Sign-in settings (v0.5)** come only from the server's `GET /web-config`, checked field by
+  field (`src/auth/webConfig.test.ts`); there are no build-time or built-in fallbacks. Tokens
+  stay in memory.
+- **Content Security Policy (v0.5):** the server sends `script-src 'self'; style-src 'self';
+  font-src 'self'` for the UI. No inline `<script>` or `<style>`, no `style="…"` in HTML strings,
+  no `eval`, no library that injects `<style>` elements; React `style` props are fine (they
+  set CSSOM properties). Fonts are files, never `data:` URLs (`assetsInlineLimit` in
+  `vite.config.ts`).
 - Severity is never shown by color alone: every badge carries its label.
 - Uploads go straight to object storage. The UI never reads the archive's contents (it
   only hashes the bytes).

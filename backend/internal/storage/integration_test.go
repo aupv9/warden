@@ -10,7 +10,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,6 +195,46 @@ func TestPresignedUploadRejectsOtherBodies(t *testing.T) {
 	}
 	if _, err := c.Head(ctx, key); !errors.Is(err, storage.ErrNotFound) {
 		t.Errorf("a rejected upload left an object: %v", err)
+	}
+}
+
+// With storage.public_endpoint the presigned URL names (and signs) another
+// host for the same store, as when browsers reach it through the TLS proxy;
+// the store accepts it, and the server's own calls keep using the endpoint.
+func TestPresignedUploadThroughPublicEndpoint(t *testing.T) {
+	ctx := context.Background()
+	client(t, "warden-itest") // waits until the store takes writes
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := map[string]string{"localhost": "127.0.0.1", "127.0.0.1": "localhost"}[u.Hostname()]
+	if other == "" {
+		t.Skipf("no second name for %s", u.Hostname())
+	}
+	public := "http://" + net.JoinHostPort(other, u.Port())
+	c, err := storage.New(storage.Config{Endpoint: endpoint, PublicEndpoint: public, Bucket: "warden-itest",
+		AccessKey: accessKey, SecretKey: secretKey, ChecksumHeader: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("uploaded through the public name")
+	key := "scans/org/public.zip"
+	presigned, headers, err := c.PresignPut(ctx, key, int64(len(body)), sum(body), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(presigned, public+"/") {
+		t.Fatalf("presigned for %s, want %s", presigned, public)
+	}
+	if code := put(t, presigned, headers, body); code != http.StatusOK {
+		t.Fatalf("PUT status %d", code)
+	}
+	if n, err := c.Head(ctx, key); err != nil || n != int64(len(body)) {
+		t.Fatalf("head %d %v", n, err)
+	}
+	if err := c.Delete(ctx, key); err != nil {
+		t.Fatal(err)
 	}
 }
 
