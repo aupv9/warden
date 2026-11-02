@@ -7,6 +7,7 @@ import {
   issueListHref,
   describeFilters,
   hasActiveFilters,
+  imageTargetGroups,
   issueFiltersToApiQuery,
   issueFiltersToSearch,
   parseIssueFilters,
@@ -210,5 +211,49 @@ describe("split view links", () => {
     const f = parseIssueFilters(new URLSearchParams("severity=critical&next=//evil.example&status=<x>"));
     expect(issueListHref("o1", f)).toBe("/orgs/o1/issues?severity=critical");
     expect(issueHref("o1", "a/b", DEFAULT_FILTERS)).toBe("/orgs/o1/issues/a%2Fb");
+  });
+});
+
+describe("v0.5 wave 2: the Image filter's choices", () => {
+  const org = (project_key: string, target: string, kind = "image") => ({
+    project_id: `id-${project_key}`,
+    project_key,
+    project_name: `${project_key} app`,
+    target,
+    kind,
+  });
+
+  it("with a project in scope: that project's images, as before", () => {
+    const rows = [
+      { target: "", kind: "source" },
+      { target: "ghcr.io/acme/api", kind: "image" },
+      { target: "(history)", kind: "history" },
+    ];
+    expect(imageTargetGroups(true, rows, undefined, "")).toEqual([{ label: null, targets: ["ghcr.io/acme/api"] }]);
+    // A target from the URL stays listed.
+    expect(imageTargetGroups(true, rows, undefined, "ghcr.io/acme/old")).toEqual([{ label: null, targets: ["ghcr.io/acme/api", "ghcr.io/acme/old"] }]);
+    expect(imageTargetGroups(true, [], undefined, "")).toEqual([]);
+  });
+
+  it("without one: every visible project's images, grouped by project in the server's order", () => {
+    const rows = [
+      org("PAY", "ghcr.io/acme/payments"),
+      org("PAY", ""),
+      org("WEB", "ghcr.io/acme/api"),
+      org("WEB", "ghcr.io/acme/api"),
+      org("WEB", "(history)", "history"),
+      org("WEB", "ghcr.io/acme/worker"),
+      // Not a well-formed repository: never offered (the URL parser would drop it anyway).
+      org("WEB", "ghcr.io/acme/<x>"),
+    ];
+    expect(imageTargetGroups(false, undefined, rows, "")).toEqual([
+      { label: "PAY · PAY app", targets: ["ghcr.io/acme/payments"] },
+      { label: "WEB · WEB app", targets: ["ghcr.io/acme/api", "ghcr.io/acme/worker"] },
+    ]);
+    // A target in the URL that no visible project lists gets its own group.
+    expect(imageTargetGroups(false, undefined, rows, "ghcr.io/acme/gone").at(-1)).toEqual({ label: "From the link", targets: ["ghcr.io/acme/gone"] });
+    expect(imageTargetGroups(false, undefined, rows, "ghcr.io/acme/api")).toHaveLength(2);
+    // Still loading, or no images anywhere: nothing to offer.
+    expect(imageTargetGroups(false, undefined, undefined, "")).toEqual([]);
   });
 });

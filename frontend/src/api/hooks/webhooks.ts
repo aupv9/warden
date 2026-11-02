@@ -2,7 +2,17 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import type { QueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import { qk } from "../keys";
-import type { CreatedWebhook, CreateWebhookBody, Page, UpdateWebhookBody, Webhook, WebhookDelivery, WebhookList, WebhookSecret } from "../types";
+import type {
+  CreatedWebhook,
+  CreateWebhookBody,
+  Page,
+  UpdateWebhookBody,
+  Webhook,
+  WebhookDelivery,
+  WebhookDeliveryState,
+  WebhookList,
+  WebhookSecret,
+} from "../types";
 import { TEST_RATE_LIMITED } from "../../lib/webhooks";
 
 // v0.4 wave 2: webhooks and Slack channels (manage_integrations: org admins, security leads).
@@ -109,13 +119,22 @@ export function useDeleteWebhook(orgId: string) {
   });
 }
 
-/** The delivery log, newest first, 50 at a time. `poll` refetches every few seconds (after
- *  "Send test"); the list itself is refreshed on every poll so the last delivery stays current. */
-export function useWebhookDeliveries(orgId: string, id: string | null, pollMs: number | false) {
+/** v0.5 wave 2: the delivery log's state filter ("" = every state). */
+export type DeliveryStateFilter = "" | WebhookDeliveryState;
+
+/** The query for one page of the delivery log. */
+export function deliveriesQuery(state: DeliveryStateFilter, cursor: string | undefined) {
+  return { state: state || undefined, limit: 50, cursor };
+}
+
+/** The delivery log, newest first, 50 at a time, optionally in one state. `poll` refetches every
+ *  few seconds (after "Send test"); the list itself is refreshed on every poll so the last
+ *  delivery stays current. */
+export function useWebhookDeliveries(orgId: string, id: string | null, pollMs: number | false, state: DeliveryStateFilter = "") {
   return useInfiniteQuery({
-    queryKey: qk.webhookDeliveries(orgId, id ?? ""),
+    queryKey: qk.webhookDeliveryLog(orgId, id ?? "", state),
     queryFn: ({ pageParam, signal }) =>
-      api<Page<WebhookDelivery>>(`${webhookPath(orgId, id ?? "")}/deliveries`, { query: { limit: 50, cursor: pageParam }, signal }),
+      api<Page<WebhookDelivery>>(`${webhookPath(orgId, id ?? "")}/deliveries`, { query: deliveriesQuery(state, pageParam), signal }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled: !!id,

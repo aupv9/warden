@@ -25,6 +25,11 @@ export const MESSAGES: Record<string, string> = {
   PROJECT_ARCHIVED: "This project is archived, so it doesn't take new scans. Unarchive it first.",
   MFA_NOT_ENABLED:
     "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role.",
+  // v0.5 wave 2: the two 409s of POST …/webhooks (the add dialog; the page hides Add in both
+  // cases, so they only show after a race).
+  WEBHOOK_LIMIT: "This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one.",
+  SECRETS_KEY_MISSING:
+    "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY.",
   [NETWORK_ERROR]: "Warden didn't answer. Check your connection and try again.",
   // Client-side codes from the upload (lib/upload.ts).
   UPLOAD_FAILED: "The connection dropped. Your file is fine; try again.",

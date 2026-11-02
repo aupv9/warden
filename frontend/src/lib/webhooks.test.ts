@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiError } from "../api/client";
+import { deliveriesQuery } from "../api/hooks/webhooks";
+import { qk } from "../api/keys";
 import type { Webhook } from "../api/types";
 import { createQueryClient } from "../App";
 import { auditTargetSummary } from "./auditSummary";
 import { clearToasts, currentToasts } from "./toast";
 import {
   createBody,
+  DELIVERY_STATE_FILTERS,
   deliveryErrorText,
   deliveryTypeLabel,
+  emptyDeliveriesText,
   eventsText,
   formFromWebhook,
   lastDeliveryText,
@@ -158,5 +162,26 @@ describe("the test's 429 has its own words", () => {
       .execute(undefined)
       .catch(() => undefined);
     expect(currentToasts().map((t) => t.message)).toEqual(["You've sent 10 tests in the last hour. Try again later."]);
+  });
+});
+
+describe("v0.5 wave 2: the delivery log's state filter", () => {
+  it("offers All, Pending, Delivered and Failed, sent as ?state= (nothing for All)", () => {
+    expect(DELIVERY_STATE_FILTERS.map((f) => f.label)).toEqual(["All", "Pending", "Delivered", "Failed"]);
+    expect(deliveriesQuery("", undefined)).toEqual({ state: undefined, limit: 50, cursor: undefined });
+    expect(deliveriesQuery("failed", "50")).toEqual({ state: "failed", limit: 50, cursor: "50" });
+  });
+
+  it("keeps one cache entry per state, under the prefix that Send test and delete refresh", () => {
+    const prefix = qk.webhookDeliveries("o", "w");
+    for (const s of ["", "pending", "delivered", "failed"]) {
+      expect(qk.webhookDeliveryLog("o", "w", s).slice(0, prefix.length)).toEqual([...prefix]);
+    }
+    expect(qk.webhookDeliveryLog("o", "w", "")).not.toEqual(qk.webhookDeliveryLog("o", "w", "failed"));
+  });
+
+  it("says what is missing when a state has nothing", () => {
+    expect(emptyDeliveriesText("")).toBe("No deliveries in the last 30 days. Send a test to see one here.");
+    expect(emptyDeliveriesText("failed")).toBe("No failed deliveries in the last 30 days.");
   });
 });

@@ -5,6 +5,7 @@ import type {
   UpdateWebhookBody,
   Webhook,
   WebhookDelivery,
+  WebhookDeliveryState,
   WebhookDeliveryType,
   WebhookEventType,
   WebhookKind,
@@ -43,6 +44,19 @@ export const DELIVERY_TYPE_LABELS: Record<WebhookDeliveryType, string> = { ...WE
 
 /** Events that carry an issue severity (min_severity applies to them). */
 export const ISSUE_EVENTS: WebhookEventType[] = ["issue.assigned", "issue.reopened", "component.malicious"];
+
+/** v0.5 wave 2: the delivery log's state filter (`?state=` on GET …/deliveries). */
+export const DELIVERY_STATE_FILTERS: { value: "" | WebhookDeliveryState; label: string }[] = [
+  { value: "", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "delivered", label: "Delivered" },
+  { value: "failed", label: "Failed" },
+];
+
+export function emptyDeliveriesText(state: "" | WebhookDeliveryState): string {
+  if (state === "") return "No deliveries in the last 30 days. Send a test to see one here.";
+  return `No ${state} deliveries in the last 30 days.`;
+}
 
 export function deliveryTypeLabel(t: string): string {
   return (DELIVERY_TYPE_LABELS as Record<string, string>)[t] ?? t;

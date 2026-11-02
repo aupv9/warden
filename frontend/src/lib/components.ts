@@ -28,10 +28,19 @@ export function ecosystemLabel(eco: string): string {
   return ECOSYSTEM_LABELS[eco] ?? eco;
 }
 
-/** The ecosystem filter's options; a value from the URL that isn't in the list stays shown. */
-export function ecosystemOptions(current: string): { value: string; label: string }[] {
-  const known = ECOSYSTEMS.map((e) => ({ value: e, label: ecosystemLabel(e) }));
-  return [{ value: "", label: "All ecosystems" }, ...known, ...(current && !ECOSYSTEMS.includes(current) ? [{ value: current, label: current }] : [])];
+/** The ecosystem filter's options; a value from the URL that isn't in the list stays shown.
+ *  v0.5 wave 2: on the Components page the list is the inventory's own ecosystems with their
+ *  counts (GET …/components/ecosystems, most first); until it loads, or if it fails, the fixed
+ *  list above. Values that don't match the contract's pattern are left out (the URL parser would
+ *  drop them anyway); labels are text. */
+export function ecosystemOptions(current: string, counts?: { ecosystem: string; components: number }[]): { value: string; label: string }[] {
+  const known = counts
+    ? counts
+        .filter((c) => ECOSYSTEM_RE.test(c.ecosystem))
+        .map((c) => ({ value: c.ecosystem, label: `${ecosystemLabel(c.ecosystem)} (${c.components.toLocaleString("en-US")})` }))
+    : ECOSYSTEMS.map((e) => ({ value: e, label: ecosystemLabel(e) }));
+  const listed = current !== "" && known.some((o) => o.value === current);
+  return [{ value: "", label: "All ecosystems" }, ...known, ...(current && !listed ? [{ value: current, label: ecosystemLabel(current) }] : [])];
 }
 
 export interface ComponentFilters {

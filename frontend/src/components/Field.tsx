@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { Fragment, useId } from "react";
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
 import { AlertIcon } from "./Icons";
 
@@ -72,6 +72,19 @@ export function TextArea({ label, hint, error, ...rest }: FieldBits & TextareaHT
 export interface Option {
   value: string;
   label: string;
+  /** Options with the same group in a row are shown under an `<optgroup>` with that label. */
+  group?: string;
+}
+
+/** Consecutive options with the same `group`, in order. */
+function optionRuns(options: Option[]): { group?: string; options: Option[] }[] {
+  const runs: { group?: string; options: Option[] }[] = [];
+  for (const o of options) {
+    const last = runs[runs.length - 1];
+    if (last && last.group === o.group) last.options.push(o);
+    else runs.push({ group: o.group, options: [o] });
+  }
+  return runs;
 }
 
 /** A native select. Pass `label` for a visible label, or `aria-label` for a compact filter. */
@@ -93,11 +106,20 @@ export function Select({
       aria-describedby={describedBy(`${id}-h`, `${id}-e`, hint, error)}
       {...rest}
     >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
+      {optionRuns(options).map((run, i) => {
+        const opts = run.options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ));
+        return run.group === undefined ? (
+          <Fragment key={`${i}:`}>{opts}</Fragment>
+        ) : (
+          <optgroup key={`${i}:${run.group}`} label={run.group}>
+            {opts}
+          </optgroup>
+        );
+      })}
     </select>
   );
   if (!label) return select;
