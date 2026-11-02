@@ -6,6 +6,8 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0-alpha.2] - 2026-11-02
+
 ### Added
 
 - `GET …/issues/export.csv`: the issue list as CSV with its filters and visibility, fixed
@@ -223,7 +225,8 @@ Tagged, but the release workflow failed, so no binaries or image were published 
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
 
-[Unreleased]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...HEAD
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.2...HEAD
+[0.5.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
 [0.5.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.2...v0.5.0-alpha.1
 [0.4.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.1...v0.4.0-alpha.2
 [0.4.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
