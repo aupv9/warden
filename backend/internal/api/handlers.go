@@ -55,7 +55,7 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	h.v03Routes(o)     // SBOM download, license policy (v03.go)
 	h.v04Routes(o)     // component inventory, project targets (v04.go)
 	h.webhookRoutes(o) // webhooks and Slack (webhooks.go)
-	h.v05Routes(o)     // org targets, ecosystems (v05.go)
+	h.v05Routes(o)     // org targets, ecosystems, audit-log check, issue export (v05.go)
 }
 
 // reply renders a service result: data with status (200/201), or the error.
@@ -241,13 +241,7 @@ func (h handlers) cancelScan(c *gin.Context) {
 }
 
 func (h handlers) issues(c *gin.Context) {
-	f := service.IssueFilter{
-		ProjectID: c.Query("project_id"), Status: c.QueryArray("status"), Severity: c.QueryArray("severity"),
-		Assignee: c.Query("assignee"), Tool: c.Query("tool"), PastSLA: c.Query("past_sla"), Q: c.Query("q"),
-		Kind: c.Query("kind"), KEV: c.Query("kev"), EPSSMin: c.Query("epss_min"), Source: c.Query("source"), Target: c.Query("target"),
-		Sort: c.Query("sort"), PageParams: page(c),
-	}
-	out, err := h.svc.Issues(c.Request.Context(), actor(c), f)
+	out, err := h.svc.Issues(c.Request.Context(), actor(c), issueFilter(c))
 	reply(c, false, out, err)
 }
 

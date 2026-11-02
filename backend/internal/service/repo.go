@@ -281,7 +281,8 @@ type Repo interface {
 
 	AppendAudit(ctx context.Context, r AuditRecord) error
 	AuditEntries(ctx context.Context, q AuditQuery) ([]AuditEntry, error)
-	AuditRepo // audit.go (v0.5)
+	AuditRepo  // audit.go (v0.5)
+	ExportRepo // export.go (v0.5)
 
 	TokenRepo
 	GateRepo
