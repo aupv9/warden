@@ -1,0 +1,14 @@
+# Build context for backend/Dockerfile (the repository root): only what the
+# build reads. Keeps .env, .cache (scanner mirror, scratch), node_modules and
+# local builds out of the context and the layer cache.
+*
+!backend/go.mod
+!backend/go.sum
+!backend/cmd
+!backend/internal
+!frontend
+frontend/node_modules
+frontend/dist
+frontend/design
+backend/internal/webui/dist
+**/.DS_Store
