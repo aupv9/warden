@@ -983,7 +983,7 @@ export interface paths {
         };
         /**
          * The project's current components
-         * @description Needs view access to the project; API tokens need issues:read on that project.
+         * @description Needs view access to the project; API tokens need issues:read on that project. Malicious components come first, then by name and version.
          */
         get: operations["listProjectComponents"];
         put?: never;
@@ -1138,6 +1138,98 @@ export interface paths {
          * @description The last 30 days.
          */
         get: operations["listWebhookDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Targets of every visible project (view_results)
+         * @description For the issue list's Image filter without a project in scope. Same visibility as the issue list: org admins and security leads see every project, others the projects they are members of; archived projects are left out. Ordered by project key, then target.
+         */
+        get: operations["listOrgTargets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/components/ecosystems": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Ecosystems in the inventory, with counts
+         * @description Same visibility as GET /components. Ordered by count, descending.
+         */
+        get: operations["listComponentEcosystems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/audit-log/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check the org's audit-log hash chain (view_audit_log)
+         * @description Recomputes the chain the way `warden-admin audit verify` does. The check itself is recorded as audit.verified. Rate limited: 10 per org per hour.
+         */
+        post: operations["verifyAuditLog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/issues/export.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * The issue list as CSV (same filters and visibility)
+         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens.
+         */
+        get: operations["exportIssuesCSV"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1608,7 +1700,7 @@ export interface components {
         };
         Error: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "MFA_NOT_ENABLED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "MFA_NOT_ENABLED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL" | "WEBHOOK_LIMIT" | "SECRETS_KEY_MISSING";
             message: string;
             /** @description VALIDATION_FAILED: {fields: {field: message}}. RATE_LIMITED: {retry_after: seconds}. */
             metadata?: {
@@ -2144,6 +2236,29 @@ export interface components {
             scope: string;
             /** @description Sent as the `audience` authorization parameter when set (WARDEN_WEB__OIDC_AUDIENCE; Auth0 needs it for a JWT access token). Null: not sent. */
             audience: string | null;
+        };
+        /** @description A project's target (source code, an image repository or (history)) with its latest scan. */
+        OrgTarget: {
+            /** Format: uuid */
+            project_id: string;
+            project_key: string;
+            project_name: string;
+            /** @description Image repository, (history), or empty for source code. */
+            target: string;
+            kind: components["schemas"]["ScanKind"];
+            /** Format: date-time */
+            last_scan_at: string | null;
+            open_issues: number;
+        };
+        AuditVerification: {
+            /** @description Every entry's hash matches its content and the previous entry's hash. */
+            ok: boolean;
+            /** @description Entries checked (the org's whole log). */
+            entries: number;
+            /** @description The first entry whose hash doesn't match, if any (numeric id, as a string). */
+            first_bad_id: string | null;
+            /** Format: date-time */
+            verified_at: string;
         };
     };
     responses: never;
@@ -4414,6 +4529,8 @@ export interface operations {
                     "application/json": {
                         data: {
                             updated: number;
+                            /** @description Issues left unchanged: not assignable by the caller, in a status that can't be assigned, or in a project the assignee isn't a member of. */
+                            skipped: number;
                         };
                         error: null;
                         meta?: components["schemas"]["Meta"];
@@ -6294,7 +6411,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Conflict: 20 webhooks already, or webhooks unavailable (no secrets.key). */
+            /** @description WEBHOOK_LIMIT: the org has 20 webhooks already. SECRETS_KEY_MISSING: webhooks are unavailable on this server (no secrets.key). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6673,6 +6790,8 @@ export interface operations {
     listWebhookDeliveries: {
         parameters: {
             query?: {
+                /** @description Only deliveries in this state. */
+                state?: "pending" | "delivered" | "failed";
                 limit?: number;
                 /** @description Opaque, from next_cursor. */
                 cursor?: string;
@@ -6723,6 +6842,315 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listOrgTargets: {
+        parameters: {
+            query?: {
+                kind?: components["schemas"]["ScanKind"];
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["OrgTarget"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listComponentEcosystems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: {
+                                ecosystem: components["schemas"]["Ecosystem"];
+                                /** @description Distinct (name, version) pairs. */
+                                components: number;
+                            }[];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    verifyAuditLog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AuditVerification"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Too many requests (Retry-After says when to retry). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    exportIssuesCSV: {
+        parameters: {
+            query?: {
+                project_id?: string;
+                /** @description Repeatable (or comma-separated). active = open, assigned, in_progress, reopened. Default active. */
+                status?: ("open" | "assigned" | "in_progress" | "fixed" | "verified" | "reopened" | "false_positive" | "risk_accepted" | "active")[];
+                /** @description Repeatable. */
+                severity?: components["schemas"]["Severity"][];
+                /** @description me, none or a user id. */
+                assignee?: string;
+                tool?: components["schemas"]["Tool"];
+                past_sla?: boolean;
+                /** @description Trivy issues only: dependency vulnerabilities, license-policy issues, or malicious packages (OSV MAL- advisories). */
+                kind?: "vulnerability" | "license" | "malicious";
+                /** @description Only issues with a CVE in KEV. */
+                kev?: boolean;
+                epss_min?: number;
+                /** @description Issues from source scans, image scans, or history scans (secrets in git history). */
+                source?: "code" | "image" | "history";
+                /** @description Issues from image scans of this repository. History issues are filtered with source=history. */
+                target?: string;
+                /** @description Title, rule_id or file_path substring, or an issue key such as WEB-41. */
+                q?: string;
+                sort?: "due_at" | "-severity" | "-updated_at" | "-epss";
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/csv; charset=utf-8, sent as an attachment (warden-issues-<org>-<date>.csv). */
+            200: {
+                headers: {
+                    /** @description Present when rows were cut at 50,000. */
+                    "X-Warden-Truncated"?: "true";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Too many requests (Retry-After says when to retry). */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
