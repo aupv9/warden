@@ -30,6 +30,10 @@ const (
 	MaxRatio       = 100
 	RatioFloor     = 1024 * 1024
 	MaxBinaryBytes = 5 * 1024 * 1024
+	// MaxNameBytes is the longest path component Linux file systems take
+	// (NAME_MAX). A longer one would fail the write with ENAMETOOLONG, an
+	// internal error instead of a rejected upload.
+	MaxNameBytes = 255
 
 	flagEncrypted = 0x1
 	flagUTF8      = 0x800
@@ -140,11 +144,18 @@ func safeRename(name string) string {
 }
 
 // validatePath returns the cleaned relative parts of an entry name, or an empty
-// slice for the archive root itself (the rules are shared with imagecheck).
+// slice for the archive root itself (archpath's rules, shared with imagecheck,
+// plus MaxNameBytes per component). Renamed entries are checked by their new
+// name, which the digest suffix makes longer.
 func validatePath(name string) ([]string, error) {
 	parts, err := archpath.Clean(name)
 	if err != nil {
 		return nil, reject("ZIP_PATH_TRAVERSAL", "%v", err)
+	}
+	for _, p := range parts {
+		if len(p) > MaxNameBytes {
+			return nil, reject("ZIP_PATH_TRAVERSAL", "entry path has a component longer than %d bytes", MaxNameBytes)
+		}
 	}
 	return parts, nil
 }
@@ -275,6 +286,21 @@ func Extract(zipPath, dest string, limits Limits) (*Result, error) {
 	return res, makeReadOnly(destReal)
 }
 
+// pathErr makes a path the file system refuses as too long (PATH_MAX: 4096
+// bytes on Linux, 1024 on macOS, with dest's own path included) a rejected
+// upload. archpath caps paths in runes, and up to 4 bytes each can pass. So
+// is a name the file system can't store (EILSEQ: APFS refuses unassigned
+// code points; Linux file systems take any bytes).
+func pathErr(err error) error {
+	switch {
+	case errors.Is(err, syscall.ENAMETOOLONG):
+		return reject("ZIP_PATH_TRAVERSAL", "entry path too long for the file system")
+	case errors.Is(err, syscall.EILSEQ):
+		return reject("ZIP_PATH_TRAVERSAL", "entry name the file system can't store")
+	}
+	return err
+}
+
 // mkdirs creates the missing parents of p one level at a time and refuses to
 // walk through anything that isn't a real directory.
 func mkdirs(p string, made map[string]bool) error {
@@ -286,7 +312,7 @@ func mkdirs(p string, made map[string]bool) error {
 		d := missing[i]
 		if err := os.Mkdir(d, 0o755); err != nil {
 			if !errors.Is(err, fs.ErrExist) {
-				return err
+				return pathErr(err)
 			}
 			st, err := os.Lstat(d)
 			if err != nil || !st.IsDir() {
@@ -307,7 +333,7 @@ func extractEntry(f *zip.File, target, name string, limits Limits, res *Result) 
 			res.Warnings = append(res.Warnings, fmt.Sprintf("duplicate entry %q skipped", name))
 			return false, nil
 		}
-		return false, err
+		return false, pathErr(err)
 	}
 	defer func() {
 		if cerr := out.Close(); cerr != nil && err == nil {
