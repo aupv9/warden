@@ -139,7 +139,13 @@ func FuzzParseURL(f *testing.F) {
 			t.Fatalf("accepted %q that net/url refuses: %v", raw, err)
 		}
 		host := strings.ToLower(u.Hostname())
-		if tg.Host != host || u.User != nil || u.Fragment != "" || strings.ContainsAny(raw, "# \t\r\n\\") {
+		// A backslash in the authority is where parsers disagree on the host
+		// (WHATWG reads it as "/"); in the path it is only a character Go
+		// escapes when it sends the request.
+		_, rest, _ := strings.Cut(raw, "://")
+		authority, _, _ := strings.Cut(rest, "/")
+		authority, _, _ = strings.Cut(authority, "?")
+		if tg.Host != host || u.User != nil || u.Fragment != "" || strings.ContainsAny(raw, "# \t\r\n") || strings.Contains(authority, `\`) {
 			t.Fatalf("accepted %q (host %q)", raw, tg.Host)
 		}
 		if tg.Allowed != p.Allowed(host) || (tg.Allowed && !strings.EqualFold(strings.Trim(host, "[]"), allow)) {
