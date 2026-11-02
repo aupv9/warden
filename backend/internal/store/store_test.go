@@ -143,6 +143,38 @@ func TestBuildIssueList(t *testing.T) {
 	}
 }
 
+func TestBuildTargetsAndProjectComponents(t *testing.T) {
+	var a args
+	vis := service.Visibility{OrgID: uuid.New(), UserID: uuid.New()}
+	for kind, want := range map[string]string{
+		"":                  "FROM t JOIN vp ON vp.id = t.project_id\n",
+		service.KindSource:  "WHERE t.target = ''",
+		service.KindHistory: "WHERE t.target = $",
+		service.KindImage:   "WHERE t.target <> '' AND t.target <> $",
+	} {
+		a = nil
+		sql := buildTargets(&a, `SELECT p.id, p.key, p.name FROM project p WHERE `+visible(&a, vis), kind, 10)
+		checkParams(t, sql, a)
+		if !strings.Contains(sql, want) || !strings.Contains(sql, "ORDER BY vp.key, t.target") || !strings.Contains(sql, "project_member vm") {
+			t.Fatalf("%q: %s", kind, sql)
+		}
+	}
+
+	mal := true
+	sql, a := buildProjectComponents(service.ProjectComponentQuery{ProjectID: uuid.New(), Malicious: true, Limit: 5,
+		After: &service.ProjectComponentCursor{Malicious: &mal, MatchName: "a", Version: "1", Ecosystem: "npm"}})
+	checkParams(t, sql, a)
+	for _, want := range []string{"WHERE pc.malicious AND (NOT pc.malicious, pc.match_name, pc.version, pc.ecosystem, pc.target, pc.path) > ($",
+		"ORDER BY NOT pc.malicious, pc.match_name, pc.version, pc.ecosystem, pc.target, pc.path LIMIT $"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%q missing: %s", want, sql)
+		}
+	}
+	if a[1] != false { // NOT malicious of a malicious cursor
+		t.Fatal(a)
+	}
+}
+
 func TestBuildExceptionAndAuditLists(t *testing.T) {
 	now := time.Now()
 	user := uuid.New()

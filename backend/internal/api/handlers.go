@@ -55,6 +55,7 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	h.v03Routes(o)     // SBOM download, license policy (v03.go)
 	h.v04Routes(o)     // component inventory, project targets (v04.go)
 	h.webhookRoutes(o) // webhooks and Slack (webhooks.go)
+	h.v05Routes(o)     // org targets, ecosystems (v05.go)
 }
 
 // reply renders a service result: data with status (200/201), or the error.
