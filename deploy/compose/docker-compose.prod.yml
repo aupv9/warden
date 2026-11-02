@@ -264,7 +264,8 @@ services:
     networks: [egress]
 
 secrets:
-  # SeaweedFS identities, written by gen-secrets.sh (mode 600).
+  # SeaweedFS identities, written by gen-secrets.sh (secrets/ is 700; the file
+  # is 644 so SeaweedFS, which drops to uid 1000, can read it).
   s3.json:
     file: ./secrets/s3.json
 
