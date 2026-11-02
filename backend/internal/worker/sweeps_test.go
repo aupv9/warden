@@ -419,4 +419,13 @@ func TestNewEnv(t *testing.T) {
 	if _, ok := env.Sandbox.(DockerSandbox); !ok {
 		t.Fatal("production sandbox")
 	}
+	// In prod a scanner without an image is a refusal, not a warning.
+	cfg.Scan.Images = map[string]string{"gitleaks": testImages["gitleaks"]}
+	if _, err := NewEnv(cfg, nil, &fakeStore{}, quietLog()); err != nil {
+		t.Fatal("outside prod a missing image only warns:", err)
+	}
+	cfg.App.Env = config.EnvProd
+	if _, err := NewEnv(cfg, nil, &fakeStore{}, quietLog()); err == nil || !strings.Contains(err.Error(), "opengrep") {
+		t.Fatal("prod accepted missing scanner images:", err)
+	}
 }
