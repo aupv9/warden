@@ -89,6 +89,8 @@ type Settings struct {
 	SBOMRetention time.Duration
 	// Webhooks configure webhook delivery (webhooks.go).
 	Webhooks WebhookSettings
+	// NotifyRetention: how long in-app notifications are kept (prune_notifications).
+	NotifyRetention notify.Retention
 }
 
 // Env is everything the jobs need; tests substitute fakes.
@@ -164,7 +166,8 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 			HMACMaster: master, GuardRatio: s.AutocloseGuardRatio, ScanTimeout: s.Timeout,
 			SourceRetention: s.SourceRetention, AbandonUploadAfter: abandonUploadAfter, StuckAfter: stuckAfter,
 			PublicBaseURL: base, DigestHour: m.DigestHour, Limits: ScanLimits(s), SBOMRetention: s.SBOMRetention,
-			Webhooks: hooks,
+			Webhooks:        hooks,
+			NotifyRetention: notify.Retention{Read: cfg.Notify.ReadRetention, Unread: cfg.Notify.UnreadRetention},
 		},
 	}, nil
 }

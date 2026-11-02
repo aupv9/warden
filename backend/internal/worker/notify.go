@@ -100,3 +100,43 @@ func (e *Env) SLADigest(ctx context.Context) error {
 		return err
 	})
 }
+
+// PruneNotificationsArgs deletes old in-app notifications and dispatched
+// outbox events (hourly; notify.read_retention / notify.unread_retention).
+type PruneNotificationsArgs struct{}
+
+func (PruneNotificationsArgs) Kind() string { return "prune_notifications" }
+
+type PruneNotificationsWorker struct {
+	river.WorkerDefaults[PruneNotificationsArgs]
+	Env *Env
+}
+
+// Timeout: each org's share is bounded (notify.PruneOrg), but the first run
+// after an upgrade, over many orgs, may take longer than River's default minute.
+func (w PruneNotificationsWorker) Timeout(*river.Job[PruneNotificationsArgs]) time.Duration {
+	return 10 * time.Minute
+}
+
+func (w PruneNotificationsWorker) Work(ctx context.Context, _ *river.Job[PruneNotificationsArgs]) error {
+	if w.Env == nil {
+		return errNoEnv
+	}
+	return w.Env.PruneNotifications(ctx)
+}
+
+// PruneNotifications prunes every org's notifications, each under its own
+// RLS scope.
+func (e *Env) PruneNotifications(ctx context.Context) error {
+	tx := func(ctx context.Context, org uuid.UUID, fn func(notify.DB) error) error {
+		return e.Tx(ctx, org, func(db DB) error { return fn(db) })
+	}
+	now := e.Now()
+	return e.forEachOrg(ctx, "prune_notifications", func(org uuid.UUID) error {
+		notes, events, err := notify.PruneOrg(ctx, tx, org, now, e.NotifyRetention)
+		if notes > 0 || events > 0 {
+			e.Log.Info("pruned notifications", "org_id", org, "notifications", notes, "outbox_events", events)
+		}
+		return err
+	})
+}
