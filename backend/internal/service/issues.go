@@ -108,10 +108,10 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 		fe.add("past_sla", "must be true or false")
 	}
 	switch f.Kind {
-	case "", KindVulnerability, KindLicense:
+	case "", KindVulnerability, KindLicense, KindMalicious:
 		q.Kind = f.Kind
 	default:
-		fe.add("kind", "must be vulnerability or license")
+		fe.add("kind", "must be vulnerability, license or malicious")
 	}
 	switch f.KEV {
 	case "", "false":
@@ -131,10 +131,10 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 		}
 	}
 	switch f.Source {
-	case "", "code", "image":
+	case "", "code", "image", "history":
 		q.Source = f.Source
 	default:
-		fe.add("source", "must be code or image")
+		fe.add("source", "must be code, image or history")
 	}
 	if f.Target != "" {
 		if len(f.Target) > maxTarget || !ImageTarget.MatchString(f.Target) {

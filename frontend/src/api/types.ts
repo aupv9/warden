@@ -1,4 +1,4 @@
-// API types, mirroring the v0.1, v0.2 and v0.3 API contracts field for field (snake_case, as on the wire).
+// API types, mirroring the v0.1 to v0.4 (wave 2) API contracts field for field (snake_case, as on the wire).
 // Every screen imports from this one module so it can later be replaced by types generated
 // from the backend's openapi.json (`npm run gen:api` writes src/api/schema.d.ts).
 
@@ -62,6 +62,10 @@ export interface Limits {
   scans_per_hour: number;
   /** v0.3: size limit for `docker save` archives (image scans). */
   image_upload_max_mb: number;
+  /** v0.4 wave 2: size limit for `git bundle` uploads (history scans, from the CLI only). */
+  history_upload_max_mb: number;
+  /** v0.4 wave 2: a history scan reads at most this many commits (the newest are kept). */
+  history_max_commits: number;
 }
 
 export interface Me {
@@ -213,11 +217,23 @@ export interface Scan {
   target: string;
   /** v0.3: the full image reference given at upload, for display only. */
   image_ref: string | null;
-  /** v0.3: the scan's CycloneDX SBOM, while it is kept (download with GET …/sbom). */
-  sbom: { components: number; size: number } | null;
+  /** v0.3: the scan's SBOM, while it is kept (download with GET …/sbom). `size` is the
+   *  CycloneDX file's; v0.4 adds `formats`, the files the scan produced. */
+  sbom: { components: number; size: number; formats: SbomFormat[] } | null;
+  /** v0.4 wave 2: history scans that finished: how many commits Gitleaks read, and whether
+   *  `history_max_commits` cut the history short (the newest commits are kept). */
+  history: { commits: number; truncated: boolean } | null;
 }
 
-export type ScanKind = "source" | "image";
+/** v0.4 wave 2 adds `history`: a `git bundle` from `warden scan --history` (CLI only), Gitleaks
+ *  only, target `(history)`. */
+export type ScanKind = "source" | "image" | "history";
+/** What the web UI can upload: a browser can't build a git bundle. */
+export type UploadKind = Exclude<ScanKind, "history">;
+/** v0.4: the SBOM files a scan can have. */
+export type SbomFormat = "cyclonedx-json" | "spdx-json";
+/** v0.4: `?format=` of GET …/sbom. */
+export type SbomFormatParam = "cyclonedx" | "spdx";
 
 export interface CreateScanBody {
   file_name: string;
@@ -237,7 +253,7 @@ export interface CreateScanBody {
 export interface SbomDownload {
   url: string;
   expires_at: Timestamp;
-  format: "cyclonedx-json";
+  format: SbomFormat;
   size: number;
   sha256: string;
   components: number;
@@ -281,6 +297,8 @@ export interface IssueSummary {
   kev: boolean;
   /** v0.3: highest FIRST EPSS score (0..1) of the issue's CVEs. Ranking only. */
   epss: number | null;
+  /** v0.4: Trivy license category, for license-policy issues (null otherwise). */
+  license_category: LicenseCategory | null;
 }
 
 export interface IssuePage extends Page<IssueSummary> {
@@ -309,6 +327,16 @@ export interface Issue extends IssueSummary {
   kev_added: string | null;
   /** v0.3: KEV marks a CVE as used in ransomware campaigns. */
   kev_ransomware: boolean;
+  /** v0.4 wave 2, secrets in git history (target `(history)`): the oldest commit that added the
+   *  secret (file_path and start_line are from it) and how many commits added it. The sha is
+   *  shown as text, never linked; author, email and message are never kept. */
+  commit: IssueCommit | null;
+}
+
+export interface IssueCommit {
+  sha: string;
+  committed_at: Timestamp | null;
+  count: number;
 }
 
 export type IssueSort = "due_at" | "-severity" | "-updated_at" | "-epss";
@@ -423,6 +451,11 @@ export const AUDIT_ACTIONS = [
   "user.relinked",
   "user.relink_allowed",
   "org.license_policy_changed",
+  // v0.4 wave 2
+  "webhook.created",
+  "webhook.updated",
+  "webhook.deleted",
+  "webhook.secret_rotated",
 ] as const;
 
 // ---- v0.2: API tokens and the scan gate ----
@@ -475,6 +508,8 @@ export interface Gate {
   fail_on_kev: boolean;
   /** v0.3: active issues in this scan with a CVE in KEV. */
   kev: number;
+  /** v0.4 wave 2: ids from `blocking` that this scan created or reopened (`warden scan --comment`). */
+  blocking_new: UUID[];
 }
 
 // ---- v0.2: notifications ----
@@ -486,7 +521,11 @@ export type NotificationType =
   | "exception.decided"
   | "scan.finished"
   | "sla.due_soon"
-  | "sla.overdue";
+  | "sla.overdue"
+  // v0.4: an OSV malicious-package advisory matched a component (at scan time or later).
+  | "component.malicious"
+  // v0.4 wave 2: Warden turned a webhook off after failed deliveries (org admins, security leads).
+  | "webhook.disabled";
 
 export const NOTIFICATION_TYPES: NotificationType[] = [
   "issue.assigned",
@@ -496,6 +535,8 @@ export const NOTIFICATION_TYPES: NotificationType[] = [
   "scan.finished",
   "sla.due_soon",
   "sla.overdue",
+  "component.malicious",
+  "webhook.disabled",
 ];
 
 export interface Notification {
@@ -577,6 +618,8 @@ export interface IssueCounts {
   kev: number;
   /** v0.3: active license-policy issues. */
   licenses: number;
+  /** v0.4: active malicious-package issues. */
+  malicious: number;
 }
 
 // ---- v0.3: license policy and vulnerability data ----
@@ -602,10 +645,13 @@ export interface LicensePolicy extends LicensePolicyInput {
   enabled: boolean;
 }
 
-export type VulnDataName = "trivy_db" | "kev" | "epss";
+/** v0.4: `osv_mal:<ecosystem>` is the OSV malicious-package feed for one ecosystem. */
+export type VulnDataName = "trivy_db" | "kev" | "epss" | `osv_mal:${string}`;
 
 export interface VulnDataSource {
-  name: VulnDataName;
+  /** A VulnDataName. Typed `string` (the contract only gives a pattern), so a feed the UI
+   *  doesn't know yet is still listed under its raw name. */
+  name: string;
   /** When the publisher last updated it, as recorded by the mirror. */
   updated_at: Timestamp | null;
   /** When the worker loaded it; null for trivy_db (Trivy reads the mirror itself). */
@@ -613,10 +659,191 @@ export interface VulnDataSource {
   records: number | null;
   /** updated_at missing or older than 7 days. */
   stale: boolean;
+  /** v0.4, OSV only: advisories skipped because their version ranges aren't supported. */
+  unsupported: number | null;
 }
 
 export interface VulnData {
   sources: VulnDataSource[];
+}
+
+// ---- v0.4: component inventory ----
+
+/** OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for OS
+ *  packages, the purl type (apk, deb, rpm, …). */
+export type Ecosystem = string;
+
+/** GET /orgs/{org}/components: one row per (ecosystem, name, version), from each (project,
+ *  target)'s latest scan where Trivy succeeded. Names, versions, paths and purls come from
+ *  scanned lockfiles and images: untrusted text, rendered as text only. */
+export interface ComponentSummary {
+  ecosystem: Ecosystem;
+  name: string;
+  version: string;
+  purl: string | null;
+  licenses: string[];
+  /** Visible projects whose current scans contain it. */
+  projects: number;
+  /** Distinct (project, target) pairs. */
+  targets: number;
+  /** Active Trivy issues on this package and version in those projects. */
+  open_issues: number;
+  /** Listed by an OSV malicious-package advisory. */
+  malicious: boolean;
+}
+
+/** GET /orgs/{org}/components/usage: where one component is used. */
+export interface ComponentUsage {
+  project_id: UUID;
+  project_key: string;
+  project_name: string;
+  /** Image repository, or "" for source code. */
+  target: string;
+  /** Lockfile or image layer target where Trivy found it (untrusted text). */
+  path: string;
+  scan_id: UUID;
+  scanned_at: Timestamp;
+  first_seen: Timestamp;
+}
+
+/** GET /orgs/{org}/projects/{p}/components. */
+export interface ProjectComponent {
+  ecosystem: Ecosystem;
+  name: string;
+  version: string;
+  purl: string | null;
+  licenses: string[];
+  target: string;
+  path: string;
+  first_seen: Timestamp;
+  open_issues: number;
+  malicious: boolean;
+}
+
+/** GET /orgs/{org}/projects/{p}/targets: source code (""), each scanned image repository and
+ *  (v0.4 wave 2) `(history)` with kind `history`. */
+export interface ProjectTarget {
+  target: string;
+  kind: ScanKind;
+  last_scan_at: Timestamp | null;
+  open_issues: number;
+}
+
+// ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
+
+/** generic: a signed JSON POST (Standard Webhooks); slack: a Slack Incoming Webhook. */
+export type WebhookKind = "generic" | "slack";
+export type WebhookEventType =
+  | "scan.finished"
+  | "issue.assigned"
+  | "issue.reopened"
+  | "exception.requested"
+  | "exception.decided"
+  | "component.malicious";
+export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
+  "scan.finished",
+  "issue.assigned",
+  "issue.reopened",
+  "exception.requested",
+  "exception.decided",
+  "component.malicious",
+];
+export type WebhookDeliveryState = "pending" | "delivered" | "failed";
+export type WebhookDeliveryType = WebhookEventType | "webhook.test";
+export type WebhookDeliveryError =
+  | "timeout"
+  | "dns"
+  | "connect"
+  | "tls"
+  | "blocked_address"
+  | "redirect"
+  | "http_status"
+  | "disabled"
+  | "key_unavailable";
+
+/** A webhook as listed. The URL itself is never returned (for Slack it is the credential):
+ *  `url_hint` is scheme and host only, shown as text, never as a link. */
+export interface Webhook {
+  id: UUID;
+  kind: WebhookKind;
+  name: string;
+  url_hint: string;
+  events: WebhookEventType[];
+  /** Empty: every project, including new ones. */
+  project_ids: UUID[];
+  /** Issue events below this severity aren't sent; null sends all. */
+  min_severity: Severity | null;
+  enabled: boolean;
+  /** failures: turned off by Warden after repeated failed deliveries (or 410 Gone). */
+  disabled_reason: "failures" | null;
+  consecutive_failures: number;
+  last_delivery: { at: Timestamp; state: WebhookDeliveryState; status_code: number | null } | null;
+  created_by: UserRef;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+/** GET /orgs/{org}/webhooks. `available` is false when the server has no secrets.key. */
+export interface WebhookList {
+  items: Webhook[];
+  available: boolean;
+}
+
+/** openapi CreateWebhookRequest. */
+export interface CreateWebhookBody {
+  kind: WebhookKind;
+  name: string;
+  url: string;
+  events: WebhookEventType[];
+  project_ids?: UUID[];
+  min_severity?: Severity | null;
+}
+
+/** openapi UpdateWebhookRequest: only the fields sent change; the kind can't. */
+export interface UpdateWebhookBody {
+  name?: string;
+  url?: string;
+  events?: WebhookEventType[];
+  project_ids?: UUID[];
+  min_severity?: Severity | null;
+  /** true also resets consecutive_failures and disabled_reason. */
+  enabled?: boolean;
+}
+
+/** The only responses that carry a signing secret. The UI keeps it in the dialog's state only. */
+export interface CreatedWebhook {
+  webhook: Webhook;
+  /** Generic webhooks: `whsec_…`, shown once. null for Slack. */
+  secret: string | null;
+}
+export interface WebhookSecret {
+  secret: string;
+}
+
+export interface WebhookDelivery {
+  id: UUID;
+  type: WebhookDeliveryType;
+  state: WebhookDeliveryState;
+  attempts: number;
+  status_code: number | null;
+  error: WebhookDeliveryError | null;
+  created_at: Timestamp;
+  last_attempt_at: Timestamp | null;
+  next_attempt_at: Timestamp | null;
+  delivered_at: Timestamp | null;
+}
+
+// ---- v0.5: the web UI's OIDC settings (GET /web-config, public) ----
+
+/** Read once at startup (auth/webConfig.ts checks every field before use). */
+export interface WebConfig {
+  /** OIDC issuer URL. */
+  issuer: string;
+  client_id: string;
+  /** Space-separated; includes `openid`. */
+  scope: string;
+  /** Sent as the `audience` authorization parameter when set. */
+  audience: string | null;
 }
 
 // ---- Errors ----

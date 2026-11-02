@@ -7,10 +7,12 @@ import { formatEpss, isImageTarget } from "./intel";
 // input: every value is checked against the contract's enums before it reaches the API.
 
 export type StatusFilter = "active" | "all" | IssueStatus;
-/** v0.3: Trivy issues only: dependency vulnerabilities or license-policy issues. */
-export type IssueKindFilter = "vulnerability" | "license";
-/** v0.3: issues from source scans or from image scans. */
-export type IssueSourceFilter = "code" | "image";
+/** v0.3: Trivy issues only: dependency vulnerabilities or license-policy issues; v0.4 adds
+ *  malicious packages (OSV MAL- advisories). */
+export type IssueKindFilter = "vulnerability" | "license" | "malicious";
+/** v0.3: issues from source scans or from image scans; v0.4 wave 2 adds history scans
+ *  (secrets in git history, target `(history)`). */
+export type IssueSourceFilter = "code" | "image" | "history";
 
 export interface IssueFilters {
   q: string;
@@ -52,8 +54,8 @@ export const DEFAULT_FILTERS: IssueFilters = {
 };
 
 export const SORTS: IssueSort[] = ["due_at", "-severity", "-updated_at", "-epss"];
-export const ISSUE_KINDS: IssueKindFilter[] = ["vulnerability", "license"];
-export const ISSUE_SOURCES: IssueSourceFilter[] = ["code", "image"];
+export const ISSUE_KINDS: IssueKindFilter[] = ["vulnerability", "malicious", "license"];
+export const ISSUE_SOURCES: IssueSourceFilter[] = ["code", "image", "history"];
 /** The EPSS presets offered in the UI; the URL may carry any value from 0 to 1. */
 export const EPSS_PRESETS = [0.01, 0.1, 0.5] as const;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -155,8 +157,8 @@ const STATUS_WORDS: Record<string, string> = {
 };
 const SEVERITY_WORDS: Record<Severity, string> = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
 const TOOL_WORDS: Record<Tool, string> = { gitleaks: "Gitleaks", opengrep: "Opengrep", trivy: "Trivy", checkov: "Checkov" };
-export const KIND_LABELS: Record<IssueKindFilter, string> = { vulnerability: "Vulnerabilities", license: "Licenses" };
-export const SOURCE_LABELS: Record<IssueSourceFilter, string> = { code: "Source code", image: "Container images" };
+export const KIND_LABELS: Record<IssueKindFilter, string> = { vulnerability: "Vulnerabilities", malicious: "Malicious packages", license: "Licenses" };
+export const SOURCE_LABELS: Record<IssueSourceFilter, string> = { code: "Source code", image: "Container images", history: "Git history" };
 
 /** "EPSS ≥ 10%" */
 export function epssMinText(n: number): string {
@@ -186,13 +188,14 @@ export function hasActiveFilters(f: IssueFilters): boolean {
 
 // ---- Saved views: presets of the URL filters above (no state of their own) ----
 
-export type SavedView = "active" | "mine" | "past_sla" | "kev" | "secrets" | "licenses";
+export type SavedView = "active" | "mine" | "past_sla" | "kev" | "malicious" | "secrets" | "licenses";
 
 export const SAVED_VIEWS: { id: SavedView; label: string }[] = [
   { id: "active", label: "Active" },
   { id: "mine", label: "Assigned to me" },
   { id: "past_sla", label: "Past SLA" },
   { id: "kev", label: "Exploited (KEV)" },
+  { id: "malicious", label: "Malicious" },
   { id: "secrets", label: "Secrets" },
   { id: "licenses", label: "Licenses" },
 ];
@@ -202,6 +205,7 @@ const VIEW_PRESETS: Record<SavedView, Partial<IssueFilters>> = {
   mine: { assignee: "me" },
   past_sla: { pastSla: true },
   kev: { kev: true },
+  malicious: { kind: "malicious" },
   secrets: { tool: "gitleaks" },
   licenses: { kind: "license" },
 };

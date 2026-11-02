@@ -1,0 +1,15 @@
+# The web UI and the API: one origin, both served by warden-api, which sets
+# the CSP and the other security headers itself. HSTS belongs here, where TLS
+# ends. /metrics and the worker's probes are on admin.addr, never proxied.
+{$WARDEN_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	# warden-api caps bodies at 1 MiB itself (uploads go to object storage).
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy api:8000
+}

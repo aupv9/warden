@@ -1,4 +1,4 @@
-// Package trivyjson reads package licenses out of Trivy's JSON report. The
+// Package trivyjson reads packages and their licenses out of Trivy's JSON report. The
 // report is derived from the scanned (attacker-controlled) code, so it is
 // hostile input: the file size, the package and license counts and every
 // string are capped, a document of the wrong shape is rejected as a whole, and
@@ -24,6 +24,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/aupv9/warden/backend/internal/domain/ecosystem"
 	"github.com/aupv9/warden/backend/internal/domain/licensepolicy"
 )
 
@@ -36,6 +37,7 @@ const (
 	MaxPkgName            = 256
 	MaxPkgVersion         = 128
 	MaxLicenseName        = 256
+	MaxPURL               = 512
 	// Expression caps: tokens, parenthesis depth, alternatives, ids per alternative.
 	maxTokens       = 64
 	maxDepth        = 8
@@ -56,6 +58,9 @@ const (
 var (
 	ErrReport = errors.New("trivy JSON")
 	osFamily  = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,31}$`)
+	// purl is the start of a package URL; the rest is percent-encoded text
+	// that is only stored and shown, never parsed.
+	purl = regexp.MustCompile(`^pkg:[a-z0-9.+-]{1,32}/[\x21-\x7e]+$`)
 )
 
 func reportErr(format string, args ...any) error {
@@ -85,11 +90,35 @@ type License struct {
 	FilePath string
 }
 
+// Package is one package Trivy found, for the component inventory and the
+// malicious-package match. Trivy's root and workspace packages (the scanned
+// project itself) are left out.
+type Package struct {
+	// Target and Class are as in License.
+	Target string
+	Class  string
+	// Ecosystem is ecosystem.FromTrivy of the result type and PURL;
+	// MatchName and MatchVersion are Name and Version normalized for it.
+	Ecosystem    string
+	Name         string
+	MatchName    string
+	Version      string
+	MatchVersion string
+	// PURL is Trivy's package URL, "" when missing or not shaped like one.
+	PURL string
+	// Licenses are the License values of the package's licenses, deduplicated.
+	Licenses []string
+	// FilePath is as in License: set by the caller.
+	FilePath string
+}
+
 // Report is what Warden uses from Trivy's JSON.
 type Report struct {
 	// OSFamily is the scanned image's OS ("alpine"), "" for none or unrecognized.
 	OSFamily string
 	Licenses []License
+	// Packages has one entry per (target, ecosystem, name, version).
+	Packages []Package
 }
 
 // The subset of Trivy's schema that is read. A field of the wrong type fails
@@ -103,10 +132,15 @@ type document struct {
 	Results []struct {
 		Target   string `json:"Target"`
 		Class    string `json:"Class"`
+		Type     string `json:"Type"`
 		Packages []struct {
-			Name     string   `json:"Name"`
-			Version  string   `json:"Version"`
-			Licenses []string `json:"Licenses"`
+			Name       string `json:"Name"`
+			Version    string `json:"Version"`
+			Identifier struct {
+				PURL string `json:"PURL"`
+			} `json:"Identifier"`
+			Relationship string   `json:"Relationship"`
+			Licenses     []string `json:"Licenses"`
 		} `json:"Packages"`
 		Licenses []struct {
 			Category string `json:"Category"`
@@ -168,7 +202,9 @@ func Parse(r io.Reader) (*Report, error) {
 		out.OSFamily = m.Family
 	}
 	type key struct{ target, pkg, version, license string }
+	type pkgKey struct{ target, eco, name, version string }
 	seen := map[key]bool{}
+	pkgIndex := map[pkgKey]int{}
 	for _, res := range doc.Results {
 		if res.Class != ClassOSPackages && res.Class != ClassLangPackages {
 			continue
@@ -183,6 +219,22 @@ func Parse(r io.Reader) (*Report, error) {
 				continue
 			}
 			version := clean(p.Version, MaxPkgVersion)
+			pi := -1
+			if p.Relationship != "root" && p.Relationship != "workspace" {
+				pu := ""
+				if len(p.Identifier.PURL) <= MaxPURL && purl.MatchString(p.Identifier.PURL) {
+					pu = p.Identifier.PURL
+				}
+				eco := ecosystem.FromTrivy(res.Type, pu)
+				pk := pkgKey{target, eco, ecosystem.MatchName(eco, name), version}
+				var ok bool
+				if pi, ok = pkgIndex[pk]; !ok {
+					pi = len(out.Packages)
+					pkgIndex[pk] = pi
+					out.Packages = append(out.Packages, Package{Target: target, Class: res.Class, Ecosystem: eco,
+						Name: name, MatchName: pk.name, Version: version, MatchVersion: ecosystem.MatchVersion(eco, version), PURL: pu})
+				}
+			}
 			for _, declared := range p.Licenses {
 				l := License{Target: target, Class: res.Class, PkgName: name, PkgVersion: version,
 					Category: licensepolicy.Unknown, Declared: clean(declared, MaxLicenseName)}
@@ -192,6 +244,9 @@ func Parse(r io.Reader) (*Report, error) {
 				l.License, l.Terms = UnknownID, [][]string{{UnknownID}}
 				if expr, terms, ok := ParseExpression(declared); ok {
 					l.License, l.Terms = expr, terms
+				}
+				if pi >= 0 && !slices.Contains(out.Packages[pi].Licenses, l.License) {
+					out.Packages[pi].Licenses = append(out.Packages[pi].Licenses, l.License)
 				}
 				k := key{target, name, version, l.License}
 				if seen[k] {

@@ -68,6 +68,7 @@ export function ProjectLayout() {
           <Segmented label="Project">
             <NavLink to={`${base}/issues`}>Issues</NavLink>
             <NavLink to={`${base}/scans`}>Scans</NavLink>
+            <NavLink to={`${base}/components`}>Components</NavLink>
             <NavLink to={`${base}/members`}>Members</NavLink>
             <NavLink to={`${base}/settings`}>Settings</NavLink>
           </Segmented>

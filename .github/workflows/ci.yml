@@ -97,15 +97,38 @@ jobs:
 
   image:
     runs-on: ubuntu-24.04
+    env:
+      GVISOR_RELEASE: "20261005.0"
+      GVISOR_SHA512: 79869ae9a589355a46d46fdac068d9a954e741741ffe77c64e38c56ea955498c1cb04e9bce44e1cce5155333e6b76bee72347c6661bb7c78fd2fe3aad198c8fe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - name: Build API image
+      - name: Build image (web UI, api/worker/migrate, docker CLI)
         run: docker build -f backend/Dockerfile -t warden/api:ci .
       - name: Image runs as non-root and the healthcheck binary works
         run: |
           test "$(docker image inspect -f '{{.Config.User}}' warden/api:ci)" = "65532:65532"
           docker run --rm --entrypoint /usr/local/bin/warden-migrate warden/api:ci && exit 1 || test $? -eq 2
+      - name: Smoke test (UI and its CSP, web-config, migrations, docker CLI)
+        run: ./scripts/image-smoke.sh warden/api:ci
+      - name: Install gVisor (runsc), as in the selfscan job
+        run: |
+          curl -fsSL -o /tmp/gvisor.tar.bz2 \
+            "https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64/gvisor.tar.bz2"
+          echo "${GVISOR_SHA512}  /tmp/gvisor.tar.bz2" | sha512sum -c -
+          sudo tar -xjf /tmp/gvisor.tar.bz2 -C /usr/local/bin runsc containerd-shim-runsc-v1
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+          docker info -f '{{json .Runtimes}}' | grep -q '"runsc"'
+      - name: Production compose (app.env=prod, Caddy with an internal CA, worker on runsc)
+        env:
+          SMOKE_SCANNER: "1"
+          SMOKE_SCRATCH: /srv/warden/scratch
+          SMOKE_MIRROR: /srv/warden/mirror
+        run: |
+          sudo install -d -o 65532 -g 65532 -m 700 "$SMOKE_SCRATCH"
+          sudo install -d -o 65532 -g 65532 -m 755 "$SMOKE_MIRROR"
+          ./scripts/compose-smoke.sh warden/api:ci
 
   # Warden scans itself with the production sandbox (gVisor). Any Critical or
   # un-baselined High blocks every run, so a finding surfaces on its pull request

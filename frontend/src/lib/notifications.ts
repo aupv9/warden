@@ -14,6 +14,14 @@ export const NOTIFICATION_LABELS: Record<NotificationType, { label: string; deta
   "scan.finished": { label: "Scan finished", detail: "A scan you started, from the UI or with your API token, ends." },
   "sla.due_soon": { label: "Due soon (daily digest)", detail: "One email a day listing your issues close to their SLA." },
   "sla.overdue": { label: "Overdue (daily digest)", detail: "One email a day listing your issues past their SLA." },
+  "component.malicious": {
+    label: "Malicious package found",
+    detail: "An OSV advisory lists a package version in your projects as malicious, at scan time or later. Sent to security leads and project owners.",
+  },
+  "webhook.disabled": {
+    label: "Webhook turned off",
+    detail: "Warden turns off a webhook or Slack channel after its deliveries keep failing. Sent to org admins and security leads.",
+  },
 };
 
 /** The contract's defaults: email on for every type except scan.finished. */

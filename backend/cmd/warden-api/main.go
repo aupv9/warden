@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	cgauth "github.com/aupv9/common-go/auth"
 	"github.com/aupv9/common-go/transport/httpserver"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -30,13 +32,15 @@ import (
 	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/store"
+	"github.com/aupv9/warden/backend/internal/webhook"
+	"github.com/aupv9/warden/backend/internal/webui"
 	"github.com/aupv9/warden/backend/internal/worker"
 )
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "GET /healthz on the configured port and exit 0 if healthy")
 	flag.Parse()
-	cfg, err := config.Load()
+	cfg, err := config.LoadServer()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -66,13 +70,10 @@ func appOptions(cfg *config.Config) fx.Option {
 		fx.Provide(func(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 			return worker.NewClient(pool, worker.Options{})
 		}),
-		fx.Provide(func(c *config.Config) (api.ObjectStore, error) {
-			client, err := storage.New(storage.FromSection(c.Storage))
-			if err != nil {
-				return nil, err
-			}
-			return objectStore{client}, nil
+		fx.Provide(func(c *config.Config) (*storage.Client, error) {
+			return storage.New(storage.FromSection(c.Storage))
 		}),
+		fx.Provide(func(client *storage.Client) api.ObjectStore { return objectStore{client} }),
 		fx.Provide(func(c *config.Config, pool *pgxpool.Pool, jobs *river.Client[pgx.Tx], objects api.ObjectStore, keys *auth.JWKS, log *slog.Logger) *service.Service {
 			sc := ServiceConfig(c)
 			sc.SignIn.KeyStatus = func() service.KeyStatus {
@@ -81,18 +82,86 @@ func appOptions(cfg *config.Config) fx.Option {
 			}
 			return service.New(store.New(pool, jobs), objects, sc, log)
 		}),
-		fx.Invoke(api.Register),
+		fx.Invoke(func(lc fx.Lifecycle, e *gin.Engine, v cgauth.Verifier, svc *service.Service, c *config.Config,
+			objects *storage.Client, keys *auth.JWKS, log *slog.Logger) error {
+			dist := webui.Embedded()
+			opts, err := webOptions(c, objects, keys.BrowserEndpoints, dist)
+			if err != nil {
+				return err
+			}
+			api.Register(e, v, svc, opts...)
+			if dist != nil {
+				// Read discovery now, so the UI's CSP names the provider's token
+				// endpoint before the first sign-in. In the background: an
+				// unreachable provider must not stop the API from starting
+				// (the CSP falls back to the issuer's origin until it answers).
+				lc.Append(fx.StartHook(func() {
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						if err := keys.Warm(ctx); err != nil {
+							log.Warn("OIDC discovery for the web UI failed; retried on the next token", slog.String("status", keys.Status().Err))
+						}
+					}()
+				}))
+			}
+			return nil
+		}),
 	)
+}
+
+// webOptions are the web UI's sign-in settings, and the UI itself when this
+// binary bundles one (built with -tags webui). Its CSP allows the issuer, the
+// endpoints its discovery document names (read on each response, so it
+// follows the key cache's refreshes), and the origin presigned URLs point at.
+func webOptions(c *config.Config, objects *storage.Client, endpoints func() auth.BrowserEndpoints, dist fs.FS) ([]api.Option, error) {
+	wc := api.WebConfig{Issuer: c.OIDC.Issuer, ClientID: c.Web.OIDCClientID, Scope: c.Web.OIDCScope}
+	if c.Web.OIDCAudience != "" {
+		aud := c.Web.OIDCAudience
+		wc.Audience = &aud
+	}
+	opts := []api.Option{api.WithWebConfig(wc)}
+	if dist == nil {
+		return opts, nil
+	}
+	storageOrigin, err := objects.PublicOrigin(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	base := webui.Policy{Issuer: c.OIDC.Issuer, Storage: storageOrigin}
+	// Issuer and storage are checked once, here: a bad value stops startup.
+	fallback, err := base.CSP()
+	if err != nil {
+		return nil, fmt.Errorf("web UI: %w", err)
+	}
+	csp := func() string {
+		p := base
+		e := endpoints()
+		p.Authorization, p.Token, p.UserInfo, p.EndSession = e.Authorization, e.Token, e.UserInfo, e.EndSession
+		if s, err := p.CSP(); err == nil {
+			return s
+		}
+		return fallback
+	}
+	ui, err := webui.New(dist, csp)
+	if err != nil {
+		return nil, err
+	}
+	return append(opts, api.WithUI(ui)), nil
 }
 
 // ServiceConfig maps the configuration to the service's settings.
 func ServiceConfig(c *config.Config) service.Config {
+	keys, _ := c.Keyring() // validated by config.Load
 	return service.Config{
-		UploadMaxBytes:      int64(c.Scan.UploadMaxMB) << 20,
-		ImageUploadMaxBytes: int64(c.Scan.ImageUploadMaxMB) << 20,
-		RateLimitPerHour:    c.Scan.RateLimitPerHour,
-		UploadURLTTL:        15 * time.Minute,
-		RequireMFARoles:     roles(c.OIDC.RequireMFARoles),
+		Webhooks: service.WebhookConfig{Keys: keys,
+			Checker: &webhook.Checker{Policy: webhook.Policy{AllowHosts: c.Webhook.AllowHosts}}},
+		UploadMaxBytes:        int64(c.Scan.UploadMaxMB) << 20,
+		ImageUploadMaxBytes:   int64(c.Scan.ImageUploadMaxMB) << 20,
+		HistoryUploadMaxBytes: int64(c.Scan.HistoryUploadMaxMB) << 20,
+		RateLimitPerHour:      c.Scan.RateLimitPerHour,
+		UploadURLTTL:          15 * time.Minute,
+		RequireMFARoles:       roles(c.OIDC.RequireMFARoles),
 		SignIn: service.SignInConfig{
 			Issuer: c.OIDC.Issuer, Audience: c.OIDC.Audience, Algorithms: c.OIDC.Algorithms,
 			KeysURL: c.OIDC.JWKSURL, ConsoleURL: c.OIDC.ConsoleURL, MFAAMR: c.OIDC.MFAAMR, MFAACR: c.OIDC.MFAACR,
@@ -100,7 +169,8 @@ func ServiceConfig(c *config.Config) service.Config {
 		Limits: service.Limits{
 			UploadMaxMB: c.Scan.UploadMaxMB, UnzipMaxMB: c.Scan.UnzipMaxMB, UnzipMaxFiles: c.Scan.UnzipMaxFiles,
 			ScanTimeoutMinutes: int(c.Scan.Timeout / time.Minute), ScansPerHour: c.Scan.RateLimitPerHour,
-			ImageUploadMaxMB: c.Scan.ImageUploadMaxMB,
+			ImageUploadMaxMB:   c.Scan.ImageUploadMaxMB,
+			HistoryUploadMaxMB: c.Scan.HistoryUploadMaxMB, HistoryMaxCommits: c.Scan.HistoryMaxCommits,
 		},
 	}
 }

@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/web-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sign-in settings for the web UI (public)
+         * @description What the bundled web UI needs before anyone signs in: the OIDC issuer and the public client it signs in with. Public on purpose (no token exists yet): it returns only values a browser sees during sign-in anyway, never a secret, and the same body to every caller.
+         */
+        get: operations["getWebConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me": {
         parameters: {
             query?: never;
@@ -842,8 +862,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download link for the scan's CycloneDX SBOM
-         * @description Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention).
+         * Download link for the scan's SBOM (CycloneDX or SPDX)
+         * @description Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention). Also 404 when the requested format wasn't produced.
          */
         get: operations["getScanSbom"];
         put?: never;
@@ -893,7 +913,7 @@ export interface paths {
         };
         /**
          * Freshness of the vulnerability data (any member)
-         * @description The Trivy DB, CISA KEV and FIRST EPSS come from the mirror (make mirror). KEV and EPSS only rank issues; they never change severity or status.
+         * @description The Trivy DB, CISA KEV, FIRST EPSS and OSV malicious-package feeds come from the mirror (make mirror). KEV and EPSS only rank issues; OSV advisories may create or reopen Critical issues, never close or hide one.
          */
         get: operations["getVulnData"];
         put?: never;
@@ -904,8 +924,251 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/components": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Search the org's component inventory
+         * @description Built from each (project, target)'s latest completed or partial scan where Trivy succeeded. Org admins and security leads see every project; others see the projects they are members of. Archived projects are left out.
+         */
+        get: operations["listComponents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/components/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Where a component is used
+         * @description Built from each (project, target)'s latest completed or partial scan where Trivy succeeded. Org admins and security leads see every project; others see the projects they are members of. Archived projects are left out.
+         */
+        get: operations["listComponentUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/components": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * The project's current components
+         * @description Needs view access to the project; API tokens need issues:read on that project.
+         */
+        get: operations["listProjectComponents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Source and image targets scanned in the project
+         * @description One row per target with at least one scan or issue; source code is the empty target. Needs view access to the project; API tokens need issues:read on that project.
+         */
+        get: operations["listProjectTargets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Webhooks and Slack (manage_integrations)
+         * @description Oldest first; at most 20 per org.
+         */
+        get: operations["listWebhooks"];
+        put?: never;
+        /**
+         * Add a webhook or Slack channel (manage_integrations)
+         * @description The URL is checked (see CreateWebhookRequest.url) and stored encrypted. A generic webhook gets a signing secret, returned only here. Audited as webhook.created (name, kind, url_hint, events; never the URL or secret). 409 CONFLICT when the org has 20 webhooks or the server has no secrets.key.
+         */
+        post: operations["createWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/webhooks/{webhook_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        /** One webhook (manage_integrations) */
+        get: operations["getWebhook"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a webhook and its delivery log (manage_integrations)
+         * @description Pending deliveries are dropped. Audited as webhook.deleted.
+         */
+        delete: operations["deleteWebhook"];
+        options?: never;
+        head?: never;
+        /**
+         * Change a webhook (manage_integrations)
+         * @description A new url replaces the old one (checked like on create); the secret stays. Audited as webhook.updated with the changed field names.
+         */
+        patch: operations["updateWebhook"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/webhooks/{webhook_id}/rotate-secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * New signing secret (manage_integrations)
+         * @description Generic webhooks only (422 for Slack). The old secret stops at once: deliveries after this are signed with the new one only. Audited as webhook.secret_rotated.
+         */
+        post: operations["rotateWebhookSecret"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/webhooks/{webhook_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a test event (manage_integrations)
+         * @description Queues a webhook.test delivery (org only, no project data), sent even if the webhook is turned off, and tried once. Poll the delivery log for the result. Rate limited to 10 per webhook per hour.
+         */
+        post: operations["testWebhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/webhooks/{webhook_id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Delivery log, newest first (manage_integrations)
+         * @description The last 30 days.
+         */
+        get: operations["listWebhookDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
-export type webhooks = Record<string, never>;
+export interface webhooks {
+    event: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * What a generic webhook receives
+         * @description POST with Content-Type application/json and the Standard Webhooks headers webhook-id (the delivery id), webhook-timestamp (Unix seconds) and webhook-signature (v1,<base64 HMAC-SHA256 of id.timestamp.body under the decoded secret>). Reject a timestamp more than 5 minutes off. Answer 2xx within 10 seconds; the body is ignored. Other answers, timeouts and connection errors are retried (1 min, 5 min, 30 min, 2 h, 6 h, 12 h); 410 Gone turns the webhook off. Redirects are never followed. Slack webhooks get a Slack message built from the same fields, with Slack control characters escaped.
+         */
+        post: operations["webhookEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+}
 export interface components {
     schemas: {
         /** @enum {string} */
@@ -942,6 +1205,8 @@ export interface components {
             scan_timeout_minutes: number;
             scans_per_hour: number;
             image_upload_max_mb: number;
+            history_upload_max_mb: number;
+            history_max_commits: number;
         };
         Me: {
             /** Format: uuid */
@@ -1060,14 +1325,20 @@ export interface components {
             /** @description The API token that created the scan, if any (created_by is the token's creator). */
             via_token: components["schemas"]["TokenRef"] | null;
             kind: components["schemas"]["ScanKind"];
-            /** @description Image repository for image scans (no tag); empty for source scans. */
+            /** @description Image repository for image scans (no tag); (history) for history scans; empty for source scans. */
             target: string;
             /** @description The image reference given at upload, for display (image scans only). */
             image_ref: string | null;
-            /** @description Present when the scan produced a CycloneDX SBOM that hasn't expired (see GET .../sbom). */
+            /** @description Present when the scan produced an SBOM that hasn't expired (see GET .../sbom). size is the CycloneDX file's. */
             sbom: {
                 components: number;
                 size: number;
+                formats: components["schemas"]["SbomFormat"][];
+            } | null;
+            /** @description History scans that finished: how many commits Gitleaks read, and whether history_max_commits cut the history short (the newest commits are kept). */
+            history: {
+                commits: number;
+                truncated: boolean;
             } | null;
         };
         Upload: {
@@ -1106,12 +1377,17 @@ export interface components {
             past_sla: boolean;
             /** Format: date-time */
             updated_at: string;
-            /** @description Image repository for issues found in image scans; empty for source code. */
+            /** @description Image repository for issues found in image scans; (history) for secrets found in git history; empty for source code. */
             target: string;
             /** @description One of the issue's CVEs is in the CISA Known Exploited Vulnerabilities catalog. */
             kev: boolean;
             /** @description Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days). */
             epss: number | null;
+            /**
+             * @description Trivy license category, for license-policy issues.
+             * @enum {string|null}
+             */
+            license_category: "forbidden" | "restricted" | "reciprocal" | "notice" | "permissive" | "unencumbered" | "unknown" | null;
         };
         Issue: {
             /** Format: uuid */
@@ -1161,7 +1437,7 @@ export interface components {
             can_request_exception: boolean;
             /** Format: uuid */
             pending_exception_id: string | null;
-            /** @description Image repository for issues found in image scans; empty for source code. */
+            /** @description Image repository for issues found in image scans; (history) for secrets found in git history; empty for source code. */
             target: string;
             /** @description One of the issue's CVEs is in the CISA Known Exploited Vulnerabilities catalog. */
             kev: boolean;
@@ -1175,6 +1451,19 @@ export interface components {
             kev_added: string | null;
             /** @description KEV marks a CVE as known to be used in ransomware campaigns. */
             kev_ransomware: boolean;
+            /**
+             * @description Trivy license category, for license-policy issues.
+             * @enum {string|null}
+             */
+            license_category: "forbidden" | "restricted" | "reciprocal" | "notice" | "permissive" | "unencumbered" | "unknown" | null;
+            /** @description Secrets found in git history (target (history)): the oldest commit that added the secret; file_path and start_line are from that commit. One issue per rule and secret, however many commits added it. Author, email and commit message are never kept. */
+            commit: {
+                sha: string;
+                /** Format: date-time */
+                committed_at: string | null;
+                /** @description How many commits added this secret. */
+                count: number;
+            } | null;
         };
         IssueEvent: {
             /** @description Numeric event id, as a string. */
@@ -1242,7 +1531,7 @@ export interface components {
             /** Format: uuid */
             org_id: string;
             /** @enum {string} */
-            type: "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "scan.finished" | "sla.due_soon" | "sla.overdue";
+            type: "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "scan.finished" | "sla.due_soon" | "sla.overdue" | "component.malicious" | "webhook.disabled";
             /** @description Server-built text, e.g. "WEB-41 assigned to you". */
             title: string;
             /** @description App path, e.g. /orgs/{org_id}/issues/{issue_id}. */
@@ -1255,7 +1544,7 @@ export interface components {
         };
         NotificationPref: {
             /** @enum {string} */
-            type: "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "scan.finished" | "sla.due_soon" | "sla.overdue";
+            type: "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "scan.finished" | "sla.due_soon" | "sla.overdue" | "component.malicious" | "webhook.disabled";
             email: boolean;
         };
         AssignRule: {
@@ -1314,6 +1603,8 @@ export interface components {
             kev: number;
             /** @description Active license-policy issues. */
             licenses: number;
+            /** @description Active malicious-package issues. */
+            malicious: number;
         };
         Error: {
             /** @enum {string} */
@@ -1354,16 +1645,16 @@ export interface components {
             role: components["schemas"]["ProjectRole"];
         };
         CreateScanRequest: {
-            /** @description A .zip of source code (kind source) or a `docker save` .tar (kind image). */
+            /** @description A .zip of source code (kind source), a `docker save` .tar (kind image) or a `git bundle` .bundle (kind history). */
             file_name: string;
-            /** @description At most upload_max_mb MiB (source) or image_upload_max_mb MiB (image). */
+            /** @description At most upload_max_mb MiB (source), image_upload_max_mb MiB (image) or history_upload_max_mb MiB (history). */
             file_size: number;
             sha256: string;
-            /** @description Image scans only run trivy; any other tool is a 422. */
+            /** @description Image scans only run trivy and history scans only gitleaks; any other tool is a 422. */
             tools?: components["schemas"]["Tool"][];
-            /** @description Default source. */
+            /** @description Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. */
             kind?: components["schemas"]["ScanKind"];
-            /** @description Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Issues are tracked per target. */
+            /** @description Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Not allowed for source and history scans (a history scan's target is always (history)). Issues are tracked per target. */
             target?: string;
             /** @description Optional, image scans only: the full reference (tag or digest), shown on the scan. */
             image_ref?: string;
@@ -1486,6 +1777,8 @@ export interface components {
             fail_on_kev: boolean;
             /** @description Active issues seen in this scan with a CVE in KEV. */
             kev: number;
+            /** @description Ids from blocking that this scan created or reopened (the rest were already open), for `warden scan --comment`. */
+            blocking_new: string[];
         };
         SignInPolicy: {
             mfa_roles: components["schemas"]["OrgRole"][];
@@ -1529,7 +1822,7 @@ export interface components {
             policy: components["schemas"]["SignInPolicy"];
         };
         /** @enum {string} */
-        ScanKind: "source" | "image";
+        ScanKind: "source" | "image" | "history";
         SbomDownload: {
             /**
              * Format: uri
@@ -1538,8 +1831,7 @@ export interface components {
             url: string;
             /** Format: date-time */
             expires_at: string;
-            /** @enum {string} */
-            format: "cyclonedx-json";
+            format: components["schemas"]["SbomFormat"];
             size: number;
             sha256: string;
             components: number;
@@ -1581,8 +1873,8 @@ export interface components {
             allow: string[];
         };
         VulnDataSource: {
-            /** @enum {string} */
-            name: "trivy_db" | "kev" | "epss";
+            /** @description osv_mal:<ecosystem> is the OSV malicious-package feed for one ecosystem. */
+            name: string;
             /**
              * Format: date-time
              * @description When the publisher last updated the data, as recorded in the mirror.
@@ -1596,9 +1888,262 @@ export interface components {
             records: number | null;
             /** @description updated_at missing or older than 7 days. */
             stale: boolean;
+            /** @description OSV only: advisories skipped because their version ranges aren't supported. */
+            unsupported: number | null;
         };
         VulnData: {
             sources: components["schemas"]["VulnDataSource"][];
+        };
+        /** @description OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...). */
+        Ecosystem: string;
+        ComponentSummary: {
+            ecosystem: components["schemas"]["Ecosystem"];
+            name: string;
+            version: string;
+            purl: string | null;
+            /** @description SPDX ids seen for this component. */
+            licenses: string[];
+            /** @description Visible projects whose current scans contain it. */
+            projects: number;
+            /** @description Distinct (project, target) pairs. */
+            targets: number;
+            /** @description Active Trivy issues on this package and version in those projects. */
+            open_issues: number;
+            /** @description Listed by an OSV malicious-package advisory. */
+            malicious: boolean;
+        };
+        ComponentUsage: {
+            /** Format: uuid */
+            project_id: string;
+            project_key: string;
+            project_name: string;
+            /** @description Image repository, or empty for source code. */
+            target: string;
+            /** @description Lockfile or image layer target where Trivy found it. */
+            path: string;
+            /** Format: uuid */
+            scan_id: string;
+            /** Format: date-time */
+            scanned_at: string;
+            /** Format: date-time */
+            first_seen: string;
+        };
+        ProjectComponent: {
+            ecosystem: components["schemas"]["Ecosystem"];
+            name: string;
+            version: string;
+            purl: string | null;
+            licenses: string[];
+            target: string;
+            path: string;
+            /** Format: date-time */
+            first_seen: string;
+            open_issues: number;
+            malicious: boolean;
+        };
+        ProjectTarget: {
+            /** @description Image repository, (history), or empty for source code. */
+            target: string;
+            kind: components["schemas"]["ScanKind"];
+            /** Format: date-time */
+            last_scan_at: string | null;
+            open_issues: number;
+        };
+        /** @enum {string} */
+        SbomFormat: "cyclonedx-json" | "spdx-json";
+        /**
+         * @description generic: a signed JSON POST (Standard Webhooks). slack: a Slack Incoming Webhook (https://hooks.slack.com/services/...), sent as a Slack message.
+         * @enum {string}
+         */
+        WebhookKind: "generic" | "slack";
+        /** @enum {string} */
+        WebhookEventType: "scan.finished" | "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "component.malicious";
+        Webhook: {
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["WebhookKind"];
+            name: string;
+            /** @description Scheme and host only, e.g. https://hooks.slack.com/…. The full URL is never returned: for Slack it is the credential. */
+            url_hint: string;
+            events: components["schemas"]["WebhookEventType"][];
+            /** @description Empty: every project, including new ones. */
+            project_ids: string[];
+            /** @description Issue events below this severity aren't sent; null sends all. */
+            min_severity: components["schemas"]["Severity"] | null;
+            enabled: boolean;
+            /**
+             * @description failures: turned off by Warden after repeated failed deliveries (or 410 Gone). Enabling it again resets the count.
+             * @enum {string|null}
+             */
+            disabled_reason: "failures" | null;
+            consecutive_failures: number;
+            last_delivery: {
+                /** Format: date-time */
+                at: string;
+                /** @enum {string} */
+                state: "pending" | "delivered" | "failed";
+                status_code: number | null;
+            } | null;
+            created_by: components["schemas"]["UserRef"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CreateWebhookRequest: {
+            kind: components["schemas"]["WebhookKind"];
+            name: string;
+            /**
+             * Format: uri
+             * @description https only (http only for a host in the operator's webhook.allow_hosts). The host must not resolve to a loopback, private, link-local, CGNAT, multicast or cloud-metadata address unless it is in webhook.allow_hosts; checked again on every delivery, against the address actually dialled. No user info. Slack: https://hooks.slack.com/services/... only.
+             */
+            url: string;
+            events: components["schemas"]["WebhookEventType"][];
+            /** @description Projects whose events are sent; empty (the default) for every project. */
+            project_ids?: string[];
+            min_severity?: components["schemas"]["Severity"] | null;
+        };
+        /** @description Only the fields sent change. The kind can't change. */
+        UpdateWebhookRequest: {
+            name?: string;
+            /**
+             * Format: uri
+             * @description https only (http only for a host in the operator's webhook.allow_hosts). The host must not resolve to a loopback, private, link-local, CGNAT, multicast or cloud-metadata address unless it is in webhook.allow_hosts; checked again on every delivery, against the address actually dialled. No user info. Slack: https://hooks.slack.com/services/... only.
+             */
+            url?: string;
+            events?: components["schemas"]["WebhookEventType"][];
+            /** @description Projects whose events are sent; empty (the default) for every project. */
+            project_ids?: string[];
+            min_severity?: components["schemas"]["Severity"] | null;
+            /** @description true also resets consecutive_failures and disabled_reason. */
+            enabled?: boolean;
+        };
+        CreatedWebhook: {
+            webhook: components["schemas"]["Webhook"];
+            /** @description Generic webhooks: the signing secret, shown once. null for Slack. */
+            secret: string | null;
+        };
+        WebhookSecret: {
+            /** @description The signing secret (Standard Webhooks: base64 of 32 random bytes after whsec_). Returned only when it is created or rotated; Warden keeps it encrypted. */
+            secret: string;
+        };
+        WebhookDelivery: {
+            /**
+             * Format: uuid
+             * @description Also the webhook-id header of every attempt.
+             */
+            id: string;
+            /** @enum {string} */
+            type: "scan.finished" | "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "component.malicious" | "webhook.test";
+            /** @enum {string} */
+            state: "pending" | "delivered" | "failed";
+            attempts: number;
+            /** @description HTTP status of the last attempt, if any. */
+            status_code: number | null;
+            /**
+             * @description Why the last attempt failed. blocked_address: the host resolved to a refused address. redirect: redirects are never followed. disabled: the webhook was turned off before it was sent. key_unavailable: the server can't decrypt the URL or secret (secrets.key changed). Response bodies are never stored.
+             * @enum {string|null}
+             */
+            error: "timeout" | "dns" | "connect" | "tls" | "blocked_address" | "redirect" | "http_status" | "disabled" | "key_unavailable" | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_attempt_at: string | null;
+            /** Format: date-time */
+            next_attempt_at: string | null;
+            /** Format: date-time */
+            delivered_at: string | null;
+        };
+        /** @description The body of a generic webhook. It carries what a notification email may show and no more: never snippets, descriptions, file contents, comments, emails or secrets. Fields may be added; receivers should ignore unknown ones. webhook.test has org only. */
+        WebhookEvent: {
+            /**
+             * Format: uuid
+             * @description The delivery id, equal to the webhook-id header: the same on every retry, so receivers can dedupe.
+             */
+            id: string;
+            /** @enum {string} */
+            type: "scan.finished" | "issue.assigned" | "issue.reopened" | "exception.requested" | "exception.decided" | "component.malicious" | "webhook.test";
+            /**
+             * Format: date-time
+             * @description When the event happened.
+             */
+            timestamp: string;
+            org: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+            };
+            project: {
+                /** Format: uuid */
+                id: string;
+                key: string;
+                name: string;
+            } | null;
+            scan: {
+                /** Format: uuid */
+                id: string;
+                kind: components["schemas"]["ScanKind"];
+                target: string;
+                status: components["schemas"]["ScanStatus"];
+                stats: {
+                    new: number;
+                    fixed: number;
+                    reopened: number;
+                    total: number;
+                };
+                /**
+                 * Format: uri
+                 * @description Absolute link to the web UI (smtp.public_base_url).
+                 */
+                url: string;
+            } | null;
+            issue: {
+                /** Format: uuid */
+                id: string;
+                key: string;
+                title: string;
+                severity: components["schemas"]["Severity"];
+                status: components["schemas"]["IssueStatus"];
+                tool: components["schemas"]["Tool"];
+                rule_id: string;
+                target: string;
+                /**
+                 * Format: uri
+                 * @description Absolute link to the web UI (smtp.public_base_url).
+                 */
+                url: string;
+            } | null;
+            exception: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                type: "false_positive" | "risk_accepted";
+                /** @enum {string|null} */
+                decision: "approve" | "reject" | null;
+                /**
+                 * Format: uri
+                 * @description Absolute link to the web UI (smtp.public_base_url).
+                 */
+                url: string;
+            } | null;
+            /** @description Who caused the event; null for Warden itself. Never an email address. */
+            actor: {
+                display_name: string;
+            } | null;
+        };
+        /** @description OIDC settings for the browser's authorization-code flow with PKCE. issuer is the server's oidc.issuer, so the UI and the API always trust the same provider. */
+        WebConfig: {
+            /**
+             * Format: uri
+             * @description OIDC issuer URL (WARDEN_OIDC__ISSUER).
+             */
+            issuer: string;
+            /** @description Public OIDC client of the web UI (WARDEN_WEB__OIDC_CLIENT_ID). */
+            client_id: string;
+            /** @description Scopes the UI requests (WARDEN_WEB__OIDC_SCOPE), space-separated; includes openid. */
+            scope: string;
+            /** @description Sent as the `audience` authorization parameter when set (WARDEN_WEB__OIDC_AUDIENCE; Auth0 needs it for a JWT access token). Null: not sent. */
+            audience: string | null;
         };
     };
     responses: never;
@@ -1609,6 +2154,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getWebConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["WebConfig"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     getMe: {
         parameters: {
             query?: never;
@@ -3648,14 +4226,14 @@ export interface operations {
                 assignee?: string;
                 tool?: components["schemas"]["Tool"];
                 past_sla?: boolean;
-                /** @description Trivy issues only: dependency vulnerabilities or license-policy issues. */
-                kind?: "vulnerability" | "license";
+                /** @description Trivy issues only: dependency vulnerabilities, license-policy issues, or malicious packages (OSV MAL- advisories). */
+                kind?: "vulnerability" | "license" | "malicious";
                 /** @description Only issues with a CVE in KEV. */
                 kev?: boolean;
                 epss_min?: number;
-                /** @description Issues from source scans or from image scans. */
-                source?: "code" | "image";
-                /** @description Issues from image scans of this repository. */
+                /** @description Issues from source scans, image scans, or history scans (secrets in git history). */
+                source?: "code" | "image" | "history";
+                /** @description Issues from image scans of this repository. History issues are filtered with source=history. */
                 target?: string;
                 /** @description Title, rule_id or file_path substring, or an issue key such as WEB-41. */
                 q?: string;
@@ -5016,7 +5594,9 @@ export interface operations {
     };
     getScanSbom: {
         parameters: {
-            query?: never;
+            query?: {
+                format?: "cyclonedx" | "spdx";
+            };
             header?: never;
             path: {
                 /** @description Non-members get 404. */
@@ -5060,6 +5640,15 @@ export interface operations {
             };
             /** @description Not found, or not visible to the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5277,6 +5866,900 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    listComponents: {
+        parameters: {
+            query?: {
+                /** @description Component name prefix (case-insensitive; PyPI names are normalised). */
+                q?: string;
+                ecosystem?: string;
+                /** @description Exact version. */
+                version?: string;
+                project_id?: string;
+                malicious?: boolean;
+                limit?: number;
+                /** @description Opaque, from next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ComponentSummary"][];
+                            next_cursor: string | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listComponentUsage: {
+        parameters: {
+            query: {
+                ecosystem: string;
+                name: string;
+                version: string;
+                limit?: number;
+                /** @description Opaque, from next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ComponentUsage"][];
+                            next_cursor: string | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listProjectComponents: {
+        parameters: {
+            query?: {
+                /** @description Component name prefix (case-insensitive; PyPI names are normalised). */
+                q?: string;
+                ecosystem?: string;
+                /** @description Image repository; empty string for source code. */
+                target?: string;
+                malicious?: boolean;
+                limit?: number;
+                /** @description Opaque, from next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ProjectComponent"][];
+                            next_cursor: string | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listProjectTargets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ProjectTarget"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listWebhooks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["Webhook"][];
+                            /** @description False when the server has no secrets.key: webhooks can't be created, and existing ones aren't sent. */
+                            available: boolean;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CreatedWebhook"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict: 20 webhooks already, or webhooks unavailable (no secrets.key). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Webhook"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWebhookRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Webhook"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    rotateWebhookSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["WebhookSecret"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    testWebhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["WebhookDelivery"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited; see the Retry-After header. */
+            429: {
+                headers: {
+                    /** @description Seconds until another test can be sent. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listWebhookDeliveries: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, from next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                webhook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["WebhookDelivery"][];
+                            next_cursor: string | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden: missing manage_integrations (org admins and security leads). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    webhookEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookEvent"];
+            };
+        };
+        responses: {
+            /** @description Received. */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

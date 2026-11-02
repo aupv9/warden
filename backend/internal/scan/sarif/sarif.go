@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
@@ -67,7 +68,110 @@ type Finding struct {
 	PackageName    string            `json:"package_name,omitempty"`
 	PackageVersion string            `json:"package_version,omitempty"`
 	FixedVersion   string            `json:"fixed_version,omitempty"`
-	Raw            map[string]any    `json:"-"`
+	// LicenseCategory is the Trivy category of a license-policy finding
+	// (results.LicenseFindings); never set from SARIF.
+	LicenseCategory string `json:"license_category,omitempty"`
+	// Commit is set on Gitleaks findings of history scans (Options.History).
+	Commit *Commit        `json:"commit,omitempty"`
+	Raw    map[string]any `json:"-"`
+}
+
+// Commit is the commit a secret was found in. After CollapseHistory it is the
+// oldest commit that added the secret, and Count how many commits did.
+type Commit struct {
+	SHA   string     `json:"sha"`
+	Date  *time.Time `json:"date,omitempty"`
+	Count int        `json:"count"`
+}
+
+var (
+	commitSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	// minCommitDate: git's dates start at the epoch (older ones are forged
+	// or broken); Postgres would take them, but they mean nothing.
+	minCommitDate = time.Unix(0, 0)
+)
+
+// parseCommit reads the commit Gitleaks reports in git mode. warden-redact
+// left only commitSha and date; the sha must be well formed (Gitleaks always
+// writes one, so anything else is refused), a date that isn't RFC 3339 within
+// 1970..9999 is dropped.
+func parseCommit(result map[string]any) (*Commit, error) {
+	pf := obj(result["partialFingerprints"])
+	sha, _ := pf["commitSha"].(string)
+	if !commitSHA.MatchString(sha) {
+		return nil, sarifErr("gitleaks history result without a valid commit sha")
+	}
+	c := &Commit{SHA: sha, Count: 1}
+	if s, ok := pf["date"].(string); ok && len(s) <= 64 {
+		if t, err := time.Parse(time.RFC3339, s); err == nil && !t.Before(minCommitDate) {
+			t = t.UTC()
+			c.Date = &t
+		}
+	}
+	return c, nil
+}
+
+// CollapseHistory turns a history scan's findings into one per Key (rule and
+// secret: the key's path is fingerprint.HistoryPath), however many commits
+// and files added the secret. The one kept is the oldest commit's (by date,
+// then sha, path and line, so the choice is stable), with Commit.Count the
+// number of distinct commits. Unlike repeated findings in one file, these are
+// not told apart by order: a secret added again is the same secret. Findings
+// without a commit pass through.
+func CollapseHistory(fs []Finding) []Finding {
+	type group struct {
+		oldest Finding
+		shas   map[string]bool
+	}
+	groups := map[fingerprint.Key]*group{}
+	var order []fingerprint.Key
+	var out []Finding
+	for _, f := range fs {
+		if f.Commit == nil {
+			out = append(out, f)
+			continue
+		}
+		k := f.Key()
+		g, ok := groups[k]
+		if !ok {
+			g = &group{oldest: f, shas: map[string]bool{}}
+			groups[k] = g
+			order = append(order, k)
+		} else if older(f, g.oldest) {
+			g.oldest = f
+		}
+		g.shas[f.Commit.SHA] = true
+	}
+	for _, k := range order {
+		g := groups[k]
+		f := g.oldest
+		c := *f.Commit
+		c.Count = len(g.shas)
+		f.Commit = &c
+		out = append(out, f)
+	}
+	return out
+}
+
+// older orders history findings by commit date (unknown dates last), sha,
+// file and line.
+func older(a, b Finding) bool {
+	da, db := a.Commit.Date, b.Commit.Date
+	switch {
+	case da != nil && db == nil:
+		return true
+	case da == nil && db != nil:
+		return false
+	case da != nil && !da.Equal(*db):
+		return da.Before(*db)
+	}
+	if a.Commit.SHA != b.Commit.SHA {
+		return a.Commit.SHA < b.Commit.SHA
+	}
+	if a.FilePath != b.FilePath {
+		return a.FilePath < b.FilePath
+	}
+	return a.Line() < b.Line()
 }
 
 // Line returns the start line, or 0 when unknown (used for fingerprint ordering).
@@ -78,8 +182,15 @@ func (f Finding) Line() int {
 	return *f.StartLine
 }
 
+// Key is the finding's identity. A secret in git history is keyed by rule and
+// secret only (fingerprint.HistoryPath): the file it was added in doesn't
+// make it another secret to rotate.
 func (f Finding) Key() fingerprint.Key {
-	return fingerprint.Key{Tool: f.Tool, RuleID: f.RuleID, FilePath: f.FilePath, ContentKey: f.ContentKey}
+	path := f.FilePath
+	if f.Commit != nil {
+		path = fingerprint.HistoryPath
+	}
+	return fingerprint.Key{Tool: f.Tool, RuleID: f.RuleID, FilePath: path, ContentKey: f.ContentKey}
 }
 
 // Decode parses JSON keeping numbers exact (json.Number), as Load and the redactor need.
@@ -208,6 +319,10 @@ type Options struct {
 	// become "<target>::<path in the image>", and OSLabel names the OS packages.
 	ImageTarget string
 	OSLabel     string
+	// History is set for history scans: Gitleaks ran in git mode, so paths
+	// are relative to the repository (no /src mount, no zip root dir to strip)
+	// and every result names its commit.
+	History bool
 }
 
 // ImageArtifact is where an image scan's tarball is mounted (sandbox.ImageTools);
@@ -345,6 +460,14 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		}
 		f.ContentKey = key
 		f.Severity = severity.Gitleaks(ruleID)
+		if opts.History {
+			// A repository may well have a top-level src/: keep it.
+			f.FilePath = fingerprint.NormPath(uri, "", false)
+			var err error
+			if f.Commit, err = parseCommit(result); err != nil {
+				return nil, err
+			}
+		}
 	case "trivy":
 		fields := map[string]string{}
 		for _, m := range trivyFieldRe.FindAllStringSubmatch(message, -1) {

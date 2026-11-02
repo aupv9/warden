@@ -8,7 +8,7 @@ LDFLAGS := -s -w -X $(HEALTH).Version=$(VERSION) -X $(HEALTH).Commit=$(shell git
 # Colima: testcontainers needs the VM-side socket path for its reaper container.
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE ?= /var/run/docker.sock
 
-.PHONY: help setup env up idp down migrate api worker web test test-int lint vulncheck build mirror selfscan selfscan-release clean
+.PHONY: help setup env up idp down migrate api worker web test test-int lint vulncheck build web-dist build-webui image image-smoke mirror selfscan selfscan-release e2e clean
 
 help:  ## Show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -20,7 +20,7 @@ setup:  ## Download Go modules + install frontend deps (lockfile, no scripts)
 env:  ## Generate .env with random dev secrets
 	./scripts/dev-env.sh
 
-up: env  ## Start Postgres, Redis, S3, Keycloak, Mailpit
+up: env  ## Start Postgres, S3, Keycloak, Mailpit
 	docker compose up -d --wait
 	./scripts/dev-s3-init.sh
 
@@ -61,6 +61,20 @@ vulncheck:  ## Known vulnerabilities in deps and the Go toolchain
 build:  ## Build all binaries into backend/bin (version from git describe)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o bin/ ./cmd/...
 
+web-dist:  ## Build the web UI and copy it to backend/internal/webui/dist (for -tags webui)
+	cd frontend && npm ci --ignore-scripts && npm run build
+	rm -rf backend/internal/webui/dist && cp -R frontend/dist backend/internal/webui/dist
+
+build-webui: web-dist  ## warden-api with the web UI bundled, into backend/bin (checks the bundle first)
+	$(GO) test -tags webui -count=1 ./internal/webui/
+	CGO_ENABLED=0 $(GO) build -trimpath -tags webui -ldflags="$(LDFLAGS)" -o bin/ ./cmd/warden-api
+
+image:  ## Build the container image warden:dev (UI + api/worker/migrate + docker CLI)
+	docker build -f backend/Dockerfile --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(shell git rev-parse --short HEAD) -t warden:dev .
+
+image-smoke: image  ## Smoke-test warden:dev: UI and its CSP, web-config, docker CLI (scripts/image-smoke.sh)
+	./scripts/image-smoke.sh warden:dev
+
 mirror:  ## Sync Trivy DB + Opengrep rules + Gitleaks config into .cache/mirror
 	./scripts/sync-mirror.sh
 
@@ -70,6 +84,9 @@ selfscan:  ## Scan Warden with Warden (FAIL_ON=critical|high)
 selfscan-release:  ## Release gate: 0 Critical and 0 un-baselined High 
 	$(MAKE) selfscan FAIL_ON=high
 
+e2e:  ## End-to-end smoke test against the running dev stack (see scripts/e2e.sh)
+	./scripts/e2e.sh
+
 clean:  ## Remove caches, binaries and reports (keeps .env)
 	chmod -R u+w .cache/selfscan .cache/scratch 2>/dev/null || true
-	rm -rf .cache/selfscan .cache/scratch reports frontend/dist backend/bin
+	rm -rf .cache/selfscan .cache/scratch reports frontend/dist backend/internal/webui/dist backend/bin

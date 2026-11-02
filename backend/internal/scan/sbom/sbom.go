@@ -1,9 +1,10 @@
-// Package sbom checks and stamps the CycloneDX SBOM Trivy writes for a scan.
-// Package names and versions in it come from the scanned code, so it is
-// hostile input: it is size-capped, must be a CycloneDX JSON object, and is
-// only ever served as a download (never rendered). Warden changes two things:
-// the root component is named after the project (Trivy calls it "/src"), and
-// a warden:scan_id property ties the file to its scan.
+// Package sbom checks and stamps the SBOMs Trivy writes for a scan: CycloneDX
+// (Stamp) and SPDX (StampSPDX). Package names and versions in them come from
+// the scanned code, so they are hostile input: size-capped, required to be a
+// JSON object of the right format, and only ever served as a download (never
+// rendered). Warden changes two things: the root component is named after the
+// project (Trivy calls it "/src"), and a warden:scan_id entry ties the file to
+// its scan.
 package sbom
 
 import (

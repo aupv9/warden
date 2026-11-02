@@ -88,9 +88,14 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       { id: "p-issues", group: "Pages", label: "Issues", to: `${base}/issues` },
       { id: "p-mine", group: "Pages", label: "Issues assigned to me", to: `${base}/issues?assignee=me` },
       { id: "p-sla", group: "Pages", label: "Issues past SLA", to: `${base}/issues?past_sla=true` },
+      { id: "p-components", group: "Pages", label: "Components", to: `${base}/components` },
+      { id: "p-malicious", group: "Pages", label: "Malicious packages", to: `${base}/issues?kind=malicious` },
       { id: "p-exceptions", group: "Pages", label: "Exceptions", to: `${base}/exceptions` },
       { id: "p-members", group: "Pages", label: "Members", to: `${base}/members` },
       ...(can("view_audit_log", org.role) ? [{ id: "p-audit", group: "Pages" as const, label: "Audit log", to: `${base}/audit-log` }] : []),
+      ...(can("manage_integrations", org.role)
+        ? [{ id: "p-integrations", group: "Pages" as const, label: "Integrations (webhooks and Slack)", to: `${base}/integrations` }]
+        : []),
     ];
     const found: Item[] = searchIssues
       ? flattenPages(issues.data?.pages).map((i) => ({

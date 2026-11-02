@@ -51,7 +51,14 @@ func (f *Fake) StoredLicensePolicy(orgID uuid.UUID) string {
 	return string(f.st.Orgs[orgID].LicensePolicy)
 }
 
-// SetScanSBOM records a stored SBOM on a scan (nil: none).
+// SetScanSBOM records a stored SBOM on a scan (nil: none); Formats is
+// derived as the store does (SPDX when SPDXKey is set).
 func (f *Fake) SetScanSBOM(id uuid.UUID, s *service.ScanSBOM) {
+	if s != nil {
+		s.Formats = []string{service.SBOMCycloneDXJSON}
+		if s.SPDXKey != "" {
+			s.Formats = append(s.Formats, service.SBOMSPDXJSON)
+		}
+	}
 	f.setScan(id, func(r *scanRow) { r.SBOM = s })
 }

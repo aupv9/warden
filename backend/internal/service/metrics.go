@@ -89,6 +89,8 @@ type IssueTotals struct {
 	// issues (trivy, rule license:<SPDX>).
 	KEV      int `json:"kev"`
 	Licenses int `json:"licenses"`
+	// Malicious: active malicious-package issues (trivy, rule malicious:<id>).
+	Malicious int `json:"malicious"`
 }
 
 const (

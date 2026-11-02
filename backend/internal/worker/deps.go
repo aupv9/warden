@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
@@ -24,7 +25,7 @@ type liveDeps struct {
 	org     uuid.UUID
 	scan    uuid.UUID
 	attempt int
-	kind    string // scan.kind: image scans use sandbox.ImageTools
+	kind    string // scan.kind: image scans use sandbox.ImageTools, history scans sandbox.HistoryTool
 }
 
 var _ orchestrator.Deps = (*liveDeps)(nil)
@@ -129,6 +130,7 @@ const errNoImage = "no scanner image configured"
 func (d *liveDeps) RunTool(ctx context.Context, tool, scanID, scanDir string) sandbox.ToolRun {
 	image := d.env.Images[tool]
 	if image == "" {
+		metrics.ToolRun(tool, string(sandbox.Failed))
 		return sandbox.ToolRun{Tool: tool, Status: sandbox.Failed, Error: errNoImage}
 	}
 	if d.attempt > 1 {
@@ -136,12 +138,17 @@ func (d *liveDeps) RunTool(ctx context.Context, tool, scanID, scanDir string) sa
 		d.env.Sandbox.Kill(scanID, tool)
 	}
 	spec := sandbox.Tools[tool]
-	if d.kind == orchestrator.KindImage {
+	switch d.kind {
+	case orchestrator.KindImage:
 		spec = sandbox.ImageTools[tool]
+	case orchestrator.KindHistory:
+		l := d.env.Limits
+		spec = sandbox.HistoryTool(sandbox.HistoryLimits{MaxBytes: l.HistoryMaxBytes, MaxCommits: l.HistoryMaxCommits, ScanTimeout: d.env.ScanTimeout})
 	}
 	r := d.env.Sandbox.Run(ctx, spec, sandbox.RunConfig{
 		ScanID: scanID, ScanDir: scanDir, Image: image, Runtime: d.env.Runtime, MirrorDir: d.env.MirrorDir,
 	})
+	metrics.ToolRun(tool, string(r.Status))
 	if r.Status != sandbox.Succeeded {
 		attrs := []any{"scan_id", scanID, "tool", tool, "status", r.Status}
 		// Gitleaks' stderr may echo what it detected; operators get the other tools' tail.

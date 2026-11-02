@@ -78,4 +78,27 @@ func TestRepoTokens(t *testing.T) {
 	if err := bad.TouchToken(ctx, tok, now); !errors.Is(err, errDB) {
 		t.Fatal(err)
 	}
+	if _, err := bad.ScanNewIssues(ctx, scan, []uuid.UUID{iss}); !errors.Is(err, errDB) {
+		t.Fatal(err)
+	}
+}
+
+func TestRepoScanNewIssues(t *testing.T) {
+	scan, iss := uuid.New(), uuid.New()
+	var args []any
+	r, _ := repoWith(func(sql string, a []any) ([][]any, error) {
+		args = a
+		return on(map[string][][]any{"SELECT i.id FROM issue i": {{iss}}})(sql, a)
+	})
+	if l, err := r.ScanNewIssues(ctx, scan, []uuid.UUID{iss, uuid.New()}); err != nil || len(l) != 1 || l[0] != iss {
+		t.Fatal(l, err)
+	}
+	// The reopen is matched by the exact note the scan writes, never a prefix.
+	if len(args) != 5 || args[4] != "found again in scan "+scan.String() || args[2] != "created" {
+		t.Fatal(args)
+	}
+	empty, _ := repoWith(nil)
+	if l, err := empty.ScanNewIssues(ctx, scan, nil); err != nil || l == nil {
+		t.Fatal(l, err)
+	}
 }

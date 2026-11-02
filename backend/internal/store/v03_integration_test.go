@@ -23,7 +23,7 @@ func TestScanSBOMRoundTrip(t *testing.T) {
 	if sc.SBOM != nil || sc.Kind != "source" || sc.Target != "" || sc.ImageRef != nil {
 		t.Fatalf("%+v", sc)
 	}
-	if _, err := w.svc.ScanSBOM(ctx, dev, f.scan); code(err) != "NOT_FOUND" {
+	if _, err := w.svc.ScanSBOM(ctx, dev, f.scan, ""); code(err) != "NOT_FOUND" {
 		t.Fatal(err)
 	}
 	key := "sboms/" + f.id.String() + "/" + f.scan.String() + ".cdx.json"
@@ -34,12 +34,12 @@ func TestScanSBOMRoundTrip(t *testing.T) {
 	if sc.SBOM == nil || sc.SBOM.Components != 175 || sc.SBOM.Size != 99 {
 		t.Fatalf("%+v", sc.SBOM)
 	}
-	d := must(w.svc.ScanSBOM(ctx, lead, f.scan))
+	d := must(w.svc.ScanSBOM(ctx, lead, f.scan, ""))
 	if d.SHA256 != sum || d.Components != 175 || d.URL != "https://s3.test/"+key+"?name=SBM-"+f.scan.String()[:8]+".cdx.json" ||
 		d.ExpiresAt.T().After(time.Now().Add(6*time.Minute)) {
 		t.Fatalf("%+v", d)
 	}
-	if _, err := w.svc.ScanSBOM(ctx, w.actor("SBMout", f.id), f.scan); code(err) != "NOT_FOUND" {
+	if _, err := w.svc.ScanSBOM(ctx, w.actor("SBMout", f.id), f.scan, ""); code(err) != "NOT_FOUND" {
 		t.Fatal(err)
 	}
 	// Expired, not yet purged: gone already.
@@ -47,7 +47,7 @@ func TestScanSBOMRoundTrip(t *testing.T) {
 	if sc := must(w.svc.Scan(ctx, dev, f.scan)); sc.SBOM != nil {
 		t.Fatal("expired SBOM listed")
 	}
-	if _, err := w.svc.ScanSBOM(ctx, dev, f.scan); code(err) != "NOT_FOUND" {
+	if _, err := w.svc.ScanSBOM(ctx, dev, f.scan, ""); code(err) != "NOT_FOUND" {
 		t.Fatal(err)
 	}
 }

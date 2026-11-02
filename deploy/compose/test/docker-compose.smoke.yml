@@ -1,0 +1,11 @@
+# Smoke-test overrides for docker-compose.prod.yml (scripts/compose-smoke.sh):
+# Caddy's internal CA, and the SeaweedFS identity from the test's own
+# directory. Everything else is the production file as is.
+services:
+  caddy:
+    volumes:
+      - ./test/Caddyfile:/etc/caddy/Caddyfile:ro
+
+secrets:
+  s3.json:
+    file: ${SMOKE_DIR:?}/secrets/s3.json

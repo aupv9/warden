@@ -18,9 +18,11 @@ import {
   CloseIcon,
   ExceptionsIcon,
   IssuesIcon,
+  IntegrationsIcon,
   MembersIcon,
   MenuIcon,
   OverviewIcon,
+  PackageIcon,
   ProjectsIcon,
   SearchIcon,
   SettingsIcon,
@@ -399,6 +401,11 @@ function OrgNav({ org }: { org: MeOrg }) {
         <span className="grow">Issues</span>
         {open !== undefined && open > 0 && <Count label="open">{open}</Count>}
       </NavLink>
+      {/* v0.4: the component inventory, next to the issues it explains. */}
+      <NavLink to={`${base}/components`}>
+        <PackageIcon />
+        <span className="grow">Components</span>
+      </NavLink>
       <NavLink to={`${base}/exceptions`}>
         <ExceptionsIcon />
         <span className="grow">Exceptions</span>
@@ -432,6 +439,13 @@ function OrgNav({ org }: { org: MeOrg }) {
         <NavLink to={`${base}/audit-log`}>
           <AuditIcon />
           <span className="grow">Audit log</span>
+        </NavLink>
+      )}
+      {/* v0.4 wave 2: webhooks and Slack send org data out of Warden; members don't see them. */}
+      {can("manage_integrations", org.role) && (
+        <NavLink to={`${base}/integrations`}>
+          <IntegrationsIcon />
+          <span className="grow">Integrations</span>
         </NavLink>
       )}
       <NavLink to={`${base}/settings`}>

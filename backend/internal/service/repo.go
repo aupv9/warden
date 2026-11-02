@@ -58,7 +58,8 @@ type NewScan struct {
 	Tools     []string
 	// ViaToken is the API token that created the scan, if any.
 	ViaToken *uuid.UUID
-	// Kind is source or image; Target and ImageRef are for images only.
+	// Kind is source, image or history; Target is the image repository or
+	// HistoryTarget, ImageRef is for images only.
 	Kind     string
 	Target   string
 	ImageRef *string
@@ -82,6 +83,8 @@ const (
 const (
 	KindVulnerability = "vulnerability"
 	KindLicense       = "license"
+	// KindMalicious: OSV malicious-package issues (rule malicious:<MAL-id>).
+	KindMalicious = "malicious"
 )
 
 // IssueCursor positions an issue list for one sort.
@@ -105,13 +108,14 @@ type IssueQuery struct {
 	AssigneeID   *uuid.UUID
 	Tool         string
 	PastSLA      bool
-	// Kind: "", KindVulnerability or KindLicense.
+	// Kind: "", KindVulnerability, KindLicense or KindMalicious.
 	Kind string
 	// KEV: only issues with a CVE in KEV. EPSSMin: only issues with a CVE
 	// scored at least this.
 	KEV     bool
 	EPSSMin *float64
-	// Source: "", "code" (target '') or "image" (any target); Target: one image.
+	// Source: "", "code" (target ''), "image" (an image's target) or
+	// "history" (target (history)); Target: one image.
 	Source string
 	Target string
 	// Text search (title, rule_id, file_path), or an issue key.
@@ -283,6 +287,8 @@ type Repo interface {
 	VulnRepo
 	SignInRepo
 	LicensePolicyRepo // licenses.go
+	ComponentRepo     // components.go (v0.4)
+	WebhookRepo       // webhooks.go (v0.4 wave 2)
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }

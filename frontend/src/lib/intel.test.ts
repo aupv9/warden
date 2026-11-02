@@ -54,20 +54,26 @@ describe("EPSS", () => {
 });
 
 describe("license and vulnerability issues", () => {
-  const lic = { tool: "trivy" as const, rule_id: "license:GPL-3.0-only", title: "@acme/legacy-charts uses GPL-3.0-only (restricted)" };
-  it("tells license issues from dependency vulnerabilities", () => {
+  const lic = { tool: "trivy" as const, rule_id: "license:GPL-3.0-only", license_category: "restricted" as const };
+  it("tells license issues from dependency vulnerabilities and malicious packages", () => {
     expect(isLicenseIssue(lic)).toBe(true);
     expect(isVulnIssue(lic)).toBe(false);
     expect(isVulnIssue({ tool: "trivy", rule_id: "CVE-2021-44228" })).toBe(true);
     expect(isLicenseIssue({ tool: "opengrep", rule_id: "license:x" })).toBe(false);
     expect(isVulnIssue({ tool: "gitleaks", rule_id: "aws-access-token" })).toBe(false);
+    // v0.4: a malicious package is neither (no KEV/EPSS marks, no license line).
+    expect(isVulnIssue({ tool: "trivy", rule_id: "malicious:MAL-2026-1873" })).toBe(false);
+    expect(isLicenseIssue({ tool: "trivy", rule_id: "malicious:MAL-2026-1873" })).toBe(false);
   });
 
-  it("reads the SPDX id from the rule and the category from the title's end", () => {
+  it("reads the SPDX id from the rule and the category from license_category, never the title", () => {
     expect(licenseOf(lic)).toEqual({ spdx: "GPL-3.0-only", category: "restricted" });
-    expect(licenseOf({ ...lic, title: "something else" })).toEqual({ spdx: "GPL-3.0-only", category: null });
-    // Only a known category counts.
-    expect(licenseOf({ ...lic, title: "x uses Foo (dangerous)" })).toEqual({ spdx: "GPL-3.0-only", category: null });
+    expect(licenseOf({ ...lic, license_category: null })).toEqual({ spdx: "GPL-3.0-only", category: null });
+    // A title in the v0.3 shape no longer counts.
+    const titled = { ...lic, license_category: null, title: "x uses GPL-3.0-only (restricted)" };
+    expect(licenseOf(titled)).toEqual({ spdx: "GPL-3.0-only", category: null });
+    // Only a known category counts, whatever the server sends.
+    expect(licenseOf({ ...lic, license_category: "dangerous" as never })).toEqual({ spdx: "GPL-3.0-only", category: null });
     expect(licenseOf({ ...lic, rule_id: "license:" })).toBeNull();
     expect(licenseOf({ ...lic, rule_id: "CVE-2021-44228" })).toBeNull();
   });

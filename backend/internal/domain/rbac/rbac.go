@@ -35,11 +35,14 @@ const (
 	ConfigurePolicy      Perm = "configure_policy"
 	ViewDashboard        Perm = "view_dashboard"
 	ViewAuditLog         Perm = "view_audit_log"
+	// ManageIntegrations: webhooks and Slack, which send org data out of Warden.
+	ManageIntegrations Perm = "manage_integrations"
 )
 
 var AllPerms = []Perm{
 	ManageUsers, CreateArchiveProject, ManageProjectMembers, RunScan, ViewResults, AssignIssue,
 	UpdateIssue, ProposeException, DecideException, ConfigurePolicy, ViewDashboard, ViewAuditLog,
+	ManageIntegrations,
 }
 
 var Matrix = map[Perm][]Role{
@@ -55,6 +58,7 @@ var Matrix = map[Perm][]Role{
 	ConfigurePolicy:      {SecurityLead},
 	ViewDashboard:        {OrgAdmin, SecurityLead, Owner, Developer, Viewer},
 	ViewAuditLog:         {OrgAdmin, SecurityLead},
+	ManageIntegrations:   {OrgAdmin, SecurityLead},
 }
 
 // ownIssueOnlyForDeveloper: developers may only update issues assigned to them.

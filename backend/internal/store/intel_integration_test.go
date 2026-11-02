@@ -159,13 +159,18 @@ func TestIssueIntelReadPath(t *testing.T) {
 func TestVulnDataFreshness(t *testing.T) {
 	w := newWorld(t)
 	f := w.org("VDF")
-	ownerExec(t, f.id, `INSERT INTO vuln_intel_source (name, updated_at, loaded_at, records, sha256)
-		VALUES ('kev', $1, now(), 1758, $2), ('trivy_db', $3, NULL, NULL, $2)
-		ON CONFLICT (name) DO UPDATE SET updated_at = EXCLUDED.updated_at, loaded_at = EXCLUDED.loaded_at, records = EXCLUDED.records`,
+	ownerExec(t, f.id, `INSERT INTO vuln_intel_source (name, updated_at, loaded_at, records, sha256, unsupported)
+		VALUES ('kev', $1, now(), 1758, $2, NULL), ('trivy_db', $3, NULL, NULL, $2, NULL), ('osv_mal:PyPI', $1, now(), 11935, $2, 7)
+		ON CONFLICT (name) DO UPDATE SET updated_at = EXCLUDED.updated_at, loaded_at = EXCLUDED.loaded_at, records = EXCLUDED.records,
+			unsupported = EXCLUDED.unsupported`,
 		time.Now().Add(-48*time.Hour), fmt.Sprintf("%064d", 1), time.Now().Add(-10*24*time.Hour))
 	d := must(w.svc.VulnData(ctx, w.actor("VDFdev", f.id)))
-	if len(d.Sources) != 3 {
+	if len(d.Sources) != 11 {
 		t.Fatalf("%+v", d)
+	}
+	if npm, pypi := d.Sources[3], d.Sources[4]; npm.Name != "osv_mal:npm" || !npm.Stale || npm.Unsupported != nil ||
+		pypi.Name != "osv_mal:PyPI" || pypi.Stale || *pypi.Records != 11935 || *pypi.Unsupported != 7 {
+		t.Fatalf("%+v %+v", npm, pypi)
 	}
 	trivy, kev, epss := d.Sources[0], d.Sources[1], d.Sources[2]
 	if trivy.Name != "trivy_db" || !trivy.Stale || trivy.LoadedAt != nil || trivy.Records != nil {

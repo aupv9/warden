@@ -1,9 +1,12 @@
-# Warden web UI: design spec (v0.3)
+# Warden web UI: design spec (v0.4)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
 projects, an Overview page and the MFA rule; see "v0.2 screens" below. v0.3 adds image scans,
-SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". The images below are screenshots of the app running on its
+SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". v0.4 adds the
+component inventory (which projects use a package version), malicious-package advisories (OSV) and SPDX downloads,
+and in its second wave secrets in git history, webhooks and Slack, and pull/merge request comments from the CLI;
+see "v0.4 screens". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -42,8 +45,11 @@ enforces them anyway.
 | 9 | Project settings (v0.2) | everyone reads; project owner, security lead edit | General details; API tokens (create with a show-once token, revoke); CI setup snippets; auto-assign rules; archive / unarchive |
 | 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates. Sign-in (org admin edits, security lead reads, hidden from members): the identity provider and the org's sign-in policy, see "Sign-in settings" |
 | 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
+| 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
+| 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook |
 
-Members without `view_audit_log` don't see "Audit log" in the navigation.
+Members without `view_audit_log` don't see "Audit log" in the navigation, and members don't see
+"Integrations".
 States, the upload flow, dialogs and the phone layout are specified below the screenshots.
 
 ## Screens in the app
@@ -140,11 +146,51 @@ navigation items or the bell; 01 and 03 are current.
 ![Exploited (KEV) view in the dark theme](design/35-dark-issues-kev.png)
 <img src="design/36-phone-issue-kev.png" alt="Phone: issue with the Exploitation card" width="260"> <img src="design/37-phone-new-image-scan.png" alt="Phone: new image scan" width="260">
 
+### 28. Components (v0.4)
+![Components page with "Used in" open beside the table on a malicious package](design/38-components.png)
+![Searching by name and version at 1100 px: "Used in" as a dialog](design/39-components-search.png)
+
+### 29. A project's Components tab and the Image filter (v0.4)
+![Project Components tab narrowed to the image target](design/40-project-components.png)
+![Project Issues tab: the Image filter lists the project's image repositories](design/41-project-image-filter.png)
+
+### 30. Malicious packages (v0.4)
+![Issue list on the Malicious view](design/42-issues-malicious.png)
+![Issue page with the Malicious package card, opened by an advisory without a scan](design/43-issue-malicious.png)
+![Overview with the malicious-package banner](design/44-overview-malicious.png)
+
+### 31. SPDX download (v0.4)
+![Scan panel: CycloneDX and SPDX downloads](design/45-scan-sbom-spdx.png)
+
+### 32. Vulnerability data and notification preferences (v0.4)
+![Vulnerability data with one OSV row per ecosystem](design/46-vuln-data-osv.png)
+![Notification preferences with "Malicious package found"](design/47-notification-preferences.png)
+
+### 33. Dark theme and phone (v0.4)
+![Components page in the dark theme](design/48-dark-components.png)
+![Malicious-package issue in the dark theme](design/49-dark-issue-malicious.png)
+<img src="design/50-phone-used-in.png" alt="Phone: Used in as a full-screen sheet" width="260"> <img src="design/51-phone-issue-malicious.png" alt="Phone: malicious-package issue" width="260"> <img src="design/52-phone-component-filters.png" alt="Phone: component filters in a sheet" width="260">
+
+### 34. Integrations: webhooks and Slack (v0.4 wave 2)
+![Integrations: a Slack channel and a webhook turned off after failed deliveries](design/53-integrations.png)
+![The delivery log beside the list, every state and error in words](design/54-delivery-log.png)
+![Add dialog with the server's URL error under the field](design/55-add-webhook-errors.png)
+![A new webhook's signing secret, shown once](design/56-webhook-secret.png)
+
+### 35. Secrets in git history and CI setup (v0.4 wave 2)
+![Issue page with the Found in git history card](design/57-issue-history.png)
+![Scans tab: a history scan with its commits and the note under New scan](design/58-scan-history.png)
+![CI setup with both switches on](design/59-ci-setup.png)
+
+### 36. Dark theme and phone (v0.4 wave 2)
+![Integrations and the delivery log in the dark theme](design/60-dark-integrations.png)
+<img src="design/61-phone-integrations.png" alt="Phone: Integrations" width="260"> <img src="design/62-phone-delivery-log.png" alt="Phone: delivery log as a full-screen sheet" width="260"> <img src="design/63-phone-issue-history.png" alt="Phone: issue found in git history" width="260">
+
 ## Issue triage
 
 - **Saved views** in the header are presets of the URL filters: Active (default), Assigned to me
-  (`assignee=me`), Past SLA (`past_sla=true`), Secrets (`tool=gitleaks`). Search, sort and project
-  are kept when switching.
+  (`assignee=me`), Past SLA (`past_sla=true`), Secrets (`tool=gitleaks`); v0.3 adds Exploited (KEV)
+  and Licenses, v0.4 Malicious (`kind=malicious`). Search, sort and project are kept when switching.
 - **Filter chips** read as sentences ("Severity is Critical, High"), each with its own remove
   button; "+ Filter" adds severity, status, project, assignee, scanner or past SLA. "Group by"
   (severity or none, remembered per browser) and "Sort" sit on the right.
@@ -427,6 +473,202 @@ to run `make mirror` daily."
 off. Name an image upload `…multiple….tar` or `…invalid….tar` to see a rejection. SBOM links
 are not followed in mock mode.
 
+## v0.4 screens
+
+### Components
+
+`/orgs/:org/components`, "Components" under Issues in the navigation (and in the command palette,
+with "Malicious packages"). The data is each (project, target)'s latest scan where Trivy ran, so a
+component that leaves the lockfile leaves the page with the next scan; history stays in each scan's
+SBOM. Members see their projects, org admins and security leads every project; archived projects
+are left out.
+
+- **Filters** in the URL, checked before they reach the API: the search box (`?q=`) takes a name
+  prefix, or a name and an exact version ("xz 5.6.0", "log4j-core@2.14.1"; an npm scope such as
+  `@acme/ui` stays part of the name); ecosystem (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet,
+  Packagist, deb, apk, rpm; a valid other value from the URL is listed as it is); project; and
+  **Malicious only**, an on/off button (`aria-pressed`). "Clear" resets them. On a phone the search
+  stays on the page and the rest is in the Filters sheet (a checkbox for Malicious only).
+- **Table:** component (mono name, with a red **Malicious** tag whose accessible name is "Malicious
+  package (OSV advisory)"), version, ecosystem, licenses, projects (and "· n targets" when one
+  project has it in several), open issues (active Trivy issues on that package version). 50 per
+  page, "Load more" (cursor). There is no total count in the contract, so the footer says
+  "Showing n components".
+- **Used in:** the component name is a button (`aria-expanded`); from 1200 px the panel opens beside
+  the table (focus moves to its heading; Close returns focus to the row), between 800 and 1200 px as
+  a dialog, on a phone as a full-screen sheet. It shows the purl as text, the ecosystem and
+  licenses, a red block for a malicious version ("Remove it and rotate any credentials the build had
+  access to", with a link to the malicious-package issues), then one entry per project, target and
+  path from `GET …/components/usage`: the project (a link to its Components tab, narrowed to that
+  target and name), "Source code" or an **Image** tag with the repository (a link to the project's
+  issues in that image, only for a well-formed repository), the lockfile or layer path as mono text,
+  "Scanned 2 h ago" (a link to that scan) and the first-seen date.
+- **Empty states:** "No components yet" (they appear after a scan where Trivy runs: lockfiles such
+  as package-lock.json, go.mod or poetry.lock, and container images) and "No components match these
+  filters" with the filters in words and "Clear filters".
+
+### A project's Components tab and targets
+
+- A **Components** tab between Scans and Members: the project's components with where each one is
+  (target and path) and the first-seen date, filtered by name prefix, ecosystem, target (All
+  targets / Source code / each image repository from `GET …/targets`) and Malicious only. The
+  target filter is `?target=(source)` for source code (parentheses
+  can't occur in a repository) and is sent as `target=` (empty), as the contract asks.
+- **Image filter on the issue list:** the free-text field is gone. With a project in scope (its
+  Issues tab, or the project filter on the org list) the Image filter offers the project's image
+  repositories from `GET …/targets`; without one it isn't offered ("Pick a project to filter by
+  container image" in the phone sheet). A target already in the URL keeps its chip and stays listed.
+
+### Malicious packages
+
+An OSV `MAL-` advisory that lists a package version in the inventory makes a **Critical** Trivy
+issue with rule id `malicious:<MAL id>`, at scan time or later without a scan. Advisories create or
+reopen issues; they never fix, hide or downgrade one, and the usual auto-fix, gate, SLA and
+exceptions apply.
+
+- **List:** a red **Malicious** tag beside the title (no KEV/EPSS marks), the Type filter gains
+  "Malicious packages", and the saved view **Malicious** (`kind=malicious`) shows
+  `IssueCounts.malicious`.
+- **Issue page:** a **Malicious package** card first, with a red border: "<pkg> <version> is listed
+  as malicious", what installing it means, "Advisory MAL-…" linked to
+  `https://osv.dev/vulnerability/<id>` (new tab, `noopener noreferrer`) only when the id matches
+  `^MAL-\d{4}-\d{1,8}$` (otherwise the id is text), then **"Remove this version and rotate any
+  credentials the build had access to."** and that it moves to Fixed when the package is gone from
+  the next scan. Where reads "<pkg> <version> · remove this version" (never "no fixed version
+  yet"); How to fix falls back to the same sentence; Details gains an Advisory row. An issue opened
+  by an advisory without a scan shows the server's note in Activity ("Created “Found by
+  malicious-package advisory MAL-… (no scan)”") instead of "from a scan".
+- **Overview:** when `IssueCounts.malicious > 0` (for the project in scope), a red banner above the
+  tiles: "n malicious-package issues are open", what to do, and "View malicious-package issues".
+- **Notifications:** the preference "Malicious package found" (`component.malicious`, email on by
+  default; sent to security leads and project owners).
+
+### SPDX
+
+The SBOM box lists the files the scan has (`Scan.sbom.formats`): "CycloneDX and SPDX JSON · n
+components · size (CycloneDX)" and one button each, **Download SBOM (CycloneDX)** and **Download
+SBOM (SPDX)**. Each calls `GET …/sbom?format=cyclonedx|spdx` and starts the download through the same
+temporary `<a download>` (absolute http(s) only); the box then shows that file's SHA-256. A scan from
+before v0.4 has CycloneDX only and shows one button.
+
+### License category
+
+License issues read their category from `license_category`; the title is no longer parsed. A value
+outside the seven Trivy categories shows no category.
+
+### Vulnerability data: OSV
+
+One row per OSV ecosystem feed (`osv_mal:<ecosystem>`): "OSV malicious packages · npm", what it is,
+the usual freshness, "n advisories · loaded …", and "n advisories skipped: version ranges not
+supported" when the loader skipped some. The card says that an OSV advisory opens or reopens a
+Critical issue and never closes or hides one, while KEV and EPSS only rank.
+
+### Wave 2: secrets in git history
+
+A **history scan** (`kind: history`) reads every commit of a repository, not only the files of
+the current checkout. Only the CLI makes one: `warden scan --history` uploads a `git bundle` of the
+repository (a browser can't build one), and only Gitleaks runs. Its issues have the target
+`(history)`, so source scans and history scans never fix each other's issues.
+
+- **Scans tab:** history rows and the scan panel show a **Git history** tag and "n commits"
+  (`Scan.history.commits`); when `history.truncated`, "Only the newest n commits were scanned
+  (the server's limit)". The panel adds "Issues tracked under Git history", and "View issues"
+  opens the issue list with `?source=history`. The New scan card stays Source code / Container
+  image; under it a line says history scans come from CI (`warden scan --history`, needs the full
+  history: `fetch-depth: 0` / `GIT_DEPTH: 0`) with a link to the CI setup card.
+- **Issue list:** the Source filter gains **Git history** (`source=history`); a history issue
+  carries a small **History** tag beside the title. The Secrets view (`tool=gitleaks`) lists both.
+- **Issue page:** a **Found in git history** card first: "Added in commit `abc1234` on <date>"
+  (`commit.sha` shortened to 7, the full sha in the accessible name and a copy button; never a
+  link, the UI doesn't know the repository host), "and in n more commits" when `commit.count > 1`,
+  and the file and line from that commit. Then, in bold: **"Rotate this secret. Deleting the file
+  or the line doesn't remove it from history; anyone with a clone still has it."** It moves to
+  Fixed only when a later history scan no longer finds it in any commit (after the history is
+  rewritten). Where reads "<file>:<line> in commit abc1234"; How to fix falls back to the same
+  sentence. The snippet is the masked one, as for every secret.
+- **Project targets:** `GET …/targets` lists `(history)` with kind `history`. The Components tab
+  target filter and the issue list's Image filter leave it out (history scans have no components
+  and aren't images).
+
+### Wave 2: integrations (webhooks and Slack)
+
+`/orgs/:org/integrations`, "Integrations" under Organization in the navigation, for org admins and
+security leads (`manage_integrations`); members don't see it, and the page never calls the API for
+them. When `GET …/webhooks` says `available: false`, the page shows only a note: the operator must
+set `WARDEN_SECRETS__KEY` (README "Notifications"), and "Add" is hidden.
+
+- **List:** one row per webhook: name, a **Slack** or **Webhook** tag, `url_hint` as mono text
+  (never a link), events as short labels, "All projects" or "n projects", minimum severity, and
+  the state: Active, **Off** (turned off by someone), or **Turned off after failed deliveries**
+  (`disabled_reason: failures`, red) with "Turn on again". The last delivery ("Delivered 5 min
+  ago", "Failed 2 h ago · HTTP 500"). At most 20; "n of 20".
+- **Add / edit dialog:** type (Slack / Webhook, cards; fixed after creation), name (1–80), URL
+  (`type="url"`, `autocomplete="off"`, never echoed back: editing shows "Enter a new URL to replace
+  it" and an empty field), events (checkboxes, at least one: Scan finished, Issue assigned, Issue
+  reopened, Exception requested, Exception decided, Malicious package found), projects (All
+  projects, or a multi-select of up to 100), minimum severity for issue events (Any or one).
+  The server's URL errors map to the field ("must use https", "resolves to a private address",
+  "Slack URLs start with https://hooks.slack.com/services/"). A note says what is sent: keys,
+  titles, severities, statuses and links; never code, descriptions, comments, emails or secrets.
+- **Signing secret:** after creating a generic webhook, or after **Rotate secret** (confirm: "The
+  old secret stops working at once"), the dialog shows the `whsec_…` secret once with the same
+  rules as a new API token (warning banner, focused read-only mono box, Copy with a live region,
+  "Done"), plus how to verify it (Standard Webhooks headers, a link to README "Notifications").
+  Slack webhooks have no secret: the URL is the credential.
+- **Send test:** queues a `webhook.test` delivery and opens the delivery log, which polls every
+  5 s for a minute. 429 shows "You've sent 10 tests in the last hour. Try again later."
+- **Delivery log** (a panel beside the list from 1200 px, a dialog between 800 and 1200 px, a
+  full-screen sheet on phones, like "Used in"): newest first, 50 at a
+  time, "Load older": event type, state (Pending with the next attempt time, Delivered, Failed),
+  attempts, HTTP status, and the error in words (`timeout` "No answer within 10 seconds",
+  `dns` "The host name didn't resolve", `connect` "Couldn't connect", `tls` "TLS failed",
+  `blocked_address` "The host resolved to a private or internal address", `redirect` "The
+  endpoint answered with a redirect; Warden doesn't follow redirects", `http_status` "The
+  endpoint answered HTTP <status>", `disabled` "Not sent: the webhook was off",
+  `key_unavailable` "The server can't read this webhook's URL or secret; edit the URL or ask your
+  operator"). Response bodies are never shown (Warden doesn't keep them).
+- **Delete:** confirm dialog naming the webhook ("Its delivery log is deleted too").
+- **Notification:** the preference "Webhook turned off" (`webhook.disabled`, email on by
+  default; sent to org admins and security leads), linking to the Integrations page.
+
+### Wave 2: CI setup (Project settings)
+
+The CI setup card gains two switches that change the snippets:
+
+- **Comment on pull requests / merge requests** adds `--comment auto`. GitHub: the job needs
+  `permissions: pull-requests: write` and passes `GITHUB_TOKEN`; GitLab: a project access token
+  with `api` scope stored as the masked variable `WARDEN_GITLAB_TOKEN` (`CI_JOB_TOKEN` can't write
+  notes), and a rule on `$CI_PIPELINE_SOURCE == "merge_request_event"`. The note
+  says the comment lists counts and the blocking issues (severity, rule, file and line, link),
+  marks the new ones (`Gate.blocking_new`), is updated in place on every run, and never contains
+  code, descriptions or secrets. Warden itself keeps no GitHub or GitLab credentials.
+- **Scan git history** adds a second job on the default branch (scheduled nightly) with
+  `fetch-depth: 0` / `GIT_DEPTH: 0` and `warden scan --history` (GitHub: an `on: schedule` cron,
+  and the scan job skips scheduled runs; GitLab: a rule on a pipeline schedule for the default
+  branch, which the user creates). Both switches only change the snippet; nothing is saved, and
+  no snippet contains a token (`src/lib/history.test.ts`).
+
+### Mock mode (v0.4 wave 2)
+
+WEB has a history scan (2,481 commits, not truncated) with two history issues: an AWS access key
+added in 3 commits and a Slack token added in one, and an older history scan rejected with
+`BUNDLE_INCOMPLETE`. Acme Engineering has two webhooks: a Slack channel (Active, all projects,
+Critical and above, a log long enough for "Load older") and a generic webhook, "Ticket relay",
+turned off after failed deliveries, with a delivery log mixing every state and error; a test sent
+to it fails a few seconds later, to Slack it is delivered. A created webhook's secret is a plainly
+fake `whsec_…` built at runtime. `?mock_integrations=unavailable` shows the "operator must set the
+key" note; `?mock_role=member` hides the page.
+
+### Mock mode (v0.4)
+
+Projects and issues now belong to one org: Acme Labs has its own project, LAB (the caller is a
+developer there and a plain member of the org). The inventory covers WEB (npm, Go, the
+`ghcr.io/acme/api` image with Debian and Maven packages), PAY and LAB (PyPI); LEG is archived and
+never listed. Two made-up advisories: `acme-ui-icons` 3.1.4 (npm, PAY, found by a scan) and
+`acme-dataloader` (PyPI, every version, LAB, found without a scan). Scans older than four days have
+CycloneDX only. `?mock_vuln=stale|missing` also covers the OSV rows; `?mock_role=member` limits the
+inventory to the caller's projects.
+
 ## Audit log
 
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
@@ -474,6 +716,28 @@ are not followed in mock mode.
   answers 404 for objects in orgs or projects the caller can't see, so the UI must not suggest
   which case it is.
 - **Sign-in failed / session ended:** one message for every cause (see Security rules).
+- **Sign-in settings unavailable (v0.5):** see below.
+
+### Sign-in settings unavailable (v0.5)
+
+The UI has no identity-provider settings of its own: at startup it reads them from the server it
+is served by (`GET /api/v1/web-config`: issuer, client ID, scope, audience), before anything
+signs in or calls the API. Until the answer arrives the sign-in card shows its skeleton (after
+the usual 300 ms). If the request fails, answers anything but 200 with JSON, or any field is not
+what the contract says (the issuer must be an `https` URL without credentials, query or fragment;
+`http` only for `localhost`, `127.0.0.1` or `[::1]`, in `npm run dev` or when the UI itself is
+on a loopback address; client ID and scope non-empty, the scope including `openid`; audience a
+string or `null`), the same centered card shows one full-page state for every cause:
+
+- Danger icon, title "Can't reach the server's sign-in settings".
+- Text: "Warden loads them from its server before you can sign in, and that didn't work. Check
+  your connection and try again. If it keeps happening, contact your Warden operator."
+- A primary "Try again" button, which loads the settings again (skeleton, then the app or this
+  state). No status code, request ID or response text is shown, and nothing is logged.
+
+The request is same-origin, carries no token or cookie and refuses redirects. Mock mode answers it
+from the fixtures; `?mock_web_config=unavailable` (a 500) or `?mock_web_config=invalid` (a
+plain-http issuer) shows this state.
 
 ### Messages
 - **Toasts** confirm a finished action or report an action that failed with no better place
@@ -495,7 +759,7 @@ people can search for it or quote it. Unknown codes fall back to the last row of
 
 ### Scan `error_code`
 
-A scan with status `failed` and a `ZIP_*`, `IMAGE_*` or `CHECKSUM_MISMATCH` code is shown as
+A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*` or `CHECKSUM_MISMATCH` code is shown as
 **Rejected** (the archive was refused before any scanner ran); any other failed scan is
 **Failed**. There is no `rejected` status in the API. History rows use the short text; the scan
 card uses the full text.
@@ -512,6 +776,9 @@ card uses the full text.
 | `IMAGE_INVALID` | not a docker save archive | The file isn't a docker save archive with one image. Create it with `docker save -o app.tar IMAGE` and upload the .tar as it is, not compressed. |
 | `IMAGE_TOO_LARGE` | image too large | The image is larger than Warden accepts (2 GB, or too many files or layers in the archive). Scan a smaller image, such as the final stage of a multi-stage build. |
 | `IMAGE_MULTIPLE` | more than one image | The archive holds more than one image. Save one image per file: `docker save -o app.tar IMAGE`. |
+| `BUNDLE_INVALID` | not a git bundle | The file isn't a git bundle Warden can read. Create it with `warden scan --history`, which runs `git bundle create`. |
+| `BUNDLE_INCOMPLETE` | shallow clone | The bundle doesn't hold the full history (it was made from a shallow clone). In CI, check out with `fetch-depth: 0` (GitHub) or `GIT_DEPTH: 0` (GitLab). |
+| `BUNDLE_TOO_LARGE` | history too large | The repository's history is larger than Warden accepts (or has too many branches and tags). Ask your operator about the limit. |
 | `CHECKSUM_MISMATCH` | file changed in upload | The stored file doesn't match the one you picked, so it was not scanned. Upload it again. |
 | `ALL_SCANNERS_FAILED` | every scanner failed | Every scanner failed, so there are no results. Each scanner's error is listed below. If it happens again, tell your operator. |
 | `TIMEOUT` | took over 30 min | The scan took longer than the 30-minute limit and was stopped. |
@@ -627,6 +894,14 @@ Below 800 px (screenshots in section 12):
   `redact.Mask`) and say that Warden does not keep the secret.
 - The comment box warns people not to paste secrets.
 - Show authentication errors as one generic message; the reason goes to the server logs.
+- **Sign-in settings (v0.5)** come only from the server's `GET /web-config`, checked field by
+  field (`src/auth/webConfig.test.ts`); there are no build-time or built-in fallbacks. Tokens
+  stay in memory.
+- **Content Security Policy (v0.5):** the server sends `script-src 'self'; style-src 'self';
+  font-src 'self'` for the UI. No inline `<script>` or `<style>`, no `style="…"` in HTML strings,
+  no `eval`, no library that injects `<style>` elements; React `style` props are fine (they
+  set CSSOM properties). Fonts are files, never `data:` URLs (`assetsInlineLimit` in
+  `vite.config.ts`).
 - Severity is never shown by color alone: every badge carries its label.
 - Uploads go straight to object storage. The UI never reads the archive's contents (it
   only hashes the bytes).
@@ -644,6 +919,21 @@ Below 800 px (screenshots in section 12):
   content comes from the scanned code.
 - **External links (v0.3):** NVD links are built only from ids matching the CVE pattern; KEV,
   NVD and identity-provider links open with `rel="noopener noreferrer"`.
+- **Components (v0.4):** component names, versions, licenses, paths and purls come from scanned
+  lockfiles and images. They are rendered as text, never as HTML and never as an `href`. Links on
+  the Components pages are built from ids (project, scan) and from image repositories that match the
+  contract's pattern; a name only travels encoded in a query string, as text for a search box. Every
+  URL filter is checked against the contract (ecosystem pattern, UUIDs, lengths) before it reaches
+  the API (`src/lib/components.test.ts`, `src/test/screens.test.tsx`).
+- **OSV links (v0.4)** are built only from ids matching `^MAL-\d{4}-\d{1,8}$` and open with
+  `rel="noopener noreferrer"`; any other id is shown as text (`src/lib/malicious.test.ts`).
+- **SPDX downloads (v0.4)** use the SBOM download rules above; the app never reads either file.
+- **Webhooks (v0.4):** a webhook's URL is sent once (create, or a replacement on edit) and never
+  read back; the list shows `url_hint` as text, never as a link. The signing secret follows the
+  API token rules: dialog state only, dropped on close, never in TanStack Query's caches, the URL,
+  browser storage or a log. Commit shas are shown as text, never linked. The URL (and on edit a
+  replacement URL) reaches the mutation through a closure, not as mutation variables, which
+  TanStack Query keeps in its cache (`src/api/webhooks.test.ts`).
 
 ## Visual system
 
@@ -744,17 +1034,40 @@ In the design but not in the API contract:
   issue's project. The API doesn't say what happens when the assignee isn't a member of one of
   them; it should skip that issue and count it as skipped.
 
-In v0.3, in the design but not in the API contract:
+In v0.3, closed in v0.4: license issues now have `license_category`, and `GET …/targets` lists a
+project's image targets.
 
-- License issues have no category field; the UI reads it from the end of the title
-  ("… (restricted)") and shows none if the title has another shape.
-- There is no list of a project's image targets, so the Image filter is free text with
-  suggestions from loaded issues. A small `GET …/targets` would fix that.
+In v0.4, in the design but not in the API contract:
+
+- Targets are listed per project only, so the issue list's Image filter needs a project in scope.
+  An org-wide `GET /orgs/{org}/targets` (or `project_id` optional) would let the org list offer it.
+- `GET …/components/usage` takes `name`; the contract doesn't say whether that is the display name
+  or the normalised match name. The UI sends the `name` from the list row.
+- The component list has no total count and no documented sort order; the UI shows "Showing n" and
+  doesn't reorder. Malicious rows can only lead on a project's tab if the server sorts them first.
+- No endpoint says which ecosystems the inventory holds, so the ecosystem filter is a fixed list
+  (plus a valid value from the URL).
+- An issue created or reopened by an advisory without a scan has no event type of its own; the UI
+  relies on the server's note on the `created` (or `status_changed`) event.
+
+In v0.4 wave 2, in the design but not in the API contract:
+
+- The delivery log has no filter by state; a busy webhook's failures can scroll out of the first page.
+- `POST …/webhooks` answers 409 `CONFLICT` both for "20 webhooks already" and for "no secrets.key", so
+  the dialog can't say which (the page hides Add in both cases, so this only shows after a race).
+
+## Not in v0.4
+
+Component history over time (the inventory keeps only the current
+components; each scan's SBOM keeps the rest); exporting the inventory; VEX; pulling images from a
+registry; secrets in image layers; Checkov severities. Microsoft Teams and other chat apps (a generic
+webhook can feed them through a relay); webhooks for SLA digests; incremental history scans (each
+history scan reads the whole bundle); comments on lines of the diff (the PR/MR comment is one summary).
 
 ## Not in v0.3
 
-Org-wide component search ("which projects use xz 5.6.0?"), SPDX output, pulling images from
-a registry, secrets in image layers, malicious-package advisories.
+Org-wide component search ("which projects use xz 5.6.0?"), SPDX output and malicious-package
+advisories (all in v0.4); pulling images from a registry, secrets in image layers.
 
 ## Not in v0.2
 

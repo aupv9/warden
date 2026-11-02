@@ -165,6 +165,12 @@
           },
           "image_upload_max_mb": {
             "type": "integer"
+          },
+          "history_upload_max_mb": {
+            "type": "integer"
+          },
+          "history_max_commits": {
+            "type": "integer"
           }
         },
         "required": [
@@ -173,7 +179,9 @@
           "unzip_max_files",
           "scan_timeout_minutes",
           "scans_per_hour",
-          "image_upload_max_mb"
+          "image_upload_max_mb",
+          "history_upload_max_mb",
+          "history_max_commits"
         ],
         "additionalProperties": false
       },
@@ -651,7 +659,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository for image scans (no tag); empty for source scans."
+            "description": "Image repository for image scans (no tag); (history) for history scans; empty for source scans."
           },
           "image_ref": {
             "type": [
@@ -670,11 +678,19 @@
                   },
                   "size": {
                     "type": "integer"
+                  },
+                  "formats": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SbomFormat"
+                    },
+                    "minItems": 1
                   }
                 },
                 "required": [
                   "components",
-                  "size"
+                  "size",
+                  "formats"
                 ],
                 "additionalProperties": false
               },
@@ -682,7 +698,32 @@
                 "type": "null"
               }
             ],
-            "description": "Present when the scan produced a CycloneDX SBOM that hasn't expired (see GET .../sbom)."
+            "description": "Present when the scan produced an SBOM that hasn't expired (see GET .../sbom). size is the CycloneDX file's."
+          },
+          "history": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "commits": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "commits",
+                  "truncated"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "History scans that finished: how many commits Gitleaks read, and whether history_max_commits cut the history short (the newest commits are kept)."
           }
         },
         "required": [
@@ -703,7 +744,8 @@
           "kind",
           "target",
           "image_ref",
-          "sbom"
+          "sbom",
+          "history"
         ],
         "additionalProperties": false
       },
@@ -839,7 +881,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository for issues found in image scans; empty for source code."
+            "description": "Image repository for issues found in image scans; (history) for secrets found in git history; empty for source code."
           },
           "kev": {
             "type": "boolean",
@@ -853,6 +895,23 @@
             "minimum": 0,
             "maximum": 1,
             "description": "Highest FIRST EPSS score of the issue's CVEs (probability of exploitation in 30 days)."
+          },
+          "license_category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "forbidden",
+              "restricted",
+              "reciprocal",
+              "notice",
+              "permissive",
+              "unencumbered",
+              "unknown",
+              null
+            ],
+            "description": "Trivy license category, for license-policy issues."
           }
         },
         "required": [
@@ -875,7 +934,8 @@
           "updated_at",
           "target",
           "kev",
-          "epss"
+          "epss",
+          "license_category"
         ],
         "additionalProperties": false
       },
@@ -1062,7 +1122,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository for issues found in image scans; empty for source code."
+            "description": "Image repository for issues found in image scans; (history) for secrets found in git history; empty for source code."
           },
           "kev": {
             "type": "boolean",
@@ -1096,6 +1156,58 @@
           "kev_ransomware": {
             "type": "boolean",
             "description": "KEV marks a CVE as known to be used in ransomware campaigns."
+          },
+          "license_category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "forbidden",
+              "restricted",
+              "reciprocal",
+              "notice",
+              "permissive",
+              "unencumbered",
+              "unknown",
+              null
+            ],
+            "description": "Trivy license category, for license-policy issues."
+          },
+          "commit": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "sha": {
+                    "type": "string",
+                    "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+                  },
+                  "committed_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many commits added this secret."
+                  }
+                },
+                "required": [
+                  "sha",
+                  "committed_at",
+                  "count"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Secrets found in git history (target (history)): the oldest commit that added the secret; file_path and start_line are from that commit. One issue per rule and secret, however many commits added it. Author, email and commit message are never kept."
           }
         },
         "required": [
@@ -1135,7 +1247,9 @@
           "epss",
           "epss_percentile",
           "kev_added",
-          "kev_ransomware"
+          "kev_ransomware",
+          "license_category",
+          "commit"
         ],
         "additionalProperties": false
       },
@@ -1423,7 +1537,9 @@
               "exception.decided",
               "scan.finished",
               "sla.due_soon",
-              "sla.overdue"
+              "sla.overdue",
+              "component.malicious",
+              "webhook.disabled"
             ]
           },
           "title": {
@@ -1480,7 +1596,9 @@
               "exception.decided",
               "scan.finished",
               "sla.due_soon",
-              "sla.overdue"
+              "sla.overdue",
+              "component.malicious",
+              "webhook.disabled"
             ]
           },
           "email": {
@@ -1701,6 +1819,10 @@
           "licenses": {
             "type": "integer",
             "description": "Active license-policy issues."
+          },
+          "malicious": {
+            "type": "integer",
+            "description": "Active malicious-package issues."
           }
         },
         "required": [
@@ -1709,7 +1831,8 @@
           "past_sla",
           "secrets",
           "kev",
-          "licenses"
+          "licenses",
+          "malicious"
         ],
         "additionalProperties": false
       },
@@ -1873,13 +1996,13 @@
           "file_name": {
             "type": "string",
             "maxLength": 255,
-            "pattern": "^[^/\\\\]+\\.([zZ][iI][pP]|[tT][aA][rR])$",
-            "description": "A .zip of source code (kind source) or a `docker save` .tar (kind image)."
+            "pattern": "^[^/\\\\]+\\.([zZ][iI][pP]|[tT][aA][rR]|[bB][uU][nN][dD][lL][eE])$",
+            "description": "A .zip of source code (kind source), a `docker save` .tar (kind image) or a `git bundle` .bundle (kind history)."
           },
           "file_size": {
             "type": "integer",
             "minimum": 1,
-            "description": "At most upload_max_mb MiB (source) or image_upload_max_mb MiB (image)."
+            "description": "At most upload_max_mb MiB (source), image_upload_max_mb MiB (image) or history_upload_max_mb MiB (history)."
           },
           "sha256": {
             "type": "string",
@@ -1892,17 +2015,17 @@
             },
             "minItems": 1,
             "uniqueItems": true,
-            "description": "Image scans only run trivy; any other tool is a 422."
+            "description": "Image scans only run trivy and history scans only gitleaks; any other tool is a 422."
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind",
-            "description": "Default source."
+            "description": "Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs."
           },
           "target": {
             "type": "string",
             "maxLength": 255,
             "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$",
-            "description": "Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Issues are tracked per target."
+            "description": "Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Not allowed for source and history scans (a history scan's target is always (history)). Issues are tracked per target."
           },
           "image_ref": {
             "type": "string",
@@ -2072,7 +2195,7 @@
           "items": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 7,
+            "maxItems": 9,
             "items": {
               "$ref": "#/components/schemas/NotificationPref"
             }
@@ -2318,6 +2441,16 @@
           "kev": {
             "type": "integer",
             "description": "Active issues seen in this scan with a CVE in KEV."
+          },
+          "blocking_new": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Ids from blocking that this scan created or reopened (the rest were already open), for `warden scan --comment`."
           }
         },
         "required": [
@@ -2329,7 +2462,8 @@
           "counts",
           "blocking",
           "fail_on_kev",
-          "kev"
+          "kev",
+          "blocking_new"
         ],
         "additionalProperties": false,
         "description": "counts: active issues (open, assigned, in_progress, reopened) seen in this scan. false_positive and risk_accepted issues never block."
@@ -2527,7 +2661,8 @@
         "type": "string",
         "enum": [
           "source",
-          "image"
+          "image",
+          "history"
         ]
       },
       "SbomDownload": {
@@ -2543,10 +2678,7 @@
             "format": "date-time"
           },
           "format": {
-            "type": "string",
-            "enum": [
-              "cyclonedx-json"
-            ]
+            "$ref": "#/components/schemas/SbomFormat"
           },
           "size": {
             "type": "integer"
@@ -2715,11 +2847,8 @@
         "properties": {
           "name": {
             "type": "string",
-            "enum": [
-              "trivy_db",
-              "kev",
-              "epss"
-            ]
+            "pattern": "^(trivy_db|kev|epss|osv_mal:[A-Za-z.]+)$",
+            "description": "osv_mal:<ecosystem> is the OSV malicious-package feed for one ecosystem."
           },
           "updated_at": {
             "type": [
@@ -2746,6 +2875,13 @@
           "stale": {
             "type": "boolean",
             "description": "updated_at missing or older than 7 days."
+          },
+          "unsupported": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "OSV only: advisories skipped because their version ranges aren't supported."
           }
         },
         "required": [
@@ -2753,7 +2889,8 @@
           "updated_at",
           "loaded_at",
           "records",
-          "stale"
+          "stale",
+          "unsupported"
         ],
         "additionalProperties": false
       },
@@ -2771,10 +2908,946 @@
           "sources"
         ],
         "additionalProperties": false
+      },
+      "Ecosystem": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+        "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+      },
+      "ComponentSummary": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "$ref": "#/components/schemas/Ecosystem"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "purl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "licenses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SPDX ids seen for this component."
+          },
+          "projects": {
+            "type": "integer",
+            "description": "Visible projects whose current scans contain it."
+          },
+          "targets": {
+            "type": "integer",
+            "description": "Distinct (project, target) pairs."
+          },
+          "open_issues": {
+            "type": "integer",
+            "description": "Active Trivy issues on this package and version in those projects."
+          },
+          "malicious": {
+            "type": "boolean",
+            "description": "Listed by an OSV malicious-package advisory."
+          }
+        },
+        "required": [
+          "ecosystem",
+          "name",
+          "version",
+          "purl",
+          "licenses",
+          "projects",
+          "targets",
+          "open_issues",
+          "malicious"
+        ],
+        "additionalProperties": false
+      },
+      "ComponentUsage": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_key": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string",
+            "description": "Image repository, or empty for source code."
+          },
+          "path": {
+            "type": "string",
+            "description": "Lockfile or image layer target where Trivy found it."
+          },
+          "scan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scanned_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "project_id",
+          "project_key",
+          "project_name",
+          "target",
+          "path",
+          "scan_id",
+          "scanned_at",
+          "first_seen"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectComponent": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "$ref": "#/components/schemas/Ecosystem"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "purl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "licenses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "open_issues": {
+            "type": "integer"
+          },
+          "malicious": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ecosystem",
+          "name",
+          "version",
+          "purl",
+          "licenses",
+          "target",
+          "path",
+          "first_seen",
+          "open_issues",
+          "malicious"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectTarget": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Image repository, (history), or empty for source code."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScanKind"
+          },
+          "last_scan_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "open_issues": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target",
+          "kind",
+          "last_scan_at",
+          "open_issues"
+        ],
+        "additionalProperties": false
+      },
+      "SbomFormat": {
+        "type": "string",
+        "enum": [
+          "cyclonedx-json",
+          "spdx-json"
+        ]
+      },
+      "WebhookKind": {
+        "type": "string",
+        "enum": [
+          "generic",
+          "slack"
+        ],
+        "description": "generic: a signed JSON POST (Standard Webhooks). slack: a Slack Incoming Webhook (https://hooks.slack.com/services/...), sent as a Slack message."
+      },
+      "WebhookEventType": {
+        "type": "string",
+        "enum": [
+          "scan.finished",
+          "issue.assigned",
+          "issue.reopened",
+          "exception.requested",
+          "exception.decided",
+          "component.malicious"
+        ]
+      },
+      "Webhook": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WebhookKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url_hint": {
+            "type": "string",
+            "description": "Scheme and host only, e.g. https://hooks.slack.com/\u2026. The full URL is never returned: for Slack it is the credential."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookEventType"
+            }
+          },
+          "project_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Empty: every project, including new ones."
+          },
+          "min_severity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Severity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Issue events below this severity aren't sent; null sends all."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "disabled_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "failures",
+              null
+            ],
+            "description": "failures: turned off by Warden after repeated failed deliveries (or 410 Gone). Enabling it again resets the count."
+          },
+          "consecutive_failures": {
+            "type": "integer"
+          },
+          "last_delivery": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "delivered",
+                      "failed"
+                    ]
+                  },
+                  "status_code": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "at",
+                  "state",
+                  "status_code"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/UserRef"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "url_hint",
+          "events",
+          "project_ids",
+          "min_severity",
+          "enabled",
+          "disabled_reason",
+          "consecutive_failures",
+          "last_delivery",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "CreateWebhookRequest": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/WebhookKind"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "format": "uri",
+            "description": "https only (http only for a host in the operator's webhook.allow_hosts). The host must not resolve to a loopback, private, link-local, CGNAT, multicast or cloud-metadata address unless it is in webhook.allow_hosts; checked again on every delivery, against the address actually dialled. No user info. Slack: https://hooks.slack.com/services/... only."
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/WebhookEventType"
+            }
+          },
+          "project_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Projects whose events are sent; empty (the default) for every project."
+          },
+          "min_severity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Severity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "url",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateWebhookRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "format": "uri",
+            "description": "https only (http only for a host in the operator's webhook.allow_hosts). The host must not resolve to a loopback, private, link-local, CGNAT, multicast or cloud-metadata address unless it is in webhook.allow_hosts; checked again on every delivery, against the address actually dialled. No user info. Slack: https://hooks.slack.com/services/... only."
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/WebhookEventType"
+            }
+          },
+          "project_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Projects whose events are sent; empty (the default) for every project."
+          },
+          "min_severity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Severity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true also resets consecutive_failures and disabled_reason."
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "minProperties": 1,
+        "description": "Only the fields sent change. The kind can't change."
+      },
+      "CreatedWebhook": {
+        "type": "object",
+        "properties": {
+          "webhook": {
+            "$ref": "#/components/schemas/Webhook"
+          },
+          "secret": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^whsec_[A-Za-z0-9+/]{43}=$",
+                "description": "The signing secret (Standard Webhooks: base64 of 32 random bytes after whsec_). Returned only when it is created or rotated; Warden keeps it encrypted."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Generic webhooks: the signing secret, shown once. null for Slack."
+          }
+        },
+        "required": [
+          "webhook",
+          "secret"
+        ],
+        "additionalProperties": false
+      },
+      "WebhookSecret": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "pattern": "^whsec_[A-Za-z0-9+/]{43}=$",
+            "description": "The signing secret (Standard Webhooks: base64 of 32 random bytes after whsec_). Returned only when it is created or rotated; Warden keeps it encrypted."
+          }
+        },
+        "required": [
+          "secret"
+        ],
+        "additionalProperties": false
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Also the webhook-id header of every attempt."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "scan.finished",
+              "issue.assigned",
+              "issue.reopened",
+              "exception.requested",
+              "exception.decided",
+              "component.malicious",
+              "webhook.test"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "delivered",
+              "failed"
+            ]
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "status_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "HTTP status of the last attempt, if any."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "timeout",
+              "dns",
+              "connect",
+              "tls",
+              "blocked_address",
+              "redirect",
+              "http_status",
+              "disabled",
+              "key_unavailable",
+              null
+            ],
+            "description": "Why the last attempt failed. blocked_address: the host resolved to a refused address. redirect: redirects are never followed. disabled: the webhook was turned off before it was sent. key_unavailable: the server can't decrypt the URL or secret (secrets.key changed). Response bodies are never stored."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "next_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "state",
+          "attempts",
+          "status_code",
+          "error",
+          "created_at",
+          "last_attempt_at",
+          "next_attempt_at",
+          "delivered_at"
+        ],
+        "additionalProperties": false
+      },
+      "WebhookEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The delivery id, equal to the webhook-id header: the same on every retry, so receivers can dedupe."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "scan.finished",
+              "issue.assigned",
+              "issue.reopened",
+              "exception.requested",
+              "exception.decided",
+              "component.malicious",
+              "webhook.test"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the event happened."
+          },
+          "org": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "project": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "key": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "key",
+                  "name"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scan": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "kind": {
+                    "$ref": "#/components/schemas/ScanKind"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "$ref": "#/components/schemas/ScanStatus"
+                  },
+                  "stats": {
+                    "type": "object",
+                    "properties": {
+                      "new": {
+                        "type": "integer"
+                      },
+                      "fixed": {
+                        "type": "integer"
+                      },
+                      "reopened": {
+                        "type": "integer"
+                      },
+                      "total": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "new",
+                      "fixed",
+                      "reopened",
+                      "total"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Absolute link to the web UI (smtp.public_base_url)."
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "target",
+                  "status",
+                  "stats",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "key": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "$ref": "#/components/schemas/Severity"
+                  },
+                  "status": {
+                    "$ref": "#/components/schemas/IssueStatus"
+                  },
+                  "tool": {
+                    "$ref": "#/components/schemas/Tool"
+                  },
+                  "rule_id": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Absolute link to the web UI (smtp.public_base_url)."
+                  }
+                },
+                "required": [
+                  "id",
+                  "key",
+                  "title",
+                  "severity",
+                  "status",
+                  "tool",
+                  "rule_id",
+                  "target",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exception": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "false_positive",
+                      "risk_accepted"
+                    ]
+                  },
+                  "decision": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "approve",
+                      "reject",
+                      null
+                    ]
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Absolute link to the web UI (smtp.public_base_url)."
+                  }
+                },
+                "required": [
+                  "id",
+                  "type",
+                  "decision",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "display_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "display_name"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who caused the event; null for Warden itself. Never an email address."
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "timestamp",
+          "org",
+          "project",
+          "scan",
+          "issue",
+          "exception",
+          "actor"
+        ],
+        "additionalProperties": false,
+        "description": "The body of a generic webhook. It carries what a notification email may show and no more: never snippets, descriptions, file contents, comments, emails or secrets. Fields may be added; receivers should ignore unknown ones. webhook.test has org only."
+      },
+      "WebConfig": {
+        "type": "object",
+        "description": "OIDC settings for the browser's authorization-code flow with PKCE. issuer is the server's oidc.issuer, so the UI and the API always trust the same provider.",
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "format": "uri",
+            "description": "OIDC issuer URL (WARDEN_OIDC__ISSUER)."
+          },
+          "client_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Public OIDC client of the web UI (WARDEN_WEB__OIDC_CLIENT_ID)."
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Scopes the UI requests (WARDEN_WEB__OIDC_SCOPE), space-separated; includes openid."
+          },
+          "audience": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent as the `audience` authorization parameter when set (WARDEN_WEB__OIDC_AUDIENCE; Auth0 needs it for a JWT access token). Null: not sent."
+          }
+        },
+        "required": [
+          "issuer",
+          "client_id",
+          "scope",
+          "audience"
+        ],
+        "additionalProperties": false
       }
     }
   },
   "paths": {
+    "/web-config": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "operationId": "getWebConfig",
+        "summary": "Sign-in settings for the web UI (public)",
+        "description": "What the bundled web UI needs before anyone signs in: the OIDC issuer and the public client it signs in with. Public on purpose (no token exists yet): it returns only values a browser sees during sign-in anyway, never a secret, and the same body to every caller.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WebConfig"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me": {
       "get": {
         "tags": [
@@ -5813,10 +6886,11 @@
               "type": "string",
               "enum": [
                 "vulnerability",
-                "license"
+                "license",
+                "malicious"
               ]
             },
-            "description": "Trivy issues only: dependency vulnerabilities or license-policy issues."
+            "description": "Trivy issues only: dependency vulnerabilities, license-policy issues, or malicious packages (OSV MAL- advisories)."
           },
           {
             "name": "kev",
@@ -5845,10 +6919,11 @@
               "type": "string",
               "enum": [
                 "code",
-                "image"
+                "image",
+                "history"
               ]
             },
-            "description": "Issues from source scans or from image scans."
+            "description": "Issues from source scans, image scans, or history scans (secrets in git history)."
           },
           {
             "name": "target",
@@ -5859,7 +6934,7 @@
               "maxLength": 255,
               "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
             },
-            "description": "Issues from image scans of this repository."
+            "description": "Issues from image scans of this repository. History issues are filtered with source=history."
           },
           {
             "name": "q",
@@ -8036,7 +9111,7 @@
           "scans"
         ],
         "operationId": "getScanSbom",
-        "summary": "Download link for the scan's CycloneDX SBOM",
+        "summary": "Download link for the scan's SBOM (CycloneDX or SPDX)",
         "responses": {
           "200": {
             "description": "OK",
@@ -8103,9 +9178,34 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
-        "description": "Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention)."
+        "description": "Needs view access to the scan's project; API tokens need scan:write or issues:read on that project. 404 when the scan produced no SBOM (Trivy didn't run or failed) or it expired (scan.sbom_retention). Also 404 when the requested format wasn't produced.",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "cyclonedx",
+                "spdx"
+              ],
+              "default": "cyclonedx"
+            }
+          }
+        ]
       }
     },
     "/orgs/{org_id}/license-policy": {
@@ -8381,7 +9481,1496 @@
             }
           }
         },
-        "description": "The Trivy DB, CISA KEV and FIRST EPSS come from the mirror (make mirror). KEV and EPSS only rank issues; they never change severity or status."
+        "description": "The Trivy DB, CISA KEV, FIRST EPSS and OSV malicious-package feeds come from the mirror (make mirror). KEV and EPSS only rank issues; OSV advisories may create or reopen Critical issues, never close or hide one."
+      }
+    },
+    "/orgs/{org_id}/components": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listComponents",
+        "summary": "Search the org's component inventory",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ComponentSummary"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Built from each (project, target)'s latest completed or partial scan where Trivy succeeded. Org admins and security leads see every project; others see the projects they are members of. Archived projects are left out.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Component name prefix (case-insensitive; PyPI names are normalised)."
+          },
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+              "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Exact version."
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "malicious",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    },
+    "/orgs/{org_id}/components/usage": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listComponentUsage",
+        "summary": "Where a component is used",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ComponentUsage"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Built from each (project, target)'s latest completed or partial scan where Trivy succeeded. Org admins and security leads see every project; others see the projects they are members of. Archived projects are left out.",
+        "parameters": [
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+              "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/components": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listProjectComponents",
+        "summary": "The project's current components",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProjectComponent"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Needs view access to the project; API tokens need issues:read on that project.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Component name prefix (case-insensitive; PyPI names are normalised)."
+          },
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9.+_-]{1,32}$",
+              "description": "OSV ecosystem name (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist) or, for other packages, the purl type (apk, deb, rpm, ...)."
+            }
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            },
+            "description": "Image repository; empty string for source code."
+          },
+          {
+            "name": "malicious",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/targets": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "listProjectTargets",
+        "summary": "Source and image targets scanned in the project",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ProjectTarget"
+                          }
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "One row per target with at least one scan or issue; source code is the empty target. Needs view access to the project; API tokens need issues:read on that project."
+      }
+    },
+    "/orgs/{org_id}/webhooks": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "listWebhooks",
+        "summary": "Webhooks and Slack (manage_integrations)",
+        "description": "Oldest first; at most 20 per org.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Webhook"
+                          }
+                        },
+                        "available": {
+                          "type": "boolean",
+                          "description": "False when the server has no secrets.key: webhooks can't be created, and existing ones aren't sent."
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "available"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "createWebhook",
+        "summary": "Add a webhook or Slack channel (manage_integrations)",
+        "description": "The URL is checked (see CreateWebhookRequest.url) and stored encrypted. A generic webhook gets a signing secret, returned only here. Audited as webhook.created (name, kind, url_hint, events; never the URL or secret). 409 CONFLICT when the org has 20 webhooks or the server has no secrets.key.",
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CreatedWebhook"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict: 20 webhooks already, or webhooks unavailable (no secrets.key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/webhooks/{webhook_id}": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "webhook_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "getWebhook",
+        "summary": "One webhook (manage_integrations)",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Webhook"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "updateWebhook",
+        "summary": "Change a webhook (manage_integrations)",
+        "description": "A new url replaces the old one (checked like on create); the secret stays. Audited as webhook.updated with the changed field names.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Webhook"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWebhookRequest"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "deleteWebhook",
+        "summary": "Delete a webhook and its delivery log (manage_integrations)",
+        "description": "Pending deliveries are dropped. Audited as webhook.deleted.",
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/webhooks/{webhook_id}/rotate-secret": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "webhook_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "rotateWebhookSecret",
+        "summary": "New signing secret (manage_integrations)",
+        "description": "Generic webhooks only (422 for Slack). The old secret stops at once: deliveries after this are signed with the new one only. Audited as webhook.secret_rotated.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WebhookSecret"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/webhooks/{webhook_id}/test": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "webhook_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "testWebhook",
+        "summary": "Send a test event (manage_integrations)",
+        "description": "Queues a webhook.test delivery (org only, no project data), sent even if the webhook is turned off, and tried once. Poll the delivery log for the result. Rate limited to 10 per webhook per hour.",
+        "responses": {
+          "202": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WebhookDelivery"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited; see the Retry-After header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until another test can be sent.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/webhooks/{webhook_id}/deliveries": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "webhook_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "listWebhookDeliveries",
+        "summary": "Delivery log, newest first (manage_integrations)",
+        "description": "The last 30 days.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/WebhookDelivery"
+                          }
+                        },
+                        "next_cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "next_cursor"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: missing manage_integrations (org admins and security leads).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque, from next_cursor."
+          }
+        ]
+      }
+    }
+  },
+  "webhooks": {
+    "event": {
+      "post": {
+        "operationId": "webhookEvent",
+        "summary": "What a generic webhook receives",
+        "description": "POST with Content-Type application/json and the Standard Webhooks headers webhook-id (the delivery id), webhook-timestamp (Unix seconds) and webhook-signature (v1,<base64 HMAC-SHA256 of id.timestamp.body under the decoded secret>). Reject a timestamp more than 5 minutes off. Answer 2xx within 10 seconds; the body is ignored. Other answers, timeouts and connection errors are retried (1 min, 5 min, 30 min, 2 h, 6 h, 12 h); 410 Gone turns the webhook off. Redirects are never followed. Slack webhooks get a Slack message built from the same fields, with Slack control characters escaped.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Received."
+          }
+        }
       }
     }
   }

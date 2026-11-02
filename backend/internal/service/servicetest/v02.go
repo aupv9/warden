@@ -316,6 +316,9 @@ func (f *Fake) IssueTotals(_ context.Context, q service.TotalsQuery) (service.Is
 		if isLicense(i) {
 			t.Licenses++
 		}
+		if isMalicious(i) {
+			t.Malicious++
+		}
 	}
 	return t, nil
 }
