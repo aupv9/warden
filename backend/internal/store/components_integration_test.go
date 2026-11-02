@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -192,6 +193,57 @@ func TestComponentInventory(t *testing.T) {
 	if pc := must(w.svc.ProjectComponents(ctx, lead, archived.ID, service.ComponentFilter{})); len(pc.Items) != 2 {
 		t.Fatalf("%+v", pc.Items)
 	}
+	// Malicious first, then name and version; pages follow that order without
+	// repeats or gaps, and a cursor from the old order is refused.
+	projectList := func(items []service.ProjectComponent) string {
+		var out []string
+		for _, c := range items {
+			out = append(out, c.Name+"@"+c.Version+"|"+c.Target+"|"+c.Path)
+		}
+		return strings.Join(out, ",")
+	}
+	whole := must(w.svc.ProjectComponents(ctx, dev, f.project, service.ComponentFilter{}))
+	if got := projectList(whole.Items); got != "github.com/acme/evil@v1.2.3||go.mod,a%b@1.0.0||package-lock.json,axb@1.0.0||package-lock.json,"+
+		"Foo_Bar@1.0||requirements.txt,lodash@4.17.15||package-lock.json,lodash@4.17.15||web/package-lock.json,"+
+		"lodash@4.17.15|ghcr.io/acme/web|ghcr.io/acme/web::app/package-lock.json" || !whole.Items[0].Malicious {
+		t.Fatal(got)
+	}
+	var paged []string
+	pf := service.ComponentFilter{PageParams: service.PageParams{Limit: "2"}}
+	for {
+		pg := must(w.svc.ProjectComponents(ctx, dev, f.project, pf))
+		paged = append(paged, projectList(pg.Items))
+		if pg.NextCursor == nil {
+			break
+		}
+		pf.Cursor = *pg.NextCursor
+	}
+	if strings.Join(paged, ",") != projectList(whole.Items) || len(paged) != 4 {
+		t.Fatal(paged)
+	}
+	old := base64.RawURLEncoding.EncodeToString([]byte(`{"t":"","n":"lodash","e":"npm","v":"4.17.15","p":"package-lock.json"}`))
+	if _, err := w.svc.ProjectComponents(ctx, dev, f.project, service.ComponentFilter{PageParams: service.PageParams{Cursor: old}}); code(err) != "VALIDATION_FAILED" {
+		t.Fatal(err)
+	}
+
+	// Ecosystems: distinct (name, version) in the caller's scope, most first.
+	ecos := func(a *service.Actor) string {
+		var out []string
+		for _, e := range must(w.svc.ComponentEcosystems(ctx, a)).Items {
+			out = append(out, fmt.Sprint(e.Ecosystem, "=", e.Components))
+		}
+		return strings.Join(out, ",")
+	}
+	// lead: npm a%b, axb, lodash 4.17.15 and 4.17.21 (archived left-pad left out).
+	if got := ecos(lead); got != "npm=4,Go=1,PyPI=1" {
+		t.Fatal(got)
+	}
+	if got := ecos(dev); got != "npm=3,Go=1,PyPI=1" {
+		t.Fatal(got)
+	}
+	if got := ecos(w.actor("CMPout", f.id)); got != "" {
+		t.Fatal(got)
+	}
 }
 
 // RLS: another org's inventory is invisible even to its lead's queries.
@@ -247,6 +299,60 @@ func TestProjectTargets(t *testing.T) {
 	outsider := w.user("TGTout")
 	must(w.svc.AddMember(ctx, w.actor("TGTadmin", f.id), service.AddMemberInput{Email: outsider.Email, Role: "member"}))
 	if _, err := w.svc.ProjectTargets(ctx, w.actor("TGTout", f.id), f.project); code(err) != "NOT_FOUND" {
+		t.Fatal(err)
+	}
+}
+
+// GET /targets has the issue list's visibility: leads see every unarchived
+// project, members their own; ordered by project key, then target.
+func TestOrgTargets(t *testing.T) {
+	w := newWorld(t)
+	f := w.org("OTG")
+	lead, dev := w.actor("OTGlead", f.id), w.actor("OTGdev", f.id)
+	other := must(w.svc.CreateProject(ctx, lead, service.CreateProjectInput{Key: "OTB", Name: "Other"}))
+	archived := must(w.svc.CreateProject(ctx, lead, service.CreateProjectInput{Key: "OTA", Name: "Archived"}))
+	ownerExec(t, f.id, `UPDATE scan SET status = 'completed' WHERE id = $1`, f.scan)
+	for _, s := range []struct {
+		project uuid.UUID
+		kind    string
+		target  string
+	}{{other.ID, "image", "ghcr.io/acme/b"}, {other.ID, "history", service.HistoryTarget}, {archived.ID, "image", "ghcr.io/acme/gone"}} {
+		ownerExec(t, f.id, `INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, tools, kind, target)
+			SELECT $1, org_id, $2, created_by, 'completed', 'x', $6, $3, $4 FROM scan WHERE id = $5`,
+			ids.New(), s.project, s.kind, s.target, f.scan, map[bool][]string{true: {"gitleaks"}, false: {"trivy"}}[s.kind == "history"])
+	}
+	trivyIssue(t, f, other.ID, 1, "ghcr.io/acme/b", "musl", "1.2.3", "open")
+	ownerExec(t, f.id, `UPDATE project SET archived_at = now() WHERE id = $1`, archived.ID)
+
+	list := func(a *service.Actor, kind string) string {
+		t.Helper()
+		var out []string
+		for _, tg := range must(w.svc.OrgTargets(ctx, a, kind)).Items {
+			out = append(out, fmt.Sprint(tg.ProjectKey, "|", tg.ProjectName, "|", tg.Target, "|", tg.Kind, "|", tg.OpenIssues, "|", tg.LastScanAt != nil))
+		}
+		return strings.Join(out, ",")
+	}
+	if got := list(lead, ""); got != "OTB|Other|(history)|history|0|true,OTB|Other|ghcr.io/acme/b|image|1|true,OTG|Project OTG||source|0|true" {
+		t.Fatal(got)
+	}
+	if got := list(lead, "image"); got != "OTB|Other|ghcr.io/acme/b|image|1|true" {
+		t.Fatal(got)
+	}
+	if got := list(lead, "source"); got != "OTG|Project OTG||source|0|true" {
+		t.Fatal(got)
+	}
+	if got := list(dev, ""); got != "OTG|Project OTG||source|0|true" {
+		t.Fatal(got)
+	}
+	if _, err := w.svc.OrgTargets(ctx, dev, "sources"); code(err) != "VALIDATION_FAILED" {
+		t.Fatal(err)
+	}
+	// Another org's lead sees none of it.
+	g := w.org("OTH")
+	if got := list(w.actor("OTHlead", g.id), ""); strings.Contains(got, "OT"+"B") || strings.Contains(got, "OTG") {
+		t.Fatal(got)
+	}
+	if _, err := w.svc.OrgTargets(ctx, w.actor("OTHlead", f.id), ""); code(err) != "NOT_FOUND" {
 		t.Fatal(err)
 	}
 }

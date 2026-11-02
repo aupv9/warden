@@ -112,4 +112,29 @@ describe("labels", () => {
     expect(licensesText([])).toBe("–");
     expect(licensesText(["MIT", "Apache-2.0"])).toBe("MIT, Apache-2.0");
   });
+
+  it("v0.5 wave 2: lists the inventory's ecosystems with counts, keeping a valid one from the URL", () => {
+    const counts = [
+      { ecosystem: "npm", components: 1204 },
+      { ecosystem: "deb", components: 388 },
+      { ecosystem: "hex", components: 2 },
+      // Not the contract's pattern: never offered (and the URL parser would drop it).
+      { ecosystem: "<img src=x>", components: 1 },
+    ];
+    expect(ecosystemOptions("", counts)).toEqual([
+      { value: "", label: "All ecosystems" },
+      { value: "npm", label: "npm (1,204)" },
+      { value: "deb", label: "Debian packages (deb) (388)" },
+      { value: "hex", label: "hex (2)" },
+    ]);
+    // A valid value from the URL that the inventory doesn't hold stays selectable, without a count.
+    expect(ecosystemOptions("PyPI", counts).at(-1)).toEqual({ value: "PyPI", label: "PyPI" });
+    expect(ecosystemOptions("npm", counts).filter((o) => o.value === "npm")).toHaveLength(1);
+    // An empty inventory: only "All" (and the URL's value).
+    expect(ecosystemOptions("", [])).toEqual([{ value: "", label: "All ecosystems" }]);
+    expect(ecosystemOptions("Go", [])).toEqual([
+      { value: "", label: "All ecosystems" },
+      { value: "Go", label: "Go" },
+    ]);
+  });
 });

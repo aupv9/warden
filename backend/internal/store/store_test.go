@@ -141,6 +141,56 @@ func TestBuildIssueList(t *testing.T) {
 	if !strings.Contains(sql, "v.kev_added IS NOT NULL") || !strings.Contains(sql, "v.epss >= ") || strings.Contains(sql, "vi.") {
 		t.Fatal(sql)
 	}
+
+	// The export and its count: the list's filter and visibility (a cursor
+	// never applies), the list's order.
+	member := full
+	member.Vis.All, member.Sort, member.Limit = false, service.SortEPSS, service.MaxExportRows
+	sql, a = buildIssueExport(member)
+	checkParams(t, sql, a)
+	if !strings.Contains(sql, "project_member vm") || !strings.Contains(sql, "ORDER BY vi.epss DESC NULLS LAST, i.id DESC") ||
+		strings.Contains(sql, "i.due_at IS NULL OR") || strings.Contains(sql, "description") || strings.Contains(sql, "snippet") ||
+		a[len(a)-1] != service.MaxExportRows {
+		t.Fatal(sql, a)
+	}
+	sql, a = buildIssueCount(member, 50001)
+	checkParams(t, sql, a)
+	if !strings.Contains(sql, "project_member vm") || !strings.Contains(sql, "LIMIT $") || strings.Contains(sql, "ORDER BY") ||
+		strings.Contains(sql, "LATERAL") || a[len(a)-1] != 50001 {
+		t.Fatal(sql, a)
+	}
+}
+
+func TestBuildTargetsAndProjectComponents(t *testing.T) {
+	var a args
+	vis := service.Visibility{OrgID: uuid.New(), UserID: uuid.New()}
+	for kind, want := range map[string]string{
+		"":                  "FROM t JOIN vp ON vp.id = t.project_id\n",
+		service.KindSource:  "WHERE t.target = ''",
+		service.KindHistory: "WHERE t.target = $",
+		service.KindImage:   "WHERE t.target <> '' AND t.target <> $",
+	} {
+		a = nil
+		sql := buildTargets(&a, `SELECT p.id, p.key, p.name FROM project p WHERE `+visible(&a, vis), kind, 10)
+		checkParams(t, sql, a)
+		if !strings.Contains(sql, want) || !strings.Contains(sql, "ORDER BY vp.key, t.target") || !strings.Contains(sql, "project_member vm") {
+			t.Fatalf("%q: %s", kind, sql)
+		}
+	}
+
+	mal := true
+	sql, a := buildProjectComponents(service.ProjectComponentQuery{ProjectID: uuid.New(), Malicious: true, Limit: 5,
+		After: &service.ProjectComponentCursor{Malicious: &mal, MatchName: "a", Version: "1", Ecosystem: "npm"}})
+	checkParams(t, sql, a)
+	for _, want := range []string{"WHERE pc.malicious AND (NOT pc.malicious, pc.match_name, pc.version, pc.ecosystem, pc.target, pc.path) > ($",
+		"ORDER BY NOT pc.malicious, pc.match_name, pc.version, pc.ecosystem, pc.target, pc.path LIMIT $"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%q missing: %s", want, sql)
+		}
+	}
+	if a[1] != false { // NOT malicious of a malicious cursor
+		t.Fatal(a)
+	}
 }
 
 func TestBuildExceptionAndAuditLists(t *testing.T) {

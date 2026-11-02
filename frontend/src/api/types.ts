@@ -353,6 +353,14 @@ export interface BulkAssignBody {
   assignee_id: UUID;
 }
 
+/** POST /issues/assign. v0.5 wave 2: `skipped` counts the issues left unchanged (not assignable
+ *  by the caller, in a status that can't be assigned, or in a project the assignee isn't a
+ *  member of). */
+export interface BulkAssignResult {
+  updated: number;
+  skipped: number;
+}
+
 export type IssueEventType =
   | "created"
   | "status_changed"
@@ -456,7 +464,20 @@ export const AUDIT_ACTIONS = [
   "webhook.updated",
   "webhook.deleted",
   "webhook.secret_rotated",
+  // v0.5 wave 2
+  "audit.verified",
 ] as const;
+
+/** v0.5 wave 2: POST /orgs/{org}/audit-log/verify recomputes the org's hash chain. */
+export interface AuditVerification {
+  /** Every entry's hash matches its content and the previous entry's hash. */
+  ok: boolean;
+  /** Entries checked (the org's whole log). */
+  entries: number;
+  /** The first entry whose hash doesn't match (numeric id, as a string), if any. */
+  first_bad_id: string | null;
+  verified_at: Timestamp;
+}
 
 // ---- v0.2: API tokens and the scan gate ----
 
@@ -729,6 +750,22 @@ export interface ProjectTarget {
   open_issues: number;
 }
 
+/** v0.5 wave 2: GET /orgs/{org}/targets, the targets of every project the caller sees on the
+ *  issue list (for the Image filter without a project in scope). Ordered by project key, then
+ *  target. */
+export interface OrgTarget extends ProjectTarget {
+  project_id: UUID;
+  project_key: string;
+  project_name: string;
+}
+
+/** v0.5 wave 2: GET /orgs/{org}/components/ecosystems, ordered by count, descending. */
+export interface EcosystemCount {
+  ecosystem: Ecosystem;
+  /** Distinct (name, version) pairs. */
+  components: number;
+}
+
 // ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
 
 /** generic: a signed JSON POST (Standard Webhooks); slack: a Slack Incoming Webhook. */
@@ -868,7 +905,10 @@ export type ApiErrorCode =
   | "MFA_NOT_ENABLED"
   | "PAYLOAD_TOO_LARGE"
   | "METHOD_NOT_ALLOWED"
-  | "INTERNAL";
+  | "INTERNAL"
+  // v0.5 wave 2: 409 from POST …/webhooks, which used to answer CONFLICT for both cases.
+  | "WEBHOOK_LIMIT"
+  | "SECRETS_KEY_MISSING";
 
 // ---- Enumerations used by the UI ----
 

@@ -1862,7 +1862,9 @@
               "PROJECT_ARCHIVED",
               "PAYLOAD_TOO_LARGE",
               "METHOD_NOT_ALLOWED",
-              "INTERNAL"
+              "INTERNAL",
+              "WEBHOOK_LIMIT",
+              "SECRETS_KEY_MISSING"
             ]
           },
           "message": {
@@ -3793,6 +3795,80 @@
           "client_id",
           "scope",
           "audience"
+        ],
+        "additionalProperties": false
+      },
+      "OrgTarget": {
+        "type": "object",
+        "description": "A project's target (source code, an image repository or (history)) with its latest scan.",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_key": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string",
+            "description": "Image repository, (history), or empty for source code."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ScanKind"
+          },
+          "last_scan_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "open_issues": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "project_key",
+          "project_name",
+          "target",
+          "kind",
+          "last_scan_at",
+          "open_issues"
+        ],
+        "additionalProperties": false
+      },
+      "AuditVerification": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Every entry's hash matches its content and the previous entry's hash."
+          },
+          "entries": {
+            "type": "integer",
+            "description": "Entries checked (the org's whole log)."
+          },
+          "first_bad_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first entry whose hash doesn't match, if any (numeric id, as a string)."
+          },
+          "verified_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "ok",
+          "entries",
+          "first_bad_id",
+          "verified_at"
         ],
         "additionalProperties": false
       }
@@ -7228,10 +7304,15 @@
                       "properties": {
                         "updated": {
                           "type": "integer"
+                        },
+                        "skipped": {
+                          "type": "integer",
+                          "description": "Issues left unchanged: not assignable by the caller, in a status that can't be assigned, or in a project the assignee isn't a member of."
                         }
                       },
                       "required": [
-                        "updated"
+                        "updated",
+                        "skipped"
                       ],
                       "additionalProperties": false
                     },
@@ -9948,7 +10029,7 @@
             }
           }
         },
-        "description": "Needs view access to the project; API tokens need issues:read on that project.",
+        "description": "Needs view access to the project; API tokens need issues:read on that project. Malicious components come first, then by name and version.",
         "parameters": [
           {
             "name": "q",
@@ -10293,7 +10374,7 @@
             }
           },
           "409": {
-            "description": "Conflict: 20 webhooks already, or webhooks unavailable (no secrets.key).",
+            "description": "WEBHOOK_LIMIT: the org has 20 webhooks already. SECRETS_KEY_MISSING: webhooks are unavailable on this server (no secrets.key).",
             "content": {
               "application/json": {
                 "schema": {
@@ -10497,6 +10578,16 @@
               }
             }
           },
+          "409": {
+            "description": "SECRETS_KEY_MISSING: webhooks are unavailable on this server (no secrets.key).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation failed or invalid transition.",
             "content": {
@@ -10661,6 +10752,16 @@
           },
           "404": {
             "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SECRETS_KEY_MISSING: webhooks are unavailable on this server (no secrets.key).",
             "content": {
               "application/json": {
                 "schema": {
@@ -10927,6 +11028,20 @@
         },
         "parameters": [
           {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "delivered",
+                "failed"
+              ]
+            },
+            "description": "Only deliveries in this state."
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -10947,6 +11062,595 @@
             "description": "Opaque, from next_cursor."
           }
         ]
+      }
+    },
+    "/orgs/{org_id}/targets": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "listOrgTargets",
+        "summary": "Targets of every visible project (view_results)",
+        "description": "For the issue list's Image filter without a project in scope. Same visibility as the issue list: org admins and security leads see every project, others the projects they are members of; archived projects are left out. Ordered by project key, then target.",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ScanKind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/OrgTarget"
+                          }
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/components/ecosystems": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "components"
+        ],
+        "operationId": "listComponentEcosystems",
+        "summary": "Ecosystems in the inventory, with counts",
+        "description": "Same visibility as GET /components. Ordered by count, descending.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "ecosystem": {
+                                "$ref": "#/components/schemas/Ecosystem"
+                              },
+                              "components": {
+                                "type": "integer",
+                                "description": "Distinct (name, version) pairs."
+                              }
+                            },
+                            "required": [
+                              "ecosystem",
+                              "components"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/audit-log/verify": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "operationId": "verifyAuditLog",
+        "summary": "Check the org's audit-log hash chain (view_audit_log)",
+        "description": "Recomputes the chain the way `warden-admin audit verify` does. The check itself is recorded as audit.verified. Rate limited: 10 per org per hour.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AuditVerification"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests (Retry-After says when to retry).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/issues/export.csv": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        }
+      ],
+      "get": {
+        "tags": [
+          "issues"
+        ],
+        "operationId": "exportIssuesCSV",
+        "summary": "The issue list as CSV (same filters and visibility)",
+        "description": "Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. If the server fails after the first row was sent, the download ends early (over HTTP/1.1 the connection is reset; over HTTP/2 the response may simply end): a file with fewer data rows than the export's audit entry is incomplete.",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "assigned",
+                  "in_progress",
+                  "fixed",
+                  "verified",
+                  "reopened",
+                  "false_positive",
+                  "risk_accepted",
+                  "active"
+                ]
+              }
+            },
+            "description": "Repeatable (or comma-separated). active = open, assigned, in_progress, reopened. Default active.",
+            "explode": true
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Severity"
+              }
+            },
+            "description": "Repeatable.",
+            "explode": true
+          },
+          {
+            "name": "assignee",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "me, none or a user id."
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Tool"
+            }
+          },
+          {
+            "name": "past_sla",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "vulnerability",
+                "license",
+                "malicious"
+              ]
+            },
+            "description": "Trivy issues only: dependency vulnerabilities, license-policy issues, or malicious packages (OSV MAL- advisories)."
+          },
+          {
+            "name": "kev",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Only issues with a CVE in KEV."
+          },
+          {
+            "name": "epss_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "code",
+                "image",
+                "history"
+              ]
+            },
+            "description": "Issues from source scans, image scans, or history scans (secrets in git history)."
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
+            },
+            "description": "Issues from image scans of this repository. History issues are filtered with source=history."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Title, rule_id or file_path substring, or an issue key such as WEB-41."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "due_at",
+                "-severity",
+                "-updated_at",
+                "-epss"
+              ],
+              "default": "due_at"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/csv; charset=utf-8, sent as an attachment (warden-issues-<org>-<date>.csv).",
+            "headers": {
+              "X-Warden-Truncated": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                },
+                "description": "Present when rows were cut at 50,000."
+              }
+            },
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests (Retry-After says when to retry).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },

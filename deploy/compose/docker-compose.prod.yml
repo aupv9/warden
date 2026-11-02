@@ -30,6 +30,12 @@
 #   install -d -o 65532 -g 65532 -m 700 /srv/warden/scratch
 #   install -d -o 65532 -g 65532 -m 755 /srv/warden/mirror
 #
+# BACKUPS. scripts/backup.sh --container warden-postgres-1 /srv/warden/backups
+# dumps the database through the postgres container (no password, no published
+# port); scripts/restore.sh restores into a fresh pgdata volume (start only
+# `postgres` first). Keep .env (the keys and role passwords) backed up
+# separately; object storage needs no backup (see the scripts' headers).
+#
 # Nothing but Caddy publishes a port by default. Every image is pinned by
 # digest to a release at least 2 weeks old when pinned; WARDEN_IMAGE should
 # be a release digest too (ghcr.io/aupv9/warden@sha256:…).

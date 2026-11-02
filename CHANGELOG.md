@@ -6,6 +6,45 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `GET …/issues/export.csv`: the issue list as CSV with its filters and visibility, fixed
+  columns without descriptions or snippets, at most 50,000 rows, 30 per user per hour, audited
+  (`issues.exported`), spreadsheet formulas defused; an Export CSV button on the issue list.
+- `POST …/audit-log/verify` and a Verify chain button on the audit log (10 per org per hour,
+  audited as `audit.verified`).
+- `GET /orgs/{org}/targets` (the issue list's Image filter without a project in scope) and
+  `GET …/components/ecosystems` (the inventory's ecosystem filter, with counts).
+- Webhook delivery log filter `?state=pending|delivered|failed`.
+- Backups: `scripts/backup.sh`, `scripts/restore.sh` (empty databases only, manifest checked)
+  and `make backup-drill`; README sections on backups, upgrading and rollback.
+- Job `prune_notifications` (`WARDEN_NOTIFY__READ_RETENTION`, 90 days;
+  `WARDEN_NOTIFY__UNREAD_RETENTION`, 365 days), through the `SECURITY DEFINER` function
+  `warden_prune_notifications()` (migration 00013); the app role still can't delete them.
+
+### Changed
+
+- `POST …/issues/assign` returns `skipped` next to `updated`.
+- `POST …/webhooks` answers `409 WEBHOOK_LIMIT` or `409 SECRETS_KEY_MISSING` instead of
+  `CONFLICT`; updating or rotating a webhook without `secrets.key` is `SECRETS_KEY_MISSING`.
+- A project's component list puts malicious components first; cursors from earlier versions
+  are refused (`422`).
+- River keeps completed and cancelled jobs 7 days and discarded ones 30 days.
+- Fuzz targets for every hostile-input parser (26, each asserting a property), `make fuzz`
+  and a CI job `fuzz` (30 s per target on every pull request).
+
+### Fixed
+
+- Gitleaks output whose secret matched a SARIF key (`runs`, `results`, `ruleId`) was masked
+  into a document with no results, so the secret went unreported; such a document now fails
+  the scanner visibly.
+- A CycloneDX property with a repeated key (`{"name":"warden:scan_id","name":"x"}`) passed the
+  check on Warden's own properties and was kept as written; properties are now re-encoded from
+  what was checked, and `warden:` is matched in any case.
+- Archive entries with a path component over 255 bytes, a path too long for the file system, or
+  a name it can't store made extraction fail with an internal error instead of rejecting the
+  upload (`ZIP_PATH_TRAVERSAL`).
+
 ## [0.5.0-alpha.1] - 2026-11-02
 
 ### Added

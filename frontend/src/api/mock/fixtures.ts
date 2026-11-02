@@ -70,6 +70,11 @@ export const mockFlags = {
   /** v0.5: `?mock_web_config=unavailable` (a 500) or `invalid` (a plain-http issuer on a real
    *  host) shows "Can't reach the server's sign-in settings". */
   webConfig: PARAMS.get("mock_web_config"),
+  /** v0.5 wave 2: `?mock_export=truncated` marks the CSV as cut at 50,000 rows;
+   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. */
+  export: PARAMS.get("mock_export"),
+  /** v0.5 wave 2: `?mock_audit=broken` makes "Verify chain" find a changed entry. */
+  auditBroken: PARAMS.get("mock_audit") === "broken",
 };
 
 /** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */
@@ -331,6 +336,22 @@ export const scans: Scan[] = [
   ] }, 6 * DAY),
   scan(WEB, { file_name: "storefront-2.2.zip", stats: { new: 26, fixed: 0, reopened: 0, total: 26 } }, 7 * DAY),
   scan(PAY, { file_name: "payments-api.zip" }, DAY),
+  // v0.5 wave 2: a second project with an image, so the org-wide Image filter has two groups.
+  scan(
+    PAY,
+    {
+      kind: "image",
+      target: "ghcr.io/acme/payments",
+      image_ref: "ghcr.io/acme/payments:3.0.1",
+      file_name: "payments-3.0.1.tar",
+      file_size: 96 * 1024 * 1024,
+      tools: ["trivy"],
+      stats: { new: 0, fixed: 0, reopened: 0, total: 0 },
+      tool_runs: [{ tool: "trivy", tool_version: "0.75.0", status: "succeeded", findings_count: 0, duration_ms: 41_000, error: null }],
+      sbom: { components: 168, size: 402_118, formats: BOTH_SBOMS },
+    },
+    2 * DAY,
+  ),
   scan(INFRA, { file_name: "terraform.zip" }, 5 * DAY),
   scan(projects[4]!, { file_name: "legacy-portal-final.zip", stats: { new: 0, fixed: 3, reopened: 0, total: 9 } }, 24 * DAY),
   // v0.3: image scans (a `docker save` .tar), Trivy only, issues tracked per target.
@@ -860,6 +881,14 @@ export const audit: AuditEntry[] = [
   { id: uuid(), actor: null, action: "issue.transitioned", target_type: "issue", target_id: issues[10]!.id, ip: null, data: { issue_key: issues[10]!.key, from: "open", to: "fixed" }, created_at: ago(7 * DAY) },
   { id: uuid(), actor: users.huy, action: "project.created", target_type: "project", target_id: PAY.id, ip: "10.20.4.2", data: { project_key: "PAY", name: "Payments API" }, created_at: ago(40 * DAY) },
 ];
+// Audit entry ids are numbers (as strings) in the contract, counting up; the list is newest first.
+let auditSeq = 4800;
+audit.forEach((a, i) => (a.id = String(auditSeq + audit.length - i)));
+auditSeq += audit.length;
+export function nextAuditId(): string {
+  auditSeq += 1;
+  return String(auditSeq);
+}
 
 // ---- v0.3: license policy per org, and the vulnerability data the mirror loaded ----
 

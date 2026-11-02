@@ -76,6 +76,25 @@ func TestStampAddsMissingMetadata(t *testing.T) {
 	}
 }
 
+// Found by FuzzStamp: a property with a repeated "name" passed the check
+// (encoding/json reads the last) and was kept as written, so a reader that
+// takes the first saw a forged warden:scan_id. Properties are now re-encoded
+// from what was checked, and any case of the key or prefix counts.
+func TestStampDropsForgedPropertiesWithRepeatedKeys(t *testing.T) {
+	raw := `{"bomFormat":"CycloneDX","metadata":{"component":{"properties":[
+		{"name":"warden:scan_id","name":"x","value":"forged"},{"NAME":"Warden:scan_id","value":"forged"},
+		{"name":"x","name":"warden:scan_id","value":"forged"},{"name":"keep","value":"1","value":"2"},7,null]}}}`
+	s, err := Stamp([]byte(raw), "WEB", "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first is kept as encoding/json reads it: named "x".
+	want := `"properties":[{"name":"x","value":"forged"},{"name":"keep","value":"2"},7,null,{"name":"warden:scan_id","value":"id"}]`
+	if !strings.Contains(string(s.Data), want) || strings.Count(strings.ToLower(string(s.Data)), "warden:") != 1 {
+		t.Fatalf("%s", s.Data)
+	}
+}
+
 func TestStampRejectsHostileInput(t *testing.T) {
 	for name, raw := range map[string]string{
 		"not JSON":          `{`,
