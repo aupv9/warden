@@ -1,4 +1,4 @@
-# Warden web UI: design spec (v0.4)
+# Warden web UI: design spec (v0.5)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
@@ -6,7 +6,10 @@ projects, an Overview page and the MFA rule; see "v0.2 screens" below. v0.3 adds
 SBOM downloads, the license policy and exploit data (CISA KEV, FIRST EPSS); see "v0.3 screens". v0.4 adds the
 component inventory (which projects use a package version), malicious-package advisories (OSV) and SPDX downloads,
 and in its second wave secrets in git history, webhooks and Slack, and pull/merge request comments from the CLI;
-see "v0.4 screens". The images below are screenshots of the app running on its
+see "v0.4 screens". v0.5 reads the sign-in settings from the server, and its second wave closes
+the API gaps this file listed: CSV export of the issue list, a chain check on the audit log, filters
+fed by the server (org-wide images, the inventory's ecosystems, delivery states) and clearer errors;
+the screen sections below say what changed. The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -36,17 +39,17 @@ enforces them anyway.
 |---|---|---|---|
 | 1 | Projects | everyone | Org summary (open issues, Critical + High, past SLA, exceptions to review); a card per project with open issues by severity, your role, the last scan and the number past SLA; an empty state for a project with no scan |
 | 2 | Upload & scans (project) | owner, developer, security lead | Drop zone with the real limits (200 MB zipped, 1 GB unpacked, 100,000 files); scanner checkboxes (project defaults); live progress per scanner (queued, running, succeeded, failed, timeout); scan history with new / fixed / reopened counts, *partial* (a scanner failed) and *rejected* (archive refused, with the reason) |
-| 3 | Issue list | everyone with access | Saved views (Active, Assigned to me, Past SLA, Secrets); search (title, rule, file, `WEB-41`); filter chips for severity, status, project, assignee, scanner, past SLA; grouped by severity; bulk assign; sorted by due date. See "Issue triage" |
+| 3 | Issue list | everyone with access | Saved views (Active, Assigned to me, Past SLA, Secrets); search (title, rule, file, `WEB-41`); filter chips for severity, status, project, assignee, scanner, past SLA; grouped by severity; bulk assign; sorted by due date; Export CSV (v0.5). See "Issue triage" |
 | 4 | Issue detail | everyone with access | Opens beside the list on wide screens, as a page otherwise. Severity, status, SLA due date; status stepper; location with the masked snippet; what was found; how to fix; comments; details (assignee, rule, CWE/CVE, package and fixed version, first and last scan seen, number of scans it appeared in); activity from `issue_event`. Actions: start progress, reassign, request exception |
 | 5 | Exceptions | security lead decides; others see their own | Tabs: pending, approved, rejected, expiring soon. A queue on the left and a review panel on the right: reason, "accepted until" (≤ 180 days), decision note (required to reject), approve or reject |
 | 6 | Members & roles | org admin, security lead, project owner | Org members with org role, projects, MFA, status; project roles per project; the permission matrix, read-only, generated from `rbac.Matrix` |
-| 7 | Audit log | org admin, security lead | Filters for action, actor and date range; one row per entry (time, actor, action, target, IP) that expands to show the entry's `data`; a note that the log is append-only and hash-chained |
+| 7 | Audit log | org admin, security lead | Filters for action, actor and date range; one row per entry (time, actor, action, target, IP) that expands to show the entry's `data`; a note that the log is append-only and hash-chained, with "Verify chain" (v0.5) |
 | 8 | Overview (v0.2) | everyone (`view_dashboard`) | First item in the navigation. Range 30 / 90 / 180 days and a project filter; open now, new, fixed, open past SLA; open issues per severity over time; new vs fixed; time to fix per severity; SLA compliance. Every chart has its data as a table |
 | 9 | Project settings (v0.2) | everyone reads; project owner, security lead edit | General details; API tokens (create with a show-once token, revoke); CI setup snippets; auto-assign rules; archive / unarchive |
 | 10 | Org settings (v0.2) | everyone reads; security lead edits (`configure_policy`) | SLA days per severity, with an option to recalculate open issues' due dates. Sign-in (org admin edits, security lead reads, hidden from members): the identity provider and the org's sign-in policy, see "Sign-in settings" |
 | 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
 | 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
-| 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook |
+| 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook, filtered by state (v0.5) |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation, and members don't see
 "Integrations".
@@ -217,6 +220,20 @@ navigation items or the bell; 01 and 03 are current.
 - **Counts (v0.2):** every saved view shows its count from `GET /issues/counts` (for the
   project in scope). While a search narrows the current view, that view shows the live match
   count instead.
+- **Export CSV (v0.5):** a small button with a download icon in the filter bar, before "Group
+  by" (on a phone, in the Filters sheet), on the org list and on a project's Issues tab. Everyone
+  who sees the list sees it; it is disabled, with a tooltip, when no issue matches. It downloads
+  `GET /orgs/{org}/issues/export.csv` with the list's current filters (the project of a project's
+  tab included, no paging): fixed columns (key, project, title, severity, status, scanner, rule,
+  file and line, target, CVE, KEV, EPSS, assignee, due, created, updated), never descriptions,
+  snippets or comments, and cells a spreadsheet would run as a formula start with an apostrophe
+  (the server does this). While it runs the button reads "Exporting…". Success toast: "Issues
+  exported as warden-issues-acme-engineering-2026-11-02.csv." When the server cut the file at
+  50,000 rows (`X-Warden-Truncated: true`) the file is still saved and a warning toast that stays
+  says "Export cut off. Only the first 50,000 rows were exported. Narrow the filters to export the
+  rest." 429: the usual rate-limit toast with `Retry-After` ("Try again in 2 minutes"); 422: "Warden
+  couldn't export with these filters. Clear them and try again."; other errors as in "Error
+  messages". How the file is fetched and saved: see "Security rules for the UI".
 
 ## v0.2 screens
 
@@ -485,8 +502,11 @@ are left out.
 
 - **Filters** in the URL, checked before they reach the API: the search box (`?q=`) takes a name
   prefix, or a name and an exact version ("xz 5.6.0", "log4j-core@2.14.1"; an npm scope such as
-  `@acme/ui` stays part of the name); ecosystem (npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet,
-  Packagist, deb, apk, rpm; a valid other value from the URL is listed as it is); project; and
+  `@acme/ui` stays part of the name); ecosystem (v0.5: the inventory's own ecosystems with their
+  counts from `GET …/components/ecosystems`, most first, "npm (1,204)"; until that loads, or if it
+  fails, the fixed list npm, PyPI, Go, Maven, crates.io, RubyGems, NuGet, Packagist, deb, apk, rpm;
+  a value outside the contract's pattern is never offered, and a valid value from the URL that
+  isn't listed stays selectable, without a count); project; and
   **Malicious only**, an on/off button (`aria-pressed`). "Clear" resets them. On a phone the search
   stays on the page and the rest is in the Filters sheet (a checkbox for Malicious only).
 - **Table:** component (mono name, with a red **Malicious** tag whose accessible name is "Malicious
@@ -516,8 +536,14 @@ are left out.
   can't occur in a repository) and is sent as `target=` (empty), as the contract asks.
 - **Image filter on the issue list:** the free-text field is gone. With a project in scope (its
   Issues tab, or the project filter on the org list) the Image filter offers the project's image
-  repositories from `GET …/targets`; without one it isn't offered ("Pick a project to filter by
-  container image" in the phone sheet). A target already in the URL keeps its chip and stays listed.
+  repositories from `GET …/targets`. v0.5: without one, it offers every visible project's image
+  repositories from `GET /orgs/{org}/targets?kind=image` (the issue list's visibility, archived
+  projects left out), grouped by project: a "WEB · Web storefront" heading per project in the
+  "+ Filter" menu (each group a `role="group"` named by it), an `<optgroup>` in the phone sheet.
+  The filter value is the repository, so picking it under one project lists that repository's
+  issues in every visible project. A target already in the URL keeps its chip and stays listed
+  (under "From the link" when no visible project has it). No images anywhere: the filter isn't
+  offered.
 
 ### Malicious packages
 
@@ -610,6 +636,11 @@ set `WARDEN_SECRETS__KEY` (README "Notifications"), and "Add" is hidden.
   The server's URL errors map to the field ("must use https", "resolves to a private address",
   "Slack URLs start with https://hooks.slack.com/services/"). A note says what is sent: keys,
   titles, severities, statuses and links; never code, descriptions, comments, emails or secrets.
+  v0.5: the two 409s of `POST …/webhooks` have their own banner in the dialog (the page hides Add
+  in both cases, so they only show after a race): `WEBHOOK_LIMIT` "This org already has 20
+  webhooks, the most Warden allows. Delete one you no longer use, then add this one." and
+  `SECRETS_KEY_MISSING` "Webhooks are turned off on this server: it has no key to encrypt their
+  URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY."
 - **Signing secret:** after creating a generic webhook, or after **Rotate secret** (confirm: "The
   old secret stops working at once"), the dialog shows the `whsec_…` secret once with the same
   rules as a new API token (warning banner, focused read-only mono box, Copy with a live region,
@@ -626,7 +657,12 @@ set `WARDEN_SECRETS__KEY` (README "Notifications"), and "Add" is hidden.
   endpoint answered with a redirect; Warden doesn't follow redirects", `http_status` "The
   endpoint answered HTTP <status>", `disabled` "Not sent: the webhook was off",
   `key_unavailable` "The server can't read this webhook's URL or secret; edit the URL or ask your
-  operator"). Response bodies are never shown (Warden doesn't keep them).
+  operator"). Response bodies are never shown (Warden doesn't keep them). v0.5: a segmented
+  control under the heading, **All / Pending / Delivered / Failed** (buttons with
+  `aria-pressed`), sends `?state=` so a busy webhook's failures don't scroll out of the first page;
+  each state keeps its own pages and "Load older", polling after "Send test" refreshes all of them,
+  another webhook's log starts on All, and an empty state reads "No failed deliveries in the last
+  30 days."
 - **Delete:** confirm dialog naming the webhook ("Its delivery log is deleted too").
 - **Notification:** the preference "Webhook turned off" (`webhook.disabled`, email on by
   default; sent to org admins and security leads), linking to the Integrations page.
@@ -659,6 +695,19 @@ to it fails a few seconds later, to Slack it is delivered. A created webhook's s
 fake `whsec_…` built at runtime. `?mock_integrations=unavailable` shows the "operator must set the
 key" note; `?mock_role=member` hides the page.
 
+### Mock mode (v0.5 wave 2)
+
+Every new endpoint has a mock route. The CSV export applies the list's filters and the server's
+apostrophe rule; `?mock_export=truncated` marks it cut at 50,000 rows, `?mock_export=rate_limited`
+answers 429 with `Retry-After: 120`, `?mock_export=invalid` a 422. "Verify chain" passes, and
+`?mock_audit=broken` names a changed entry on the first page of the log; it is recorded as
+`audit.verified`, refused for members and limited to 10 an hour. Audit entry ids are numbers, as
+in the contract. PAY has an image scan (`ghcr.io/acme/payments`), so the org-wide Image filter has
+two groups. The ecosystem list and the delivery state filter come from the inventory and the logs
+above; adding a 21st webhook answers `WEBHOOK_LIMIT`, and with `?mock_integrations=unavailable`
+`SECRETS_KEY_MISSING`. Bulk assign skips issues whose project the assignee isn't a member of and
+says how many.
+
 ### Mock mode (v0.4)
 
 Projects and issues now belong to one org: Acme Labs has its own project, LAB (the caller is a
@@ -674,7 +723,7 @@ inventory to the caller's projects.
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
   (cursor), not page numbers. Only org admins and security leads (`view_audit_log`).
 - Filters: action (the action names, shown as they are, in mono), actor (org members) and a
-  from/to date range (see Open decisions). "Clear" resets all three.
+  from/to date range (local days; `to` is inclusive). "Clear" resets all three.
 - Row: time (relative for today and yesterday, then `Oct 24 14:05`, in the viewer's time zone,
   stated above the table), actor (`null` = "System"), action, target, IP. The target column is
   a one-line summary built from `target_type`, `target_id` and `data` (an issue key and the
@@ -683,9 +732,28 @@ inventory to the caller's projects.
 - The expand button (`aria-expanded`, `aria-controls`) shows the entry number, the actor's
   email, the full target ID, the UTC timestamp and `data` as pretty-printed JSON. `data` is
   shown as text, never as HTML.
-- The note above the filters says what the log guarantees: entries can't be changed or deleted,
-  and each hash covers the previous entry. It doesn't claim the chain was verified; the UI
-  can't check it (see Open decisions).
+- The note above the filters says how the log is built: entries can't be changed or deleted, and
+  each hash covers the previous entry, so a changed or missing entry breaks the chain. It never
+  claims the chain is intact by itself; it ends "Verify the chain to recompute every hash now."
+- **Verify chain (v0.5):** a small button in the note (everyone on the page has
+  `view_audit_log`, which the endpoint needs). It calls `POST /orgs/{org}/audit-log/verify`, which
+  recomputes the org's whole chain the way `warden-admin audit verify` does; the button reads
+  "Verifying…" meanwhile. The result goes under the note, in a polite live region:
+  - intact: a check mark, "**Chain intact.** 12,480 entries checked Nov 2, 14:05: every hash
+    matches its entry and the one before it."
+  - broken: in the error colours, "**Chain broken.** Entry 4812 is the first whose hash doesn't
+    match: it, or an entry before it, was changed or removed after it was written. 12,480 entries
+    checked Nov 2, 14:05. Tell your operator; `warden-admin audit verify` shows the same." When
+    that entry is loaded, "Show entry 4812" scrolls to it, opens its details and moves focus to its
+    toggle; the row is highlighted with a red **Hash mismatch** tag. When it isn't loaded: "Entry
+    4812 isn't among the entries loaded yet. Load older entries to find it." (with filters on:
+    "isn't among the entries shown. Clear the filters or load older entries to find it.").
+  - 429 (10 checks per org per hour): "The chain can be checked 10 times an hour in each
+    organization. Try again in 15 minutes." (from `Retry-After`; "Try again later." without it).
+    Other errors use the usual words, with the request ID for server errors. These show in place,
+    not as toasts.
+  The check is itself an audit entry (`audit.verified`, summarised "Chain intact · 12,480
+  entries" or "Chain broken at entry 4812 · …"), so the list refreshes afterwards.
 
 ## States
 
@@ -782,10 +850,12 @@ card uses the full text.
 | `CHECKSUM_MISMATCH` | file changed in upload | The stored file doesn't match the one you picked, so it was not scanned. Upload it again. |
 | `ALL_SCANNERS_FAILED` | every scanner failed | Every scanner failed, so there are no results. Each scanner's error is listed below. If it happens again, tell your operator. |
 | `TIMEOUT` | took over 30 min | The scan took longer than the 30-minute limit and was stopped. |
+| `UPLOAD_ABANDONED` (v0.5, on a cancelled scan) | upload never finished | The upload didn't finish within an hour, so Warden cancelled the scan. Nothing was scanned and no issues changed. Upload the file again. |
 | anything else | failed | The scan failed (`<code>`). Tell your operator; the worker log has the details. |
 
 The numbers are the server defaults (`WARDEN_SCAN__UPLOAD_MAX_MB`, `__UNZIP_MAX_MB`,
-`__UNZIP_MAX_FILES`, `__IMAGE_UPLOAD_MAX_MB`, `__TIMEOUT`); see Open decisions. A *partial* scan says which scanner
+`__UNZIP_MAX_FILES`, `__IMAGE_UPLOAD_MAX_MB`, `__TIMEOUT`); the UI uses the server's own values
+from `GET /me` (`limits`) and falls back to these for an older server. A *partial* scan says which scanner
 failed or timed out: "Partial · Trivy timed out".
 
 Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running · *n* of *m* done,
@@ -810,6 +880,8 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 | `PROJECT_ARCHIVED` (409, v0.2) | Upload card | "This project is archived, so it doesn't take new scans. Unarchive it first." (The UI hides uploads for archived projects, so this only shows after a race.) |
 | `TOKEN_SCOPE` (403, v0.2) | CLI only | "This API token isn't allowed to do that." The UI never uses tokens. |
 | `MFA_NOT_ENABLED` (409) | Banner in the sign-in policy form | "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role." |
+| `WEBHOOK_LIMIT` (409, v0.5) | Banner in the add-webhook dialog | "This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one." |
+| `SECRETS_KEY_MISSING` (409, v0.5) | Banner in the add-webhook dialog | "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY." |
 
 ## Upload flow
 
@@ -838,7 +910,9 @@ What the New scan card shows at each step:
 
 Keep the tab open during steps 2–5; if the user tries to leave, the browser's
 "leave page?" prompt asks first (`beforeunload`). Poll `GET …/scans/{id}` every 3 s while a
-scan is queued or running, and stop when it finishes.
+scan is queued or running, and stop when it finishes. If the tab closes anyway, the scan stays
+*Uploading* until the server cancels it, one hour after it was created (`UPLOAD_ABANDONED`, worded
+in the table above); the upload link itself expires after 15 minutes.
 
 ## Dialogs
 
@@ -854,9 +928,13 @@ is disabled and shows a spinner; errors appear in the dialog, which stays open.
 - **Assign** (issue list bulk action; issue detail "Reassign"; security lead, project owner):
   the selected issues as chips, a search box, and a radio list of the project's members
   (`GET …/projects/{id}/members`) with their project role. The button names the person
-  ("Assign to Minh Pham"). `POST …/issues/assign` returns `updated`; if it is less than the
-  number selected, the toast says how many were skipped and why ("1 was skipped because it is
-  already fixed").
+  ("Assign to Minh Pham"). `POST …/issues/assign` returns `updated` and (v0.5) `skipped`: the
+  issues the server left unchanged because the caller may not assign them, their status can't be
+  assigned, or the assignee isn't a member of their project. The UI can't tell which reason
+  applied to which issue, so the toast names all three: "3 issues assigned to Minh Pham." or, as a
+  warning, "2 issues assigned to Minh Pham. 1 skipped: it can't be assigned (fixed or closed, or
+  not yours to assign), or Minh Pham isn't a member of its project." A single issue assigned from
+  the list reads "WEB-41 assigned to Minh Pham."
 - **Request exception** (issue detail; when `can_request_exception`): the issue key, title and
   severity; type as two radio cards (False positive / Risk accepted, each with one line on what
   it means); reason (live character count, at least 20); "Accepted until" only for Risk accepted:
@@ -934,6 +1012,19 @@ Below 800 px (screenshots in section 12):
   browser storage or a log. Commit shas are shown as text, never linked. The URL (and on edit a
   replacement URL) reaches the mutation through a closure, not as mutation variables, which
   TanStack Query keeps in its cache (`src/api/webhooks.test.ts`).
+- **CSV export (v0.5):** the export needs the bearer token, so it is never a plain link: the page
+  fetches it with the token in the `Authorization` header only (never in the URL, where it would
+  reach history, logs and `Referer`), same-origin and without cookies, refreshing the token once
+  on 401 like every API call. The body is taken as a Blob, re-typed `application/octet-stream` so
+  no browser renders it in place, and saved through a temporary hidden `<a download>` on a `blob:`
+  URL that is revoked a minute later. The page never reads, parses or renders the CSV (its cells
+  come from scanned code and other users). The file name comes from `Content-Disposition`, reduced
+  to its last path segment, letters, digits, `.`, `-` and `_`, no leading dot, at most 120
+  characters and ending in `.csv`, else `warden-issues-<date>.csv` (`src/lib/issueExport.test.ts`).
+  An error body is read only as the JSON envelope; anything else (a proxy's HTML page) is neither
+  saved nor shown.
+- **Audit chain check (v0.5):** the result shows the server's numbers and entry id as text; the
+  entry is found among the loaded rows by id, never by a selector built from unescaped input.
 
 ## Visual system
 
@@ -1004,57 +1095,33 @@ CSP still works. Dark tokens use the same names, with the same 4.5:1 rule:
 
 ## Open decisions
 
-In the v0.1 API contract and being built (the UI can rely on them once they land):
+Closed in v0.5 (the UI relies on them; each is described in its screen section): a security lead
+can't decide an exception they requested themselves (403, also enforced in the database); the
+"Expiring soon" tab for accepted risks; cancelling a scan, a running one included; the audit log's
+from/to dates; the server's limits from `GET /me` (`limits`); `Retry-After` on 429; abandoned
+uploads, which the server cancels one hour after the scan was created (`UPLOAD_ABANDONED`; not
+after the 15-minute upload link, as first proposed); bulk assign's `skipped` count; org-wide
+targets for the issue list's Image filter; the inventory's ecosystem list; `WEBHOOK_LIMIT` and
+`SECRETS_KEY_MISSING` instead of one ambiguous 409; the delivery log's state filter; the audit
+chain check; CSV export of the issue list. (In v0.3, closed in v0.4: license issues have
+`license_category`, and `GET …/targets` lists a project's image targets.)
 
-- Block a security lead from deciding an exception they requested themselves (403, also
-  enforced in the database).
-- An "Expiring soon" tab for accepted risks (`?status=expiring`, 14 days).
-- Cancel a scan, including a running one.
+Still in the design but not in the API contract:
 
-In the design but not in the API contract:
-
-- Export the issue list as CSV.
 - Show users who are deactivated in the identity provider. The API has only Warden's own
   `is_active` flag.
-- Audit log date range: the endpoint filters by `action` and `actor_id` only. It needs
-  `from`/`to` parameters, or the date filter is dropped.
-- Audit log chain check: no endpoint verifies the chain or returns the hashes, so the screen
-  only states the guarantee. A "verify" action (or `warden-admin audit verify` for operators)
-  would back it up.
-- Limits: upload size, unpacked size, file count, scan timeout and the hourly scan limit are
-  server settings that no endpoint returns, so the UI shows the defaults (200 MB, 1 GB,
-  100,000 files, 30 minutes). An operator who changes them gets wrong text. Proposal: return
-  them from `GET /me` or a small `GET /config`.
-- `Retry-After` on 429: not specified, so the UI can only say "try again later".
-- Abandoned uploads: a scan whose upload never finished (tab closed) stays `pending_upload`
-  until something cleans it up. The server should expire them after the 15-minute link.
 - Cancelled scans: the design says a cancelled scan changes no issue, and that scanners which
   didn't finish show as *Skipped*. The worker must behave that way.
-- Bulk assign across projects: the dialog lists people who are members of every selected
-  issue's project. The API doesn't say what happens when the assignee isn't a member of one of
-  them; it should skip that issue and count it as skipped.
-
-In v0.3, closed in v0.4: license issues now have `license_category`, and `GET …/targets` lists a
-project's image targets.
-
-In v0.4, in the design but not in the API contract:
-
-- Targets are listed per project only, so the issue list's Image filter needs a project in scope.
-  An org-wide `GET /orgs/{org}/targets` (or `project_id` optional) would let the org list offer it.
 - `GET …/components/usage` takes `name`; the contract doesn't say whether that is the display name
   or the normalised match name. The UI sends the `name` from the list row.
-- The component list has no total count and no documented sort order; the UI shows "Showing n" and
-  doesn't reorder. Malicious rows can only lead on a project's tab if the server sorts them first.
-- No endpoint says which ecosystems the inventory holds, so the ecosystem filter is a fixed list
-  (plus a valid value from the URL).
+- The org-wide component list has no total count and no documented sort order; the UI shows
+  "Showing n" and doesn't reorder. (A project's components now come malicious first, then by name
+  and version, so its tab leads with them.)
 - An issue created or reopened by an advisory without a scan has no event type of its own; the UI
   relies on the server's note on the `created` (or `status_changed`) event.
-
-In v0.4 wave 2, in the design but not in the API contract:
-
-- The delivery log has no filter by state; a busy webhook's failures can scroll out of the first page.
-- `POST …/webhooks` answers 409 `CONFLICT` both for "20 webhooks already" and for "no secrets.key", so
-  the dialog can't say which (the page hides Add in both cases, so this only shows after a race).
+- The CSV export doesn't say how many rows it holds (only whether it was cut at 50,000), and the
+  page doesn't read the file, so the success toast names the file but not the count. A header
+  such as `X-Warden-Rows` would let it say "1,204 issues exported".
 
 ## Not in v0.4
 
