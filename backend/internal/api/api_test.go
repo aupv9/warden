@@ -695,7 +695,9 @@ func TestBulkAssign(t *testing.T) {
 	e.expect(e.do("POST", "/issues/assign", owner, map[string]any{"issue_ids": []string{}, "assignee_id": "x"}), 422, "VALIDATION_FAILED")
 	e.expect(e.do("POST", "/issues/assign", owner, map[string]any{"issue_ids": []string{"x"}, "assignee_id": devID.String()}), 422, "VALIDATION_FAILED")
 	r := e.do("POST", "/issues/assign", owner, map[string]any{"issue_ids": ids, "assignee_id": devID.String()})
-	if r.code != 200 || r.obj()["updated"] != 2.0 {
+	// open and assigned change; same (already dev's), fixed, other (dev isn't in API)
+	// and the unknown id are skipped; the duplicate counts once.
+	if r.code != 200 || r.obj()["updated"] != 2.0 || r.obj()["skipped"] != 4.0 {
 		t.Fatal(r.body)
 	}
 	if s := e.f.IssueRow(open); s.Status != "assigned" || *s.AssigneeID != devID {
@@ -713,7 +715,7 @@ func TestBulkAssign(t *testing.T) {
 	}
 	// Nothing to do: no audit entry.
 	r = e.do("POST", "/issues/assign", lead, map[string]any{"issue_ids": []string{fixed.String()}, "assignee_id": devID.String()})
-	if r.code != 200 || r.obj()["updated"] != 0.0 || len(e.f.AuditLog()) != 1 {
+	if r.code != 200 || r.obj()["updated"] != 0.0 || r.obj()["skipped"] != 1.0 || len(e.f.AuditLog()) != 1 {
 		t.Fatal(r.body)
 	}
 }
