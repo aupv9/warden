@@ -141,6 +141,24 @@ func TestRedactRefusesUncheckableResults(t *testing.T) {
 	}
 }
 
+// Found by FuzzDoc: keys are masked too, so a secret inside "results" (or
+// "runs", "ruleId") renamed the key, the parser saw no results and the
+// secret went unreported (and without a content key). Such a document is
+// refused, which fails the scan visibly.
+func TestRedactRefusesSecretThatMasksStructure(t *testing.T) {
+	for _, secret := range []string{"sul", "run", "eId"} {
+		doc := st.Doc([]any{st.M{"ruleId": "r", "locations": []any{st.Loc("a.py", 1, secret)}}})
+		if out, err := redact.Doc(st.RoundTrip(doc), st.HMACKey); err == nil {
+			t.Errorf("%q: accepted %v", secret, out)
+		}
+	}
+	// A secret elsewhere in a key is still masked, not refused.
+	doc := st.Doc([]any{st.M{"ruleId": "r", "locations": []any{st.Loc("a.py", 1, "hunter2-xxxxxxxx")}, "hunter2-xxxxxxxx": 1}})
+	if out, err := redact.Doc(st.RoundTrip(doc), st.HMACKey); err != nil || strings.Contains(blob(t, out), "hunter2-xxxxxxxx") {
+		t.Fatal(out, err)
+	}
+}
+
 func TestContentKeyDependsOnOrgKey(t *testing.T) {
 	key := func(k []byte) string {
 		out, err := redact.Doc(st.RoundTrip(st.GitleaksDoc()), k)

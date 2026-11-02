@@ -103,7 +103,8 @@ func dropCommitDetails(result map[string]any) {
 // everywhere (another result's message, invocations, keys), commit details
 // other than the sha and date are dropped, and each result gets the HMAC of
 // its own secret as properties["warden.contentKey"]. A result that isn't an
-// object can't be checked, so the document is refused.
+// object can't be checked, and masking that would rename the keys the parser
+// finds results by can't be done safely, so such documents are refused.
 func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 	if len(key) < MinKeyBytes {
 		return nil, errors.New("HMAC key too short")
@@ -112,17 +113,21 @@ func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 	var reps []replacement
 	seen := map[string]bool{}
 	keys := map[[2]int]string{}
+	counts := make([]int, len(runs))
+	hasRule := map[[2]int]bool{}
 	for i, r := range runs {
 		run, ok := r.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("runs[%d] is not an object", i)
 		}
 		results, _ := run["results"].([]any)
+		counts[i] = len(results)
 		for j, res := range results {
 			m, ok := res.(map[string]any)
 			if !ok {
 				return nil, fmt.Errorf("runs[%d].results[%d] is not an object", i, j)
 			}
+			_, hasRule[[2]int{i, j}] = m["ruleId"]
 			dropCommitDetails(m)
 			secret := firstSnippet(m)
 			keys[[2]int{i, j}] = contentKey(key, secret)
@@ -136,11 +141,24 @@ func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 	slices.SortFunc(reps, func(a, b replacement) int { return cmp.Compare(len(b.secret), len(a.secret)) })
 
 	out := scrub(doc, reps).(map[string]any)
-	runs, _ = out["runs"].([]any)
-	for i, r := range runs {
+	// Keys are scrubbed too, so a secret that is part of "runs", "results"
+	// or "ruleId" would mask the key itself: the parser would then see no
+	// results (or skip one) and the secret would go unreported. Refuse the
+	// document instead, so the scan fails visibly.
+	outRuns, _ := out["runs"].([]any)
+	if len(outRuns) != len(runs) {
+		return nil, errors.New("a secret masks the SARIF structure (runs)")
+	}
+	for i, r := range outRuns {
 		results, _ := r.(map[string]any)["results"].([]any)
+		if len(results) != counts[i] {
+			return nil, errors.New("a secret masks the SARIF structure (results)")
+		}
 		for j, res := range results {
 			m := res.(map[string]any)
+			if _, ok := m["ruleId"]; hasRule[[2]int{i, j}] && !ok {
+				return nil, errors.New("a secret masks the SARIF structure (ruleId)")
+			}
 			props, ok := m["properties"].(map[string]any)
 			if !ok {
 				props = map[string]any{}
