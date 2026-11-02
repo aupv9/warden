@@ -204,6 +204,16 @@ services:
     secrets: [s3.json]
     volumes: [s3data:/data]
     networks: [internal]
+    # The S3 gateway listens only once SeaweedFS's master has a leader; until
+    # then the container is "running" but uploads fail. This makes `up --wait`
+    # and the services that depend on it wait for a store that answers.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 120s
+      start_interval: 2s
     logging: *logging
 
   # Creates the bucket (Warden's own S3 identity can't), then exits.
@@ -225,7 +235,7 @@ services:
         done
         echo "could not create bucket $$BUCKET" >&2; exit 1
     depends_on:
-      s3: { condition: service_started }
+      s3: { condition: service_healthy }
     networks: [internal]
 
   # The offline scanner data: Trivy DB, Opengrep rules, Gitleaks config,

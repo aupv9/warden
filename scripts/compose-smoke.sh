@@ -23,7 +23,14 @@ profiles=(--profile core --profile s3)
 [ "${SMOKE_SCANNER:-}" = 1 ] && profiles+=(--profile scanner)
 cleanup() {
   status=$?
-  if [ "$status" != 0 ]; then compose ps -a || true; compose logs --tail 40 || true; fi
+  if [ "$status" != 0 ]; then
+    compose ps -a || true
+    # Restarts, OOM kills and exit codes say more than the last log lines.
+    for c in $(compose ps -aq 2>/dev/null); do
+      docker inspect -f '{{.Name}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}} started={{.State.StartedAt}} health={{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" || true
+    done
+    compose logs --tail 40 || true
+  fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$SMOKE_DIR"
   exit "$status"
