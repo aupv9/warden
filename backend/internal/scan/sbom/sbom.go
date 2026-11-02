@@ -55,6 +55,19 @@ func decodeObject(raw []byte, what string) (object, error) {
 	return o, nil
 }
 
+// wardenProperty reports whether a property is named warden:..., matching
+// the key and the prefix case-insensitively (as encoding/json matches
+// struct fields), so no reader can take it for Warden's.
+func wardenProperty(prop map[string]json.RawMessage) bool {
+	for k, v := range prop {
+		var name string
+		if strings.EqualFold(k, "name") && json.Unmarshal(v, &name) == nil && strings.HasPrefix(strings.ToLower(name), "warden:") {
+			return true
+		}
+	}
+	return false
+}
+
 // Stamp validates raw and returns it with the root component renamed to name
 // and the scan id recorded. Only the parts it changes are decoded beyond the
 // top level, so memory stays a small multiple of the (capped) input.
@@ -97,14 +110,20 @@ func Stamp(raw []byte, name, scanID string) (*Stamped, error) {
 			return nil, sbomErr("metadata.component.properties is not an array")
 		}
 	}
-	// Only Warden writes warden: properties.
+	// Only Warden writes warden: properties. A property object is re-encoded
+	// from the map it decodes to: with a repeated key, encoding/json keeps the
+	// last value and other readers may take the first, so a forged
+	// {"name":"warden:scan_id","name":"x"} must not pass through as written.
 	kept := props[:0]
 	for _, p := range props {
-		var prop struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(p, &prop) == nil && strings.HasPrefix(prop.Name, "warden:") {
-			continue
+		var prop map[string]json.RawMessage
+		if json.Unmarshal(p, &prop) == nil && prop != nil {
+			if wardenProperty(prop) {
+				continue
+			}
+			if p, err = json.Marshal(prop); err != nil {
+				return nil, sbomErr("metadata.component.properties: %v", err)
+			}
 		}
 		kept = append(kept, p)
 	}
