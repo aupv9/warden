@@ -16,11 +16,6 @@ services:
       test: ["CMD", "pg_isready", "-U", "warden_owner", "-d", "warden"]
       interval: 5s
 
-  redis:
-    image: redis:7.4-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?run make env}"]
-    ports: ["127.0.0.1:6379:6379"]
-
   s3:
     image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
     # Browsers upload straight to S3 with presigned PUTs; only the dev web UI may

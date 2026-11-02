@@ -52,6 +52,8 @@ type JWKS struct {
 	// status is what Status reports. It is kept apart from mu, which is held
 	// during a fetch, so reading it never waits on the network.
 	status atomic.Pointer[KeyStatus]
+	// endpoints is what the last discovery named (BrowserEndpoints).
+	endpoints atomic.Pointer[BrowserEndpoints]
 }
 
 // KeyStatus describes the key cache for the Sign-in settings page.
@@ -184,8 +186,12 @@ func (j *JWKS) discover(ctx context.Context) (string, error) {
 		return "", err
 	}
 	var doc struct {
-		Issuer  string `json:"issuer"`
-		JWKSURI string `json:"jwks_uri"`
+		Issuer        string `json:"issuer"`
+		JWKSURI       string `json:"jwks_uri"`
+		Authorization string `json:"authorization_endpoint"`
+		Token         string `json:"token_endpoint"`
+		UserInfo      string `json:"userinfo_endpoint"`
+		EndSession    string `json:"end_session_endpoint"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return "", keyErr(KeyErrInvalidDocument, "parse OIDC discovery: %w", err)
@@ -196,7 +202,46 @@ func (j *JWKS) discover(ctx context.Context) (string, error) {
 	if err := checkKeysURL(j.Issuer, doc.JWKSURI); err != nil {
 		return "", &keyError{kind: KeyErrInvalidDocument, err: err}
 	}
+	// Same rule as jwks_uri; an endpoint that fails it is left out (the UI's
+	// CSP then won't allow it) rather than failing key discovery.
+	ok := func(raw string) string {
+		if raw == "" || checkKeysURL(j.Issuer, raw) != nil {
+			return ""
+		}
+		return raw
+	}
+	j.endpoints.Store(&BrowserEndpoints{Authorization: ok(doc.Authorization), Token: ok(doc.Token),
+		UserInfo: ok(doc.UserInfo), EndSession: ok(doc.EndSession)})
 	return doc.JWKSURI, nil
+}
+
+// BrowserEndpoints are the discovery document's endpoints that the web UI's
+// browser talks to, for its Content-Security-Policy: some providers serve
+// them from other hosts than the issuer (Google's token endpoint is on
+// oauth2.googleapis.com). Each is https, or on the issuer's own host.
+type BrowserEndpoints struct {
+	Authorization, Token, UserInfo, EndSession string
+}
+
+// BrowserEndpoints returns what the last discovery found (zero before the
+// first one, or when the key URL is pinned and discovery never runs).
+func (j *JWKS) BrowserEndpoints() BrowserEndpoints {
+	if e := j.endpoints.Load(); e != nil {
+		return *e
+	}
+	return BrowserEndpoints{}
+}
+
+// Warm fetches discovery and keys now unless the cache is fresh, so the web
+// UI's CSP names the provider's endpoints before the first sign-in (no token
+// is verified until a sign-in has worked).
+func (j *JWKS) Warm(ctx context.Context) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.keys != nil && j.clock().Sub(j.fetchedAt) <= j.Lifespan {
+		return nil
+	}
+	return j.refresh(ctx)
 }
 
 // checkKeysURL accepts an https jwks_uri, or one on the issuer's own scheme and

@@ -10,6 +10,10 @@ ONLY="${1:-}"
 case "$ONLY" in ""|intel) ;; *) echo "usage: $0 [intel]" >&2; exit 2 ;; esac
 
 KEV_URL="${WARDEN_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"
+# CISA's own mirror of the same catalog on GitHub, tried when the primary
+# fails (cisa.gov answers some networks with 403). Same checks and size cap;
+# sources.json records which URL the file came from.
+KEV_FALLBACK_URL="${WARDEN_KEV_FALLBACK_URL:-https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json}"
 # FIRST publishes EPSS through Empirical Security (epss.cyentia.com redirects here).
 EPSS_URL="${WARDEN_EPSS_URL:-https://epss.empiricalsecurity.com/epss_scores-current.csv.gz}"
 # OSV publishes one all.zip per ecosystem; the worker loads its MAL- (malicious
@@ -61,7 +65,8 @@ epss_ok() { gzip -t "$1" && [ "$(gzip -dc "$1" | sed -n '2{p;q;}')" = "cve,epss,
 # with its own caps (backend/internal/intel/osv.go) and never extracts it.
 zip_ok() { [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" = "504b0304" ]; }
 intel_failed=""
-# fetch NAME URL FILE MAX_BYTES CHECK [MAX_SECONDS]
+# fetch NAME URL FILE MAX_BYTES CHECK [MAX_SECONDS]: returns 1 (and keeps the
+# previous file) when the download or the check fails.
 fetch() {
   local name="$1" url="$2" file="$INTEL/$3" max="$4" check="$5" secs="${6:-600}" part sum
   part="$(mktemp "$file.XXXXXX")"
@@ -72,23 +77,30 @@ fetch() {
     jq --arg n "$name" --arg u "$url" --arg t "$(date -u +%FT%TZ)" --arg s "$sum" \
       '[.[] | select(.name != $n)] + [{name: $n, url: $u, fetched_at: $t, sha256: $s}] | sort_by(.name)' \
       "$INTEL/sources.json" > "$tmp/sources.json" && mv -f "$tmp/sources.json" "$INTEL/sources.json"
-    echo "    $name: $3 sha256 ${sum:0:16}"
+    echo "    $name: $3 sha256 ${sum:0:16} from $url"
   else
     rm -f "$part"
     echo "ERROR: $name: download from $url failed or isn't a valid feed; kept the previous $3" >&2
-    intel_failed="$intel_failed $name"
+    return 1
   fi
 }
 # Size caps match the worker's (internal/intel).
-fetch kev "$KEV_URL" kev.json $((20 << 20)) kev_ok
-fetch epss "$EPSS_URL" epss.csv.gz $((30 << 20)) epss_ok
+if ! fetch kev "$KEV_URL" kev.json $((20 << 20)) kev_ok; then
+  if [ -n "$KEV_FALLBACK_URL" ] && [ "$KEV_FALLBACK_URL" != "$KEV_URL" ]; then
+    echo "    kev: trying the fallback $KEV_FALLBACK_URL" >&2
+    fetch kev "$KEV_FALLBACK_URL" kev.json $((20 << 20)) kev_ok || intel_failed="$intel_failed kev"
+  else
+    intel_failed="$intel_failed kev"
+  fi
+fi
+fetch epss "$EPSS_URL" epss.csv.gz $((30 << 20)) epss_ok || intel_failed="$intel_failed epss"
 for eco in $OSV_ECOSYSTEMS; do
   case "$eco" in
     npm) max=$((512 << 20)) ;;
     PyPI|Go|Maven|crates.io|RubyGems|NuGet|Packagist) max=$((128 << 20)) ;;
     *) echo "ERROR: WARDEN_OSV_ECOSYSTEMS: unknown ecosystem '$eco'" >&2; intel_failed="$intel_failed osv_mal:?"; continue ;;
   esac
-  fetch "osv_mal:$eco" "$OSV_URL/$eco/all.zip" "osv/$eco.zip" "$max" zip_ok 1800
+  fetch "osv_mal:$eco" "$OSV_URL/$eco/all.zip" "osv/$eco.zip" "$max" zip_ok 1800 || intel_failed="$intel_failed osv_mal:$eco"
 done
 
 chmod -R a+rX "$MIRROR"

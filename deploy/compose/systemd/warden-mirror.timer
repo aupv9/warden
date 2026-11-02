@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Warden offline scanner data sync
+
+[Timer]
+# Daily, at a random time in the first hour after 03:00, and on the next boot
+# if the host was off at that time.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

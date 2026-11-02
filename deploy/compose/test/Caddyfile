@@ -1,0 +1,8 @@
+# Smoke test only (scripts/compose-smoke.sh): the production sites, with
+# certificates from Caddy's internal CA instead of Let's Encrypt.
+{
+	local_certs
+	skip_install_trust
+}
+
+import /etc/caddy/sites/*.caddy

@@ -45,13 +45,19 @@ var (
 type Config struct {
 	// Endpoint is the store's base URL, e.g. http://localhost:8333 (SeaweedFS) or
 	// https://s3.eu-west-1.amazonaws.com. Empty means AWS S3 in Region.
-	Endpoint  string
-	Bucket    string
-	Region    string // default: inferred from an AWS endpoint, else us-east-1
-	AccessKey string
-	SecretKey string
+	Endpoint string
+	// PublicEndpoint, when set, is the base URL browsers and the CLI reach the
+	// store at (e.g. https://s3.warden.example through the TLS proxy, while
+	// Endpoint is http://s3:8333 on the internal network). Only presigned URLs
+	// use it; every request Warden makes itself goes to Endpoint. The proxy
+	// must pass the Host header through: SigV4 signs it.
+	PublicEndpoint string
+	Bucket         string
+	Region         string // default: inferred from an AWS endpoint, else us-east-1
+	AccessKey      string
+	SecretKey      string
 	// PathStyle forces path-style URLs (http://host/bucket/key). Default: on for
-	// any endpoint that isn't amazonaws.com.
+	// any endpoint that isn't amazonaws.com (decided per endpoint).
 	PathStyle *bool
 	// ChecksumHeader adds x-amz-checksum-sha256 to presigned PUTs, so the store
 	// itself rejects a body that doesn't match the declared SHA-256. AWS S3 and
@@ -68,6 +74,7 @@ type Config struct {
 func FromSection(s config.StorageSection) Config {
 	return Config{
 		Endpoint:       s.Endpoint,
+		PublicEndpoint: s.PublicEndpoint,
 		Bucket:         s.Bucket,
 		AccessKey:      s.AccessKey.Reveal(),
 		SecretKey:      s.SecretKey.Reveal(),
@@ -86,6 +93,15 @@ func isAWSHost(host string) bool {
 	return host == "s3.amazonaws.com" || strings.HasSuffix(host, ".amazonaws.com")
 }
 
+// endpointHost validates an endpoint URL and returns its host name.
+func endpointHost(name, endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("storage: %s must be an http(s) URL", name)
+	}
+	return u.Hostname(), nil
+}
+
 // New validates cfg and builds a client. It makes no network calls.
 func New(cfg Config) (*Client, error) {
 	if cfg.Bucket == "" {
@@ -94,13 +110,12 @@ func New(cfg Config) (*Client, error) {
 	if cfg.AccessKey == "" || cfg.SecretKey == "" {
 		return nil, errors.New("storage: access key and secret key are required")
 	}
-	pathStyle := false
+	pathStyle, publicPathStyle := false, false
 	if cfg.Endpoint != "" {
-		u, err := url.Parse(cfg.Endpoint)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return nil, fmt.Errorf("storage: endpoint must be an http(s) URL")
+		host, err := endpointHost("endpoint", cfg.Endpoint)
+		if err != nil {
+			return nil, err
 		}
-		host := u.Hostname()
 		if cfg.Region == "" {
 			if m := awsEndpoint.FindStringSubmatch(host); m != nil {
 				cfg.Region = m[1]
@@ -108,11 +123,18 @@ func New(cfg Config) (*Client, error) {
 		}
 		pathStyle = !isAWSHost(host)
 	}
+	if cfg.PublicEndpoint != "" {
+		host, err := endpointHost("public endpoint", cfg.PublicEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		publicPathStyle = !isAWSHost(host)
+	}
 	if cfg.Region == "" {
 		cfg.Region = defaultRegion
 	}
 	if cfg.PathStyle != nil {
-		pathStyle = *cfg.PathStyle
+		pathStyle, publicPathStyle = *cfg.PathStyle, *cfg.PathStyle
 	}
 	creds := aws.Credentials{AccessKeyID: cfg.AccessKey, SecretAccessKey: cfg.SecretKey, Source: "warden-config"}
 	opts := s3.Options{
@@ -135,7 +157,35 @@ func New(cfg Config) (*Client, error) {
 		opts.HTTPClient = cfg.HTTPClient
 	}
 	c := s3.New(opts)
-	return &Client{s3: c, presign: s3.NewPresignClient(c), bucket: cfg.Bucket, cfg: cfg}, nil
+	presign := s3.NewPresignClient(c)
+	if cfg.PublicEndpoint != "" {
+		// Same credentials and region; only the URL a presigned request names
+		// (and signs, as the Host header) differs. Presigning sends nothing.
+		presign = s3.NewPresignClient(c, func(o *s3.PresignOptions) {
+			o.ClientOptions = append(o.ClientOptions, func(o *s3.Options) {
+				o.BaseEndpoint = aws.String(strings.TrimRight(cfg.PublicEndpoint, "/"))
+				o.UsePathStyle = publicPathStyle
+			})
+		})
+	}
+	return &Client{s3: c, presign: presign, bucket: cfg.Bucket, cfg: cfg}, nil
+}
+
+// PublicOrigin is the scheme://host[:port] that presigned URLs point at: what
+// the web UI's Content-Security-Policy must allow in connect-src. It is read
+// from a real presigned URL, so it follows the SDK's addressing rules
+// (virtual-hosted buckets on AWS) instead of repeating them.
+func (c *Client) PublicOrigin(ctx context.Context) (string, error) {
+	req, err := c.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(c.bucket), Key: aws.String("origin")},
+		s3.WithPresignExpires(time.Minute))
+	if err != nil {
+		return "", fmt.Errorf("storage: presign: %w", err)
+	}
+	u, err := url.Parse(req.URL)
+	if err != nil {
+		return "", fmt.Errorf("storage: presigned URL: %w", err)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func validKey(key string) error {
