@@ -6,9 +6,14 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"strconv"
+	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for goose
 	"github.com/pressly/goose/v3"
@@ -58,4 +63,59 @@ func Up(ctx context.Context, ownerURL string) error {
 		return fmt.Errorf("grants: %w", err)
 	}
 	return nil
+}
+
+// Latest is the newest schema version embedded in this binary: the highest
+// goose version among sql/*.sql. The API and worker compare it with Current.
+func Latest() int64 {
+	entries, err := fs.ReadDir(sqlFiles, "sql")
+	if err != nil {
+		panic("migrations: embedded sql directory: " + err.Error()) // compiled in; can't happen
+	}
+	var latest int64
+	for _, e := range entries {
+		num, _, ok := strings.Cut(e.Name(), "_")
+		if !ok || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		if v, err := strconv.ParseInt(num, 10, 64); err == nil && v > latest {
+			latest = v
+		}
+	}
+	return latest
+}
+
+// ErrVersionUnreadable: the role can't read goose_db_version, or it doesn't
+// exist yet. warden-migrate grants warden_app SELECT on it (grants.sql), so
+// this means the database was never migrated by a release that has the
+// schema gate: it is older than the binary.
+var ErrVersionUnreadable = errors.New("schema version unreadable")
+
+// PostgreSQL error codes Current maps to ErrVersionUnreadable.
+const (
+	undefinedTable        = "42P01"
+	insufficientPrivilege = "42501"
+)
+
+// Querier is the part of a pool or connection Current needs.
+type Querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// Current is the database's schema version, read as warden_app with the query
+// goose itself uses (the highest version recorded; 0 for an empty table).
+func Current(ctx context.Context, db Querier) (int64, error) {
+	var v *int64
+	err := db.QueryRow(ctx, `SELECT max(version_id) FROM goose_db_version`).Scan(&v)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && (pe.Code == undefinedTable || pe.Code == insufficientPrivilege) {
+		return 0, ErrVersionUnreadable
+	}
+	if err != nil {
+		return 0, err
+	}
+	if v == nil {
+		return 0, nil
+	}
+	return *v, nil
 }
