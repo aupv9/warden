@@ -159,6 +159,48 @@ export function issueFilterQuery(f: IssueFilters, fixedProject?: string): IssueF
   };
 }
 
+/** The Image filter's choices, grouped by project when no project is in scope. */
+export interface TargetGroup {
+  /** "WEB · Web storefront"; null for the one ungrouped list (a project in scope). */
+  label: string | null;
+  targets: string[];
+}
+
+type TargetRow = { target: string; kind: string };
+type OrgTargetRow = TargetRow & { project_id: string; project_key: string; project_name: string };
+
+/** v0.4: with a project in scope, its image repositories (GET …/projects/{p}/targets).
+ *  v0.5 wave 2: without one, every visible project's (GET /orgs/{org}/targets), grouped by
+ *  project in the server's order. Only image targets with a well-formed repository are offered
+ *  ((history) and source code aren't images); a target already in the URL stays listed. */
+export function imageTargetGroups(
+  scoped: boolean,
+  projectTargets: TargetRow[] | undefined,
+  orgTargets: OrgTargetRow[] | undefined,
+  current: string,
+): TargetGroup[] {
+  const ok = (t: TargetRow) => t.kind === "image" && isImageTarget(t.target);
+  let groups: TargetGroup[];
+  if (scoped) {
+    groups = [{ label: null, targets: (projectTargets ?? []).filter(ok).map((t) => t.target) }];
+  } else {
+    const byProject = new Map<string, TargetGroup>();
+    for (const t of orgTargets ?? []) {
+      if (!ok(t)) continue;
+      const g = byProject.get(t.project_id) ?? { label: `${t.project_key} · ${t.project_name}`, targets: [] };
+      if (!g.targets.includes(t.target)) g.targets.push(t.target);
+      byProject.set(t.project_id, g);
+    }
+    groups = [...byProject.values()];
+  }
+  groups = groups.filter((g) => g.targets.length > 0);
+  if (current && !groups.some((g) => g.targets.includes(current))) {
+    if (scoped) groups = [{ label: null, targets: [...(groups[0]?.targets ?? []), current] }];
+    else groups.push({ label: "From the link", targets: [current] });
+  }
+  return groups;
+}
+
 export function toggleSeverity(f: IssueFilters, s: Severity): IssueFilters {
   const has = f.severity.includes(s);
   const next = new Set(has ? f.severity.filter((x) => x !== s) : [...f.severity, s]);

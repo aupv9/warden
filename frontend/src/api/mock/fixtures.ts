@@ -336,6 +336,22 @@ export const scans: Scan[] = [
   ] }, 6 * DAY),
   scan(WEB, { file_name: "storefront-2.2.zip", stats: { new: 26, fixed: 0, reopened: 0, total: 26 } }, 7 * DAY),
   scan(PAY, { file_name: "payments-api.zip" }, DAY),
+  // v0.5 wave 2: a second project with an image, so the org-wide Image filter has two groups.
+  scan(
+    PAY,
+    {
+      kind: "image",
+      target: "ghcr.io/acme/payments",
+      image_ref: "ghcr.io/acme/payments:3.0.1",
+      file_name: "payments-3.0.1.tar",
+      file_size: 96 * 1024 * 1024,
+      tools: ["trivy"],
+      stats: { new: 0, fixed: 0, reopened: 0, total: 0 },
+      tool_runs: [{ tool: "trivy", tool_version: "0.75.0", status: "succeeded", findings_count: 0, duration_ms: 41_000, error: null }],
+      sbom: { components: 168, size: 402_118, formats: BOTH_SBOMS },
+    },
+    2 * DAY,
+  ),
   scan(INFRA, { file_name: "terraform.zip" }, 5 * DAY),
   scan(projects[4]!, { file_name: "legacy-portal-final.zip", stats: { new: 0, fixed: 3, reopened: 0, total: 9 } }, 24 * DAY),
   // v0.3: image scans (a `docker save` .tar), Trivy only, issues tracked per target.
