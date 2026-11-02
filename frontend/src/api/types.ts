@@ -833,6 +833,19 @@ export interface WebhookDelivery {
   delivered_at: Timestamp | null;
 }
 
+// ---- v0.5: the web UI's OIDC settings (GET /web-config, public) ----
+
+/** Read once at startup (auth/webConfig.ts checks every field before use). */
+export interface WebConfig {
+  /** OIDC issuer URL. */
+  issuer: string;
+  client_id: string;
+  /** Space-separated; includes `openid`. */
+  scope: string;
+  /** Sent as the `audience` authorization parameter when set. */
+  audience: string | null;
+}
+
 // ---- Errors ----
 
 /** `error.code` values the API can answer (openapi schema Error). */
