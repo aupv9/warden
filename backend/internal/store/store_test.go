@@ -141,6 +141,24 @@ func TestBuildIssueList(t *testing.T) {
 	if !strings.Contains(sql, "v.kev_added IS NOT NULL") || !strings.Contains(sql, "v.epss >= ") || strings.Contains(sql, "vi.") {
 		t.Fatal(sql)
 	}
+
+	// The export and its count: the list's filter and visibility (a cursor
+	// never applies), the list's order.
+	member := full
+	member.Vis.All, member.Sort, member.Limit = false, service.SortEPSS, service.MaxExportRows
+	sql, a = buildIssueExport(member)
+	checkParams(t, sql, a)
+	if !strings.Contains(sql, "project_member vm") || !strings.Contains(sql, "ORDER BY vi.epss DESC NULLS LAST, i.id DESC") ||
+		strings.Contains(sql, "i.due_at IS NULL OR") || strings.Contains(sql, "description") || strings.Contains(sql, "snippet") ||
+		a[len(a)-1] != service.MaxExportRows {
+		t.Fatal(sql, a)
+	}
+	sql, a = buildIssueCount(member, 50001)
+	checkParams(t, sql, a)
+	if !strings.Contains(sql, "project_member vm") || !strings.Contains(sql, "LIMIT $") || strings.Contains(sql, "ORDER BY") ||
+		strings.Contains(sql, "LATERAL") || a[len(a)-1] != 50001 {
+		t.Fatal(sql, a)
+	}
 }
 
 func TestBuildTargetsAndProjectComponents(t *testing.T) {

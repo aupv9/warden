@@ -4,12 +4,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// v0.5 routes: org-wide targets, ecosystem counts and the audit-log check.
-// None is in tokenRoutes: API tokens can't call them.
+// v0.5 routes: org-wide targets, ecosystem counts, the audit-log check and the
+// issue export. None is in tokenRoutes: API tokens can't call them.
 func (h handlers) v05Routes(o *gin.RouterGroup) {
 	o.GET("/targets", h.orgTargets)
 	o.GET("/components/ecosystems", h.componentEcosystems)
 	o.POST("/audit-log/verify", h.verifyAuditLog)
+	o.GET("/issues/export.csv", h.exportIssues) // export.go
 }
 
 func (h handlers) orgTargets(c *gin.Context) {

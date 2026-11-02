@@ -200,6 +200,52 @@ func (r *Repo) Issues(ctx context.Context, q service.IssueQuery) ([]service.Issu
 	return collect(rows, scanSummary)
 }
 
+// buildIssueCount counts q's matches up to limit (the list's filter, no keyset).
+func buildIssueCount(q service.IssueQuery, limit int) (string, args) {
+	var a args
+	q.After = nil
+	return `SELECT count(*) FROM (SELECT 1` + issueBase + issueWhere(&a, q) + ` LIMIT ` + a.add(limit) + `) x`, a
+}
+
+func (r *Repo) CountIssues(ctx context.Context, q service.IssueQuery, limit int) (int, error) {
+	sql, a := buildIssueCount(q, limit)
+	var n int
+	err := r.tx.QueryRow(ctx, sql, a...).Scan(&n)
+	return n, mapErr(err)
+}
+
+// buildIssueExport is the list query (filter and order) with the export's
+// columns.
+func buildIssueExport(q service.IssueQuery) (string, args) {
+	var a args
+	q.After = nil
+	return `SELECT p.key || '-' || i.number, p.name, i.title, i.severity::text, i.status::text, i.tool, i.rule_id,
+		i.file_path, i.start_line, i.target, i.cve, coalesce(vi.kev, false), vi.epss, au.email::text, i.due_at, i.created_at, i.updated_at` +
+		issueFrom + issueWhere(&a, q) + issueOrder(q.Sort) + ` LIMIT ` + a.add(q.Limit), a
+}
+
+// ExportIssues reads the rows one by one as Postgres sends them (pgx doesn't
+// buffer a result set), so an export never holds 50,000 rows in memory.
+func (r *Repo) ExportIssues(ctx context.Context, q service.IssueQuery, fn func(service.IssueExportRow) error) error {
+	sql, a := buildIssueExport(q)
+	rows, err := r.tx.Query(ctx, sql, a...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e service.IssueExportRow
+		if err := rows.Scan(&e.Key, &e.ProjectName, &e.Title, &e.Severity, &e.Status, &e.Tool, &e.RuleID, &e.FilePath, &e.Line,
+			&e.Target, &e.CVE, &e.KEV, &e.EPSS, &e.Assignee, &e.DueAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return err
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 func (r *Repo) IssueCounts(ctx context.Context, q service.IssueQuery) (service.SeverityCounts, error) {
 	var c service.SeverityCounts
 	sql, a := buildIssueCounts(q)

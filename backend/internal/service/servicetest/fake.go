@@ -261,6 +261,21 @@ func (f *Fake) AddIssue(project uuid.UUID, severity, status string, assignee *uu
 	return id
 }
 
+// AddIssues adds count issues at once (AddIssue numbers each by scanning all).
+func (f *Fake) AddIssues(project uuid.UUID, count int, severity, status string) {
+	p := f.st.Projects[project]
+	n := 0
+	for _, i := range f.st.Issues {
+		if i.ProjectID == project {
+			n = max(n, i.Number)
+		}
+	}
+	for k := 1; k <= count; k++ {
+		f.st.Issues[ids.New()] = IssueRow{OrgID: p.OrgID, ProjectID: project, Number: n + k, Title: "Issue " + severity, Severity: severity,
+			Status: status, Tool: "opengrep", RuleID: "rule." + severity, Version: 1, UpdatedAt: f.tick()}
+	}
+}
+
 func (f *Fake) SetIssue(id uuid.UUID, fn func(*IssueRow)) {
 	r := f.st.Issues[id]
 	fn(&r)
