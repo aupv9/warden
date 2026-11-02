@@ -8,6 +8,9 @@ DO $$ BEGIN
     GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO warden_app;
     REVOKE UPDATE, DELETE, TRUNCATE ON audit_log FROM warden_app;
     REVOKE ALL ON goose_db_version FROM warden_app;
+    -- Read-only, for the schema gate: the API and worker compare the version
+    -- with the one they embed (migrations.Current).
+    GRANT SELECT ON goose_db_version TO warden_app;
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON river_migration FROM warden_app;
     -- API tokens are never deleted (scans reference them), and the app may only
     -- revoke them or record their use, not change their hash, scopes or expiry.
