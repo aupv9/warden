@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -124,10 +125,11 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range sandbox.ToolNames {
-		if s.Images[t] == "" {
-			log.Warn("no scanner image configured; this tool will fail", "tool", t)
+	if missing := cfg.MissingImages(); len(missing) > 0 {
+		if cfg.App.Env == config.EnvProd {
+			return nil, fmt.Errorf("config: app.env=prod: no image for scanners %s; set WARDEN_SCAN__IMAGES", strings.Join(missing, ", "))
 		}
+		log.Warn("no scanner image configured; these tools will fail", "tools", missing)
 	}
 	if s.SandboxRuntime != "runsc" {
 		log.Warn("scanner sandbox is not gVisor (runsc); acceptable for local development only", "runtime", s.SandboxRuntime)

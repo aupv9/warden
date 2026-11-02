@@ -5,7 +5,8 @@ import type { RouteObject } from "react-router";
 import { ApiError } from "./api/client";
 import { errorMessage, isForbidden, isToastedActionError, isUnauthorized, supportReference } from "./api/errors";
 import type { ErrorOverrides } from "./api/errors";
-import { AuthGate, sessionEnded } from "./auth/AuthGate";
+import { AuthBoot, AuthGate, sessionEnded } from "./auth/AuthGate";
+import { appBoot } from "./auth/boot";
 import { Toaster } from "./components/Toaster";
 import { NotFoundPage, OrgLayout, OrgNotFound } from "./layout/OrgLayout";
 import { lazyRoute } from "./lib/lazyRoute";
@@ -126,14 +127,18 @@ export const appRoutes: RouteObject[] = [
   },
 ];
 
-export function App({ authFailed }: { authFailed: boolean }) {
+export function App() {
   const [qc] = useState(createQueryClient);
   const [router] = useState(() => createBrowserRouter(appRoutes));
   return (
     <QueryClientProvider client={qc}>
-      <AuthGate authFailed={authFailed}>
-        <RouterProvider router={router} />
-      </AuthGate>
+      <AuthBoot boot={appBoot}>
+        {(authFailed) => (
+          <AuthGate authFailed={authFailed}>
+            <RouterProvider router={router} />
+          </AuthGate>
+        )}
+      </AuthBoot>
       <Toaster />
     </QueryClientProvider>
   );

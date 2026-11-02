@@ -194,7 +194,10 @@ func TestAppCannotTouchSchemaOrMigrations(t *testing.T) {
 	conn := connect(t, appURL)
 	for _, stmt := range []string{
 		"CREATE TABLE evil (id int)",
-		"SELECT * FROM goose_db_version",
+		// Reading the version is allowed (the schema gate); changing it isn't.
+		"INSERT INTO goose_db_version (version_id, is_applied) VALUES (999999, true)",
+		"UPDATE goose_db_version SET version_id = 1",
+		"DELETE FROM goose_db_version",
 		"DELETE FROM river_migration",
 		"ALTER TABLE project DISABLE ROW LEVEL SECURITY",
 	} {

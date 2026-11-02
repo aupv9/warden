@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/web-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sign-in settings for the web UI (public)
+         * @description What the bundled web UI needs before anyone signs in: the OIDC issuer and the public client it signs in with. Public on purpose (no token exists yet): it returns only values a browser sees during sign-in anyway, never a secret, and the same body to every caller.
+         */
+        get: operations["getWebConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me": {
         parameters: {
             query?: never;
@@ -2111,6 +2131,20 @@ export interface components {
                 display_name: string;
             } | null;
         };
+        /** @description OIDC settings for the browser's authorization-code flow with PKCE. issuer is the server's oidc.issuer, so the UI and the API always trust the same provider. */
+        WebConfig: {
+            /**
+             * Format: uri
+             * @description OIDC issuer URL (WARDEN_OIDC__ISSUER).
+             */
+            issuer: string;
+            /** @description Public OIDC client of the web UI (WARDEN_WEB__OIDC_CLIENT_ID). */
+            client_id: string;
+            /** @description Scopes the UI requests (WARDEN_WEB__OIDC_SCOPE), space-separated; includes openid. */
+            scope: string;
+            /** @description Sent as the `audience` authorization parameter when set (WARDEN_WEB__OIDC_AUDIENCE; Auth0 needs it for a JWT access token). Null: not sent. */
+            audience: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -2120,6 +2154,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getWebConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["WebConfig"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     getMe: {
         parameters: {
             query?: never;

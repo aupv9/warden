@@ -71,12 +71,43 @@ All notable changes to Warden are listed here. The format follows
   `Gate.blocking_new` marks the blocking issues a scan created or reopened.
 - Web UI: history issues ("Found in git history"), the Integrations page, and CI setup switches
   for PR/MR comments and nightly history scans.
+- Production deployment with Docker Compose (`deploy/compose/`): profiles `core` (Postgres,
+  migrate, API with the web UI, Caddy with automatic TLS), `s3` (SeaweedFS), `scanner` (the
+  worker on `runsc`, ideally on a dedicated scan VM) and `mirror` (daily sync, systemd timer);
+  `scripts/gen-secrets.sh` and `scripts/scanner-images.sh`.
+- The release image bundles the web UI in `warden-api` (`-tags webui`, served with its own
+  Content Security Policy built from the identity provider's discovery document) and a pinned
+  static `docker` CLI for the worker.
+- `GET /api/v1/web-config`: the web UI reads its OIDC client settings at run time
+  (`WARDEN_WEB__OIDC_CLIENT_ID`, `__OIDC_SCOPE`, `__OIDC_AUDIENCE`) and shows "Can't reach the
+  server's sign-in settings" if it can't.
+- `WARDEN_STORAGE__PUBLIC_ENDPOINT`: presigned URLs for the store's public name while the API and
+  worker use the internal endpoint.
+- `WARDEN_APP__ENV=prod` refuses `runc`, plain-http sign-in and public URLs, and placeholder
+  secrets; the worker also refuses scanners without an image, checks Docker for the runtime,
+  pulls missing pinned images and removes containers and scratch directories of scans that are
+  no longer running (scanner containers are labelled `warden.scan`).
+- Schema gate: the API and worker refuse a database migrated by a newer Warden; on an older one
+  the API isn't ready and the worker takes no jobs until `warden-migrate` runs.
+  `warden-migrate status`.
+- Prometheus metrics on an internal listener (`WARDEN_ADMIN__ADDR`), with the worker's
+  `/healthz` and `/readyz` and `warden-worker -healthcheck`: scans, scan duration, queue depth,
+  tool runs, webhook deliveries, notifications sent and feed age, with no org or project labels.
+- `make build-webui`, `make image`, `make image-smoke`; CI smoke-tests the image and the
+  production compose on gVisor.
 
 ### Changed
 
 - CI blocks un-baselined High self-scan findings on every pull request, not only on tags.
 - Trivy writes one JSON report; the SARIF and the SBOM are converted from it. Vulnerability
   fingerprints are unchanged.
+- The web UI no longer takes `VITE_OIDC_*` at build time (and no longer falls back to a
+  localhost Keycloak); set `WARDEN_WEB__OIDC_*` on the API instead. Fonts are no longer inlined
+  as `data:` URLs.
+- Redis is gone from the dev stack and `.env.example` (nothing used it).
+- `sync-mirror.sh` falls back to CISA's `cisagov/kev-data` copy on GitHub when the KEV feed at
+  cisa.gov fails (`WARDEN_KEV_FALLBACK_URL`).
+- `warden_app` may read `goose_db_version` (for the schema gate).
 
 ### Fixed
 
@@ -85,6 +116,8 @@ All notable changes to Warden are listed here. The format follows
   `WARDEN_SCAN__UPLOAD_MAX_MB` said.
 - The auto-close guard applies only when a scan would fix 5 or more issues, so a small
   project fixing its only finding gets it closed.
+- The arm64 release image contained amd64 binaries (`ARG TARGETARCH=amd64` overrode
+  BuildKit's value).
 
 - REST API for the first usable release (OpenAPI 3.1 at `/api/v1/openapi.json`):
   - sign-in provisions the user; orgs are created by an operator with
