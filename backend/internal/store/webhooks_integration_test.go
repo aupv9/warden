@@ -101,13 +101,20 @@ func TestWebhooksAgainstSchema(t *testing.T) {
 	if _, err := svc.TestWebhook(ctx, admin, id); code(err) != "RATE_LIMITED" {
 		t.Fatal(err)
 	}
-	page1, err := svc.WebhookDeliveries(ctx, admin, id, service.PageParams{Limit: "6"})
+	page1, err := svc.WebhookDeliveries(ctx, admin, id, service.DeliveryFilter{PageParams: service.PageParams{Limit: "6"}})
 	if err != nil || len(page1.Items) != 6 || page1.NextCursor == nil || page1.Items[0].NextAttemptAt == nil {
 		t.Fatal(page1, err)
 	}
-	page2, err := svc.WebhookDeliveries(ctx, admin, id, service.PageParams{Limit: "6", Cursor: *page1.NextCursor})
+	page2, err := svc.WebhookDeliveries(ctx, admin, id, service.DeliveryFilter{PageParams: service.PageParams{Limit: "6", Cursor: *page1.NextCursor}})
 	if err != nil || len(page2.Items) != 4 || page2.NextCursor != nil || !page2.Items[0].CreatedAt.T().Before(page1.Items[5].CreatedAt.T()) {
 		t.Fatal(page2, err)
+	}
+	// The state filter: all ten are pending.
+	if p, err := svc.WebhookDeliveries(ctx, admin, id, service.DeliveryFilter{State: "pending"}); err != nil || len(p.Items) != 10 {
+		t.Fatal(p, err)
+	}
+	if p, err := svc.WebhookDeliveries(ctx, admin, id, service.DeliveryFilter{State: "failed"}); err != nil || len(p.Items) != 0 {
+		t.Fatal(p, err)
 	}
 	one, err := svc.Webhook(ctx, admin, id)
 	if err != nil || one.LastDelivery == nil || one.LastDelivery.State != "pending" {
