@@ -1170,45 +1170,13 @@ const routes: [string, RegExp, Handler][] = [
     "GET",
     new RegExp(`^${O}/issues$`),
     (m, url) => {
-      const sp = url.searchParams;
-      const statuses = sp.getAll("status");
-      const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
-      const q = (sp.get("q") ?? "").toLowerCase();
-      const base = db.issues.filter(
-        (i) =>
-          want.includes(i.status) &&
-          inOrg(m[1]!, i.project_id) &&
-          (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
-          (!sp.get("tool") || i.tool === sp.get("tool")) &&
-          (sp.get("past_sla") !== "true" || i.past_sla) &&
-          // v0.3
-          (sp.get("kev") !== "true" || i.kev) &&
-          (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
-          (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
-          // v0.4 wave 2: history issues have the target "(history)".
-          (!sp.get("source") ||
-            (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
-          (!sp.get("target") || i.target === sp.get("target")) &&
-          (!sp.get("assignee") ||
-            (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
-          (!q || [i.title, i.rule_id, i.file_path ?? "", i.key].some((s) => s.toLowerCase().includes(q))),
-      );
-      const sev = sp.getAll("severity");
-      const filtered = sev.length ? base.filter((i) => sev.includes(i.severity)) : base;
-      const sort = sp.get("sort") ?? "due_at";
-      const sorted = [...filtered].sort((a, b) =>
-        sort === "-epss"
-          ? (b.epss ?? -1) - (a.epss ?? -1) || (a.due_at ?? "9").localeCompare(b.due_at ?? "9")
-          : sort === "-severity"
-          ? SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)
-          : sort === "-updated_at"
-            ? b.updated_at.localeCompare(a.updated_at)
-            : (a.due_at ?? "9").localeCompare(b.due_at ?? "9"),
-      );
+      const { base, sorted } = queryIssues(m[1]!, url.searchParams);
       const { items, next_cursor } = page(sorted, url);
       return { items: items.map(({ id }) => summary(findIssue(id))), next_cursor, counts_by_severity: counts(base) };
     },
   ],
+  // v0.5 wave 2: before /issues/{id}, which would take "export.csv" for an id.
+  ["GET", new RegExp(`^${O}/issues/export\\.csv$`), (m, url) => exportCsv(m[1]!, url)],
   [
     "POST",
     new RegExp(`^${O}/issues/assign$`),
@@ -1360,6 +1328,99 @@ const routes: [string, RegExp, Handler][] = [
   ],
 ];
 
+/** GET /issues and (v0.5 wave 2) GET /issues/export.csv: the same filters and order. */
+function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorted: Issue[] } {
+  const statuses = sp.getAll("status");
+  const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
+  const q = (sp.get("q") ?? "").toLowerCase();
+  const base = db.issues.filter(
+    (i) =>
+      want.includes(i.status) &&
+      inOrg(orgId, i.project_id) &&
+      (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
+      (!sp.get("tool") || i.tool === sp.get("tool")) &&
+      (sp.get("past_sla") !== "true" || i.past_sla) &&
+      // v0.3
+      (sp.get("kev") !== "true" || i.kev) &&
+      (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
+      (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
+      // v0.4 wave 2: history issues have the target "(history)".
+      (!sp.get("source") ||
+        (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
+      (!sp.get("target") || i.target === sp.get("target")) &&
+      (!sp.get("assignee") ||
+        (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
+      (!q || [i.title, i.rule_id, i.file_path ?? "", i.key].some((s) => s.toLowerCase().includes(q))),
+  );
+  const sev = sp.getAll("severity");
+  const filtered = sev.length ? base.filter((i) => sev.includes(i.severity)) : base;
+  const sort = sp.get("sort") ?? "due_at";
+  const sorted = [...filtered].sort((a, b) =>
+    sort === "-epss"
+      ? (b.epss ?? -1) - (a.epss ?? -1) || (a.due_at ?? "9").localeCompare(b.due_at ?? "9")
+      : sort === "-severity"
+      ? SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)
+      : sort === "-updated_at"
+        ? b.updated_at.localeCompare(a.updated_at)
+        : (a.due_at ?? "9").localeCompare(b.due_at ?? "9"),
+  );
+  return { base, sorted };
+}
+
+const CSV_COLUMNS = ["key", "project", "title", "severity", "status", "tool", "rule_id", "file_path", "line", "target", "cve", "kev", "epss", "assignee", "due_at", "created_at", "updated_at"];
+
+/** A CSV cell as the server writes it: a spreadsheet would read a cell starting with =, +, -, @,
+ *  tab or carriage return as a formula, so those get an apostrophe; then RFC 4180 quoting. */
+function csvCell(v: string | number | boolean | string[] | null | undefined): string {
+  let s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(" ") : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** GET /issues/export.csv: the list's filters, fixed columns, an attachment. `?mock_export=`
+ *  marks it truncated or makes it fail (fixtures.ts mockFlags). */
+function exportCsv(orgId: string, url: URL): Response {
+  const flag = db.mockFlags.export;
+  if (flag === "rate_limited") return envelope(429, null, { code: "RATE_LIMITED", message: "rate limited" }, { "Retry-After": "120" });
+  const epss = url.searchParams.get("epss_min");
+  if (flag === "invalid" || (epss !== null && !(Number(epss) >= 0 && Number(epss) <= 1))) {
+    return envelope(422, null, { code: "VALIDATION_FAILED", message: "validation failed", metadata: { fields: { epss_min: "a number from 0 to 1" } } });
+  }
+  const { sorted } = queryIssues(orgId, url.searchParams);
+  const rows = sorted.map((i) =>
+    [
+      i.key,
+      findProject(i.project_id).key,
+      i.title,
+      i.severity,
+      i.status,
+      i.tool,
+      i.rule_id,
+      i.file_path,
+      i.start_line,
+      i.target,
+      i.cve,
+      i.kev,
+      i.epss,
+      i.assignee?.email,
+      i.due_at,
+      // The mock's issues have no created_at; the first scan that found it stands in.
+      i.first_seen_scan.created_at,
+      i.updated_at,
+    ]
+      .map(csvCell)
+      .join(","),
+  );
+  const org = orgOf(orgId);
+  const slug = org.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const headers: Record<string, string> = {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="warden-issues-${slug}-${new Date().toISOString().slice(0, 10)}.csv"`,
+  };
+  if (flag === "truncated") headers["X-Warden-Truncated"] = "true";
+  return new Response([CSV_COLUMNS.join(","), ...rows, ""].join("\r\n"), { status: 200, headers });
+}
+
 /** v0.4: Trivy issues are license-policy issues, malicious packages or vulnerabilities. */
 function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
   return ruleId.startsWith("license:") ? "license" : ruleId.startsWith("malicious:") ? "malicious" : "vulnerability";
@@ -1397,6 +1458,8 @@ export const mockFetch: typeof fetch = async (input, init) => {
     if (match[1] === db.ORG3_ID) return envelope(403, null, { code: "MFA_REQUIRED", message: "Your role requires two-factor sign-in." });
     try {
       const out = handler(match, url, body);
+      // A file (v0.5 wave 2: the CSV export) is answered as it is, not in the envelope.
+      if (out instanceof Response) return out;
       if (Array.isArray(out) && out.length === 2 && typeof out[0] === "number") return envelope(out[0], out[1], null);
       return envelope(200, out, null);
     } catch (e) {
