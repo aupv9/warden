@@ -157,6 +157,22 @@ func TestPathTooDeepOrTooLong(t *testing.T) {
 	}
 }
 
+// Found by FuzzExtractNames: a component longer than NAME_MAX failed the
+// write with ENAMETOOLONG, an internal error instead of a rejected upload; so
+// did a renamed one that the digest suffix pushed over the limit.
+func TestPathComponentTooLong(t *testing.T) {
+	for _, name := range []string{strings.Repeat("a", MaxNameBytes+1), "d/" + strings.Repeat("a", MaxNameBytes+1) + "/f.py",
+		"AA" + strings.Repeat("\xc7", 250)} {
+		if code := rejected(t, makeZip(t, entry{name: name, data: []byte("1")})); code != "ZIP_PATH_TRAVERSAL" {
+			t.Fatalf("code %s", code)
+		}
+	}
+	res, _ := extract(t, makeZip(t, entry{name: strings.Repeat("a", MaxNameBytes), data: []byte("1")}))
+	if res.Files != 1 {
+		t.Fatal(res.Files)
+	}
+}
+
 func TestNULInName(t *testing.T) {
 	zp := makeZip(t, entry{name: "aXb.py", data: []byte("1")})
 	patchFile(t, zp, func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("aXb.py"), []byte("a\x00b.py")) })
