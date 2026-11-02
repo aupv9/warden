@@ -6,6 +6,31 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `GET …/issues/export.csv`: the issue list as CSV with its filters and visibility, fixed
+  columns without descriptions or snippets, at most 50,000 rows, 30 per user per hour, audited
+  (`issues.exported`), spreadsheet formulas defused; an Export CSV button on the issue list.
+- `POST …/audit-log/verify` and a Verify chain button on the audit log (10 per org per hour,
+  audited as `audit.verified`).
+- `GET /orgs/{org}/targets` (the issue list's Image filter without a project in scope) and
+  `GET …/components/ecosystems` (the inventory's ecosystem filter, with counts).
+- Webhook delivery log filter `?state=pending|delivered|failed`.
+- Backups: `scripts/backup.sh`, `scripts/restore.sh` (empty databases only, manifest checked)
+  and `make backup-drill`; README sections on backups, upgrading and rollback.
+- Job `prune_notifications` (`WARDEN_NOTIFY__READ_RETENTION`, 90 days;
+  `WARDEN_NOTIFY__UNREAD_RETENTION`, 365 days), through the `SECURITY DEFINER` function
+  `warden_prune_notifications()` (migration 00013); the app role still can't delete them.
+
+### Changed
+
+- `POST …/issues/assign` returns `skipped` next to `updated`.
+- `POST …/webhooks` answers `409 WEBHOOK_LIMIT` or `409 SECRETS_KEY_MISSING` instead of
+  `CONFLICT`; updating or rotating a webhook without `secrets.key` is `SECRETS_KEY_MISSING`.
+- A project's component list puts malicious components first; cursors from earlier versions
+  are refused (`422`).
+- River keeps completed and cancelled jobs 7 days and discarded ones 30 days.
+
 ## [0.5.0-alpha.1] - 2026-11-02
 
 ### Added

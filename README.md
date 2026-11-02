@@ -173,8 +173,29 @@ Metrics have no org, project or user labels:
 | `warden_notifications_sent_total` | `channel` (`in_app`, `email`, `webhook`) |
 | `warden_intel_feed_age_seconds` (worker) | `source`; grows when the mirror stops being refreshed |
 
-**Upgrading.** Stop the worker (it finishes running scans), run `migrate`, then start the
-API and worker with the new image.
+**Backups.** Everything that matters is in Postgres; uploads are short-lived and SBOMs come
+back with the next scan. `scripts/backup.sh --container warden-postgres-1 DIR` writes a
+`pg_dump` (custom format) and a manifest with its SHA-256 and schema version, mode 600 in a
+directory of mode 700 (the role must bypass RLS, such as the Compose owner, or the dump fails
+rather than coming out partial). Keep `.env` apart from the dumps: `WARDEN_SCAN__HMAC_KEY`
+(lose it and every secret's fingerprint changes), `WARDEN_SECRETS__KEY` (lose it and webhooks
+must be recreated), the role passwords and the OIDC settings are not in the database.
+`scripts/restore.sh` restores into an empty database only (start just `postgres` on a fresh
+volume), checks the manifest first, and the next `migrate` restores the app role's grants.
+`make backup-drill` rehearses it end to end with throwaway databases: backup, restore,
+`warden-migrate status`, `warden-admin audit verify`, equal row counts, grants and RLS.
+
+**Upgrading.** Take a backup, stop the worker (it finishes running scans), run `migrate`,
+then start the API and worker with the new image. To roll back, restore the pre-upgrade dump
+into a fresh database and run the previous image: there are no down migrations in production,
+and migrations within a minor version only add.
+
+**Retention.** In-app notifications are deleted by `prune_notifications` once read and older
+than `WARDEN_NOTIFY__READ_RETENTION` (90 days), or unread and older than
+`WARDEN_NOTIFY__UNREAD_RETENTION` (365 days), with the outbox events nothing refers to any more.
+The app role can't delete them itself: the job goes through a `SECURITY DEFINER` function that
+refuses anything younger than a day. River keeps finished jobs 7 days and discarded ones 30.
+Scans, issues and the audit log are never deleted.
 
 ## Configuration
 
@@ -222,6 +243,7 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SECRETS__OLD_KEYS` | | Comma-separated older keys, used only to decrypt (see "Webhooks and Slack") |
 | `WARDEN_WEBHOOK__ALLOW_HOSTS` | | Development only: exact host names or IPs (no scheme or port) that webhooks may reach over `http` and at private addresses. The worker logs a warning when it is set |
 | `WARDEN_WEBHOOK__FAILURE_LIMIT` | `10` | Failed deliveries in a row before a webhook is turned off (1–1000) |
+| `WARDEN_NOTIFY__READ_RETENTION` / `WARDEN_NOTIFY__UNREAD_RETENTION` | `2160h` / `8760h` | How long read and unread in-app notifications are kept (at least `24h`) |
 | `WARDEN_LOG__LEVEL` / `WARDEN_LOG__FORMAT` | `info` / `json` | |
 | `WARDEN_OTEL__ENABLED` | `false` | OpenTelemetry traces and metrics |
 
@@ -323,15 +345,16 @@ endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 | `/orgs/{org_id}/members` | Org members and roles (`org_admin`, `security_lead`, `member`) |
 | `/orgs/{org_id}/projects` | Projects, their members (`owner`, `developer`, `viewer`), scans, auto-assign rules, archiving |
 | `/orgs/{org_id}/projects/{id}/tokens` | API tokens for CI: list, create (the secret is shown once), revoke |
-| `/orgs/{org_id}/projects/{id}/components`, `/targets` | The project's current components, and its source and image targets |
+| `/orgs/{org_id}/projects/{id}/components`, `/targets` | The project's current components (malicious ones first), and its source and image targets |
+| `/orgs/{org_id}/targets` | Every visible project's targets (for the org-wide Image filter) |
 | `/orgs/{org_id}/scans/{id}` | Scan status, `start`, `cancel`, the CI `gate`, and the `sbom` download link |
-| `/orgs/{org_id}/components`, `/components/usage` | Search the component inventory, and where a component is used |
+| `/orgs/{org_id}/components`, `/components/usage`, `/components/ecosystems` | Search the component inventory, where a component is used, and which ecosystems it holds |
 | `/orgs/{org_id}/license-policy` | The org's license policy (any member reads it, security leads change it) |
 | `/orgs/{org_id}/vuln-data` | How fresh the Trivy DB, CISA KEV, FIRST EPSS and OSV malicious-package data are |
-| `/orgs/{org_id}/issues` | Issues: filters, counts, transitions, bulk assignment, comments, history |
+| `/orgs/{org_id}/issues` | Issues: filters, counts, transitions, bulk assignment (with a skipped count), comments, history, and `export.csv` |
 | `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
 | `/orgs/{org_id}/webhooks` | Webhooks and Slack channels (org admins, security leads): create (a generic webhook's signing secret is shown once), change, `rotate-secret`, `test`, `deliveries` |
-| `/orgs/{org_id}/audit-log` | Hash-chained audit log |
+| `/orgs/{org_id}/audit-log` | Hash-chained audit log, and `POST …/verify` to check the chain |
 
 How it behaves:
 
@@ -389,8 +412,19 @@ How it behaves:
 - **Errors** carry a stable `error.code`: `UNAUTHORIZED`, `FORBIDDEN`, `MFA_REQUIRED`,
   `MFA_NOT_ENABLED`, `TOKEN_SCOPE`, `NOT_FOUND`, `VALIDATION_FAILED` (with `metadata.fields`), `CONFLICT`,
   `VERSION_CONFLICT`, `INVALID_TRANSITION`, `USER_NOT_FOUND`, `UPLOAD_MISMATCH`,
-  `RATE_LIMITED`, `PROJECT_ARCHIVED`. Unknown JSON fields are rejected; internal errors are logged and returned as
-  a generic `500`.
+  `RATE_LIMITED`, `PROJECT_ARCHIVED`, `WEBHOOK_LIMIT`, `SECRETS_KEY_MISSING`. Unknown JSON fields are
+  rejected; internal errors are logged and returned as a generic `500`.
+- **CSV export.** `GET …/issues/export.csv` takes the issue list's filters and visibility and
+  returns fixed columns (key, project, title, severity, status, tool, rule, path, line, target,
+  CVE, KEV, EPSS, assignee, dates): never descriptions, snippets or comments. At most 50,000
+  rows (`X-Warden-Truncated: true` when cut), 30 exports per user per hour, audited as
+  `issues.exported` with the filters and row count; not for API tokens. Text from scanned code
+  is defused for spreadsheets: a cell whose first visible character is `=`, `+`, `-` or `@`
+  (or a full-width form) gets a leading `'`; control and line-break characters become spaces,
+  and bidi controls are dropped.
+- **Audit verification.** `POST …/audit-log/verify` (org admins, security leads; 10 per org per
+  hour) recomputes the org's hash chain like `warden-admin audit verify` and returns
+  `{ok, entries, first_bad_id, verified_at}`; the check is recorded as `audit.verified`.
 - Lists take `?limit=` (default 50, max 200) and an opaque `?cursor=`, and return
   `{ "items": [...], "next_cursor": … }`.
 - **Policy and automation.** Security leads set the SLA days per severity
@@ -705,6 +739,7 @@ card (Project settings) builds both snippets for a project.
 | `make build` | Static binaries in `backend/bin` |
 | `make build-webui` | `warden-api` with the web UI bundled (`-tags webui`; `make web-dist` builds the UI) |
 | `make image` / `make image-smoke` | The container image `warden:dev`, and a smoke test of it: the UI and its CSP, `web-config`, the `docker` CLI |
+| `make backup-drill` | Backup and restore rehearsal with throwaway Postgres containers (Docker only) |
 | `make e2e` | End-to-end smoke test against the running dev stack (`make up`, `migrate`, `api`, `worker`, `mirror`); creates a new org each run |
 
 Code that handles hostile input (`zipcheck`, `imagecheck`, `sarif`, `trivyjson`, `sbom`,
@@ -810,6 +845,11 @@ Changes that weaken one of these need an explicit discussion in the pull request
   refuses `runc`, plain-http sign-in and public URLs, and placeholder secrets.
 - The admin listener (`/metrics`, worker health) is internal only, and metrics carry no
   org, project or user labels.
+- Scans, issues and the audit log are never deleted. The app role can't delete notifications or
+  outbox events; old ones go only through `warden_prune_notifications()`, which works in one org
+  and refuses anything younger than a day.
+- The CSV export holds no descriptions, snippets or comments, defuses spreadsheet formulas in
+  text from scanned code, and is audited; API tokens can't use it.
 - Gitleaks is the only secret scanner, and raw secrets never leave its sandbox.
 - Uploaded code can't configure its own scan.
 - Every business table has `org_id` under forced RLS. The app role has no `BYPASSRLS` and
