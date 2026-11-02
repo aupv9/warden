@@ -241,6 +241,7 @@ func DockerArgv(spec ToolSpec, c RunConfig) ([]string, error) {
 	argv := []string{
 		"docker", "run", "--rm",
 		"--name", ContainerName(c.ScanID, spec.Name),
+		"--label", LabelScan + "=" + c.ScanID,
 		"--runtime=" + c.Runtime,
 		"--network=none",
 		"--read-only",
