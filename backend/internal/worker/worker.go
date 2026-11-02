@@ -17,6 +17,10 @@ import (
 
 const (
 	QueueScan = "scan"
+	// How long River keeps finished jobs (see Config).
+	CompletedJobRetention = 7 * 24 * time.Hour
+	CancelledJobRetention = 7 * 24 * time.Hour
+	DiscardedJobRetention = 30 * 24 * time.Hour
 	// MaxScanAttempts: a scan whose worker died is retried exactly once.
 	MaxScanAttempts = 2
 )
@@ -106,7 +110,17 @@ type Options struct {
 // Config builds the River configuration. ScanSlots=0 gives an insert-only
 // client (the API enqueues scans but doesn't run them).
 func Config(opts Options) (*river.Config, error) {
-	cfg := &river.Config{}
+	cfg := &river.Config{
+		// River's defaults delete completed and cancelled jobs after 24 hours and
+		// discarded ones after 7 days. A discarded job is the only record of work
+		// that failed every attempt (a scan whose worker died twice, an org whose
+		// dispatch keeps failing), so it is kept a month for whoever investigates;
+		// completed and cancelled jobs a week, to see what ran around an incident.
+		// Set explicitly so a River upgrade can't change them silently.
+		CompletedJobRetentionPeriod: CompletedJobRetention,
+		CancelledJobRetentionPeriod: CancelledJobRetention,
+		DiscardedJobRetentionPeriod: DiscardedJobRetention,
+	}
 	if opts.ScanSlots <= 0 {
 		return cfg, nil
 	}
