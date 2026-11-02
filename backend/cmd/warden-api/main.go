@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	cgauth "github.com/aupv9/common-go/auth"
 	"github.com/aupv9/common-go/transport/httpserver"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -31,6 +33,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/store"
 	"github.com/aupv9/warden/backend/internal/webhook"
+	"github.com/aupv9/warden/backend/internal/webui"
 	"github.com/aupv9/warden/backend/internal/worker"
 )
 
@@ -67,13 +70,10 @@ func appOptions(cfg *config.Config) fx.Option {
 		fx.Provide(func(pool *pgxpool.Pool) (*river.Client[pgx.Tx], error) {
 			return worker.NewClient(pool, worker.Options{})
 		}),
-		fx.Provide(func(c *config.Config) (api.ObjectStore, error) {
-			client, err := storage.New(storage.FromSection(c.Storage))
-			if err != nil {
-				return nil, err
-			}
-			return objectStore{client}, nil
+		fx.Provide(func(c *config.Config) (*storage.Client, error) {
+			return storage.New(storage.FromSection(c.Storage))
 		}),
+		fx.Provide(func(client *storage.Client) api.ObjectStore { return objectStore{client} }),
 		fx.Provide(func(c *config.Config, pool *pgxpool.Pool, jobs *river.Client[pgx.Tx], objects api.ObjectStore, keys *auth.JWKS, log *slog.Logger) *service.Service {
 			sc := ServiceConfig(c)
 			sc.SignIn.KeyStatus = func() service.KeyStatus {
@@ -82,8 +82,43 @@ func appOptions(cfg *config.Config) fx.Option {
 			}
 			return service.New(store.New(pool, jobs), objects, sc, log)
 		}),
-		fx.Invoke(api.Register),
+		fx.Invoke(func(e *gin.Engine, v cgauth.Verifier, svc *service.Service, c *config.Config, objects *storage.Client) error {
+			opts, err := webOptions(c, objects, webui.Embedded())
+			if err != nil {
+				return err
+			}
+			api.Register(e, v, svc, opts...)
+			return nil
+		}),
 	)
+}
+
+// webOptions are the web UI's sign-in settings, and the UI itself when this
+// binary bundles one (built with -tags webui). Its CSP allows the issuer and
+// the origin presigned URLs point at, both from server configuration.
+func webOptions(c *config.Config, objects *storage.Client, dist fs.FS) ([]api.Option, error) {
+	wc := api.WebConfig{Issuer: c.OIDC.Issuer, ClientID: c.Web.OIDCClientID, Scope: c.Web.OIDCScope}
+	if c.Web.OIDCAudience != "" {
+		aud := c.Web.OIDCAudience
+		wc.Audience = &aud
+	}
+	opts := []api.Option{api.WithWebConfig(wc)}
+	if dist == nil {
+		return opts, nil
+	}
+	storageOrigin, err := objects.PublicOrigin(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	csp, err := webui.CSP(c.OIDC.Issuer, storageOrigin)
+	if err != nil {
+		return nil, fmt.Errorf("web UI: %w", err)
+	}
+	ui, err := webui.New(dist, csp)
+	if err != nil {
+		return nil, err
+	}
+	return append(opts, api.WithUI(ui)), nil
 }
 
 // ServiceConfig maps the configuration to the service's settings.
