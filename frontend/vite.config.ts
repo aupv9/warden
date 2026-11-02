@@ -12,6 +12,10 @@ export default defineConfig({
   build: {
     // No source maps in the shipped bundle.
     sourcemap: false,
+    // The server's CSP has `font-src 'self'` (no data:), so fonts must stay files; Vite would
+    // otherwise inline the small @fontsource subsets into the CSS as data: URLs. Other small
+    // assets may still be inlined (`img-src 'self' data:`).
+    assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf|eot)$/i.test(file) ? false : undefined),
     rolldownOptions: {
       output: {
         // Pages are lazy chunks (App.tsx). The libraries every page needs go into a few vendor
