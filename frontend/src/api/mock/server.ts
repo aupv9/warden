@@ -289,6 +289,21 @@ function listComponents(orgId: string, url: URL) {
   return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
 }
 
+/** GET /components/ecosystems: distinct (name, version) pairs per ecosystem in the visible
+ *  inventory, most first. */
+function componentEcosystems(orgId: string) {
+  const ids = new Set(visibleProjects(orgId).map((p) => p.id));
+  const pairs = new Map<string, Set<string>>();
+  for (const r of db.inventory) {
+    if (!ids.has(r.project_id)) continue;
+    const set = pairs.get(r.ecosystem) ?? new Set<string>();
+    set.add(`${matchName(r.ecosystem, r.name)}\u0000${r.version}`);
+    pairs.set(r.ecosystem, set);
+  }
+  const items = [...pairs.entries()].map(([ecosystem, s]) => ({ ecosystem, components: s.size }));
+  return { items: items.sort((a, b) => b.components - a.components || a.ecosystem.localeCompare(b.ecosystem)) };
+}
+
 function componentUsage(orgId: string, url: URL) {
   const sp = url.searchParams;
   const eco = sp.get("ecosystem") ?? "";
@@ -649,6 +664,22 @@ const routes: [string, RegExp, Handler][] = [
   ["GET", new RegExp(`^${O}/components/usage$`), (m, url) => componentUsage(m[1]!, url)],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/components$`), (m, url) => projectComponents(m[1]!, orgProject(m[1]!, m[2]!), url)],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/targets$`), (m) => projectTargets(orgProject(m[1]!, m[2]!))],
+  // v0.5 wave 2: every visible project's targets (the issue list's visibility), ?kind=.
+  [
+    "GET",
+    new RegExp(`^${O}/targets$`),
+    (m, url) => {
+      const kind = url.searchParams.get("kind");
+      if (kind !== null && !["source", "image", "history"].includes(kind)) throw new Fail(422, "VALIDATION_FAILED", { kind: "source, image or history" });
+      const items = [...visibleProjects(m[1]!)]
+        .sort((a, b) => a.key.localeCompare(b.key))
+        .flatMap((p) => projectTargets(p).items.map((t) => ({ project_id: p.id, project_key: p.key, project_name: p.name, ...t })))
+        .filter((t) => !kind || t.kind === kind);
+      return { items };
+    },
+  ],
+  // v0.5 wave 2: the ecosystems in the visible inventory, most components first.
+  ["GET", new RegExp(`^${O}/components/ecosystems$`), (m) => componentEcosystems(m[1]!)],
   // ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
   ["GET", new RegExp(`^${O}/webhooks$`), (m) => ({ items: requireIntegrations(m[1]!), available: !db.mockFlags.integrationsUnavailable })],
   [

@@ -4408,6 +4408,12 @@ fieldset.policy-section > legend.policy-head + * {
   padding: 8px 10px;
   max-width: 260px;
 }
+/* v0.5 wave 2: a project heading in the org-wide Image filter. */
+.menu-group-label {
+  margin: 0;
+  padding: 8px 8px 2px;
+  font-weight: 500;
+}
 
 /* An on/off filter beside selects (desktop); the phone sheet uses a checkbox instead. */
 .toggle-chip {

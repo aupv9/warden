@@ -1,7 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { Link, useLocation, useMatch, useNavigate, useSearchParams } from "react-router";
-import { useProjectTargets } from "../api/hooks/components";
+import { useOrgImageTargets, useProjectTargets } from "../api/hooks/components";
 import { useIssues } from "../api/hooks/issues";
 import { useOrgMembers } from "../api/hooks/orgs";
 import { useProjects } from "../api/hooks/projects";
@@ -28,6 +28,7 @@ import {
   EPSS_PRESETS,
   epssMinText,
   hasActiveFilters,
+  imageTargetGroups,
   ISSUE_KINDS,
   ISSUE_SOURCES,
   issueFilterQuery,
@@ -42,8 +43,8 @@ import {
   SOURCE_LABELS,
   toggleSeverity,
 } from "../lib/issueFilters";
-import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, StatusFilter } from "../lib/issueFilters";
-import { formatEpss, isImageTarget, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
+import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, StatusFilter, TargetGroup } from "../lib/issueFilters";
+import { formatEpss, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
 import { isMaliciousIssue } from "../lib/malicious";
 import { isHistoryIssue } from "../lib/history";
 import { runIssueExport } from "../lib/issueExport";
@@ -277,12 +278,14 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
     (filters.epssMin !== null ? 1 : 0) +
     (filters.target ? 1 : 0);
   // v0.4: the Image filter picks from the image repositories scanned in the project in scope
-  // (GET …/targets). The list is per project, so the filter is offered once a project is in
-  // scope; a target already in the URL stays listed so it can be seen and removed.
+  // (GET …/projects/{p}/targets). v0.5 wave 2: without a project in scope, from every visible
+  // project's (GET /orgs/{org}/targets?kind=image), grouped by project. A target already in the
+  // URL stays listed so it can be seen and removed.
   const scopeProject = fixedProject?.id ?? (filters.project || undefined);
   const projectTargets = useProjectTargets(orgId, scopeProject);
-  const imageTargets = (projectTargets.data ?? []).filter((t) => t.kind === "image" && isImageTarget(t.target)).map((t) => t.target);
-  const targets = filters.target && !imageTargets.includes(filters.target) ? [...imageTargets, filters.target] : imageTargets;
+  const orgTargets = useOrgImageTargets(orgId, !scopeProject);
+  const targetGroups = imageTargetGroups(!!scopeProject, projectTargets.data, orgTargets.data, filters.target);
+  const targetsLoading = scopeProject ? projectTargets.isPending : orgTargets.isPending;
 
   const phoneFilters = (
     <>
@@ -324,18 +327,17 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         }
       />
       <Select label="Source" value={filters.source} onChange={(e) => update({ ...filters, source: e.target.value as IssueSourceFilter | "" })} options={SOURCE_OPTIONS} />
-      {scopeProject ? (
-        targets.length > 0 && (
-          <Select
-            label="Image"
-            className="mono"
-            value={filters.target}
-            onChange={(e) => update({ ...filters, target: e.target.value })}
-            options={[{ value: "", label: "Any image" }, ...targets.map((t) => ({ value: t, label: t }))]}
-          />
-        )
-      ) : (
-        <p className="faint small">Pick a project to filter by container image.</p>
+      {targetGroups.length > 0 && (
+        <Select
+          label="Image"
+          className="mono"
+          value={filters.target}
+          onChange={(e) => update({ ...filters, target: e.target.value })}
+          options={[
+            { value: "", label: "Any image" },
+            ...targetGroups.flatMap((g) => g.targets.map((t) => ({ value: t, label: t, group: g.label ?? undefined }))),
+          ]}
+        />
       )}
     </>
   );
@@ -378,8 +380,8 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         projects={fixedProject ? undefined : (projects.data ?? [])}
         members={members.data ?? []}
         meId={me.id}
-        targets={targets}
-        targetsLoading={!!scopeProject && projectTargets.isPending}
+        targetGroups={targetGroups}
+        targetsLoading={targetsLoading}
       />
       <span className="filter-bar-end">
         {canAssign && selected.size > 0 && (
@@ -776,9 +778,9 @@ interface ChipCtx {
   projects?: Project[];
   members: OrgMember[];
   meId: string;
-  /** v0.4: image repositories scanned in the project in scope (GET …/targets); empty when no
-   *  project is in scope. */
-  targets: string[];
+  /** v0.4: image repositories scanned in the project in scope (GET …/targets); v0.5 wave 2:
+   *  without one, every visible project's, grouped by project. */
+  targetGroups: TargetGroup[];
   targetsLoading: boolean;
 }
 
@@ -807,7 +809,7 @@ function FilterChips(ctx: ChipCtx) {
 
   const available: Field[] = (
     ["severity", "status", "project", "assignee", "tool", "pastSla", "kev", "epss", "kind", "source", "target"] as Field[]
-  ).filter((x) => !(x === "project" && !projects) && !(x === "target" && ctx.targets.length === 0) && !chips.some((c) => c.field === x));
+  ).filter((x) => !(x === "project" && !projects) && !(x === "target" && ctx.targetGroups.length === 0) && !chips.some((c) => c.field === x));
 
   return (
     <div className="fchips" role="group" aria-label="Active filters">
@@ -1020,14 +1022,26 @@ function FieldEditor({ field, ctx, close, onBack }: { field: Field; ctx: ChipCtx
       break;
     case "target":
       body =
-        ctx.targets.length > 0 ? (
-          radio(
-            ctx.targets.map((t) => ({ value: t, label: <span className="mono">{t}</span> })),
-            f.target,
-            (v) => ({ ...f, target: v }),
-          )
+        ctx.targetGroups.length > 0 ? (
+          ctx.targetGroups.map((g) => {
+            const items = radio(
+              g.targets.map((t) => ({ value: t, label: <span className="mono">{t}</span> })),
+              f.target,
+              (v) => ({ ...f, target: v }),
+            );
+            return g.label === null ? (
+              <Fragment key="">{items}</Fragment>
+            ) : (
+              <div key={g.label} role="group" aria-label={g.label}>
+                <p className="menu-group-label faint small" aria-hidden="true">
+                  {g.label}
+                </p>
+                {items}
+              </div>
+            );
+          })
         ) : (
-          <p className="faint small menu-note">{ctx.targetsLoading ? "Loading images…" : "Pick a project to filter by container image."}</p>
+          <p className="faint small menu-note">{ctx.targetsLoading ? "Loading images…" : "No container images have been scanned."}</p>
         );
       break;
     case "pastSla":

@@ -41,6 +41,9 @@ export const qk = {
   componentUsage: (orgId: string, query: QueryParams) => ["org", orgId, "components", "usage", query] as const,
   projectComponents: (orgId: string, projectId: string, query: QueryParams) => ["org", orgId, "projects", projectId, "components", query] as const,
   projectTargets: (orgId: string, projectId: string) => ["org", orgId, "projects", projectId, "targets"] as const,
+  // v0.5 wave 2
+  orgTargets: (orgId: string, kind: string) => ["org", orgId, "targets", kind] as const,
+  componentEcosystems: (orgId: string) => ["org", orgId, "components", "ecosystems"] as const,
   // v0.4 wave 2. No key ever holds a webhook URL or signing secret (webhooks.test.ts).
   webhooks: (orgId: string) => ["org", orgId, "webhooks"] as const,
   webhookDeliveries: (orgId: string, webhookId: string) => ["org", orgId, "webhooks", webhookId, "deliveries"] as const,

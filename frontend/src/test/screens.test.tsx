@@ -1154,4 +1154,144 @@ describe("v0.5 wave 2: export, verify, filters", () => {
       db.audit.splice(0, db.audit.length - before);
     }
   });
+
+  it("issue list: Export CSV for everyone who sees the list; the mock exports with the list's filters", async () => {
+    const asMember = { ...db.me, orgs: db.me.orgs.map((o) => (o.id === db.ORG_ID ? { ...o, role: "member" as const } : o)) };
+    expect(text(await render(`${org()}/issues`))).toContain("Export CSV");
+    expect(text(await render(`${org()}/issues`, (qc) => qc.setQueryData(qk.me, asMember)))).toContain("Export CSV");
+    expect(text(await render(`${org()}/projects/${db.projects[0]!.id}/issues`))).toContain("Export CSV");
+
+    const issue = db.issues[0]!;
+    const title = issue.title;
+    issue.title = '=HYPERLINK("https://evil.example","x")';
+    try {
+      const r = await call("GET", `/orgs/${db.ORG_ID}/issues/export.csv?severity=critical&past_sla=true`);
+      expect(r.status).toBe(200);
+      expect(r.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+      expect(r.headers.get("Content-Disposition")).toMatch(/^attachment; filename="warden-issues-acme-engineering-\d{4}-\d{2}-\d{2}\.csv"$/);
+      expect(r.headers.get("X-Warden-Truncated")).toBeNull();
+      const lines = (await r.text()).trim().split("\r\n");
+      expect(lines[0]).toBe("key,project,title,severity,status,tool,rule_id,file_path,line,target,cve,kev,epss,assignee,due_at,created_at,updated_at");
+      // The same filters as the list: two issues match (see "issue list with filters from the URL").
+      expect(lines).toHaveLength(3);
+      // A cell a spreadsheet would run as a formula starts with an apostrophe.
+      expect(lines.join("\n")).toContain(`"'=HYPERLINK(""https://evil.example"",""x"")"`);
+    } finally {
+      issue.title = title;
+    }
+    for (const [flag, status] of [["truncated", 200], ["rate_limited", 429], ["invalid", 422]] as const) {
+      db.mockFlags.export = flag;
+      try {
+        const r = await call("GET", `/orgs/${db.ORG_ID}/issues/export.csv`);
+        expect(r.status).toBe(status);
+        if (flag === "truncated") expect(r.headers.get("X-Warden-Truncated")).toBe("true");
+        if (flag === "rate_limited") expect(r.headers.get("Retry-After")).toBe("120");
+      } finally {
+        db.mockFlags.export = null;
+      }
+    }
+  });
+
+  it("issue list without a project in scope: the Image filter comes from GET /orgs/{org}/targets, grouped by project", async () => {
+    let qc: QueryClient | undefined;
+    await render(`${org()}/issues`, (c) => (qc = c));
+    const rows = qc!.getQueryData<{ items: { project_key: string; target: string; kind: string }[] }>(qk.orgTargets(db.ORG_ID, "image"));
+    expect(rows!.items.map((t) => `${t.project_key} ${t.target}`)).toEqual(["PAY ghcr.io/acme/payments", "WEB ghcr.io/acme/api"]);
+    // With a project in scope the project's own list is used, and the org-wide one isn't asked for.
+    let qc2: QueryClient | undefined;
+    const web = db.projects[0]!;
+    await render(`${org()}/projects/${web.id}/issues`, (c) => (qc2 = c));
+    expect(qc2!.getQueryData(qk.projectTargets(db.ORG_ID, web.id))).toBeDefined();
+    expect(qc2!.getQueryState(qk.orgTargets(db.ORG_ID, "image"))?.data).toBeUndefined();
+    // A target from the URL keeps its chip on the org-wide list.
+    expect(text(await render(`${org()}/issues?target=ghcr.io%2Facme%2Fpayments`))).toContain("Image is ghcr.io/acme/payments");
+
+    // The mock follows the contract: issue-list visibility, archived projects left out, ?kind=.
+    const all = await json(await call("GET", `/orgs/${db.ORG_ID}/targets`));
+    const items = all.data!.items! as { project_id: string; project_key: string; target: string; kind: string }[];
+    expect(new Set(items.map((t) => t.kind))).toEqual(new Set(["source", "image", "history"]));
+    expect(items.map((t) => t.project_key)).toEqual([...items.map((t) => t.project_key)].sort());
+    const archived = db.projects.filter((p) => p.archived_at).map((p) => p.id);
+    expect(items.some((t) => archived.includes(t.project_id))).toBe(false);
+    expect((await call("GET", `/orgs/${db.ORG_ID}/targets?kind=nope`)).status).toBe(422);
+  });
+
+  it("components: the ecosystem filter lists the inventory's ecosystems with counts, and keeps the URL's value", async () => {
+    const eco = await json(await call("GET", `/orgs/${db.ORG_ID}/components/ecosystems`));
+    const items = eco.data!.items! as { ecosystem: string; components: number }[];
+    expect(items.length).toBeGreaterThan(1);
+    // Most first.
+    expect(items.map((i) => i.components)).toEqual([...items.map((i) => i.components)].sort((a, b) => b - a));
+    const top = items[0]!;
+
+    const html = await render(`${org()}/components`);
+    expect(html).toContain(`>${top.ecosystem === "deb" ? "Debian packages (deb)" : top.ecosystem} (${top.components})</option>`);
+    // The fixed list is gone once the inventory's is loaded: RubyGems isn't in the mock inventory.
+    expect(items.some((i) => i.ecosystem === "RubyGems")).toBe(false);
+    expect(html).not.toContain(">RubyGems</option>");
+    // A valid ecosystem from the URL that the inventory doesn't hold stays selectable.
+    const hex = await render(`${org()}/components?ecosystem=hex`);
+    expect(hex).toMatch(/<option value="hex" selected="">hex<\/option>/);
+
+    // Members count only their projects' components.
+    const eng = db.me.orgs.find((o) => o.id === db.ORG_ID)!;
+    const role = eng.role;
+    eng.role = "member";
+    try {
+      const mine = await json(await call("GET", `/orgs/${db.ORG_ID}/components/ecosystems`));
+      const total = (r: J) => (r.data!.items! as { components: number }[]).reduce((n, i) => n + i.components, 0);
+      expect(total(mine)).toBeLessThanOrEqual(total(eco));
+    } finally {
+      eng.role = role;
+    }
+  });
+
+  it("webhook delivery log: ?state= filters the mock's log", async () => {
+    const relay = db.webhooks[db.ORG_ID]!.find((w) => w.name === "Ticket relay")!;
+    const path = `/orgs/${db.ORG_ID}/webhooks/${relay.id}/deliveries`;
+    for (const state of ["pending", "delivered", "failed"]) {
+      const r = await json(await call("GET", `${path}?state=${state}`));
+      expect(r.data!.items!.length).toBeGreaterThan(0);
+      expect(new Set(r.data!.items!.map((d) => d.state))).toEqual(new Set([state]));
+    }
+    expect((await call("GET", `${path}?state=bogus`)).status).toBe(422);
+  });
+
+  it("add webhook: the mock answers WEBHOOK_LIMIT at 20 and SECRETS_KEY_MISSING without a key", async () => {
+    const hooks = `/orgs/${db.ORG_ID}/webhooks`;
+    const body = { kind: "slack", name: "x", url: "https://hooks.slack.com/services/T0/B0/x", events: ["scan.finished"] };
+    db.mockFlags.integrationsUnavailable = true;
+    try {
+      const r = await call("POST", hooks, body);
+      expect(r.status).toBe(409);
+      expect((await json(r)).error?.code).toBe("SECRETS_KEY_MISSING");
+    } finally {
+      db.mockFlags.integrationsUnavailable = false;
+    }
+    const list = db.webhooks[db.ORG_ID]!;
+    const saved = [...list];
+    try {
+      while (list.length < 20) list.push({ ...list[0]!, id: `filler-${list.length}` });
+      const r = await call("POST", hooks, body);
+      expect(r.status).toBe(409);
+      expect((await json(r)).error?.code).toBe("WEBHOOK_LIMIT");
+    } finally {
+      list.splice(0, list.length, ...saved);
+    }
+  });
+
+  it("bulk assign: the mock skips issues the assignee can't take and says how many", async () => {
+    const { users } = db;
+    // Bao is a member of INFRA only; one WEB issue and one fixed issue are skipped.
+    const web = db.issues.find((i) => i.project_id === db.projects[0]!.id && ["open", "reopened", "assigned", "in_progress"].includes(i.status))!;
+    const infra = db.issues.find((i) => db.projectMembers[i.project_id]?.some((m) => m.user.id === users.bao.id) && ["open", "reopened", "assigned", "in_progress"].includes(i.status));
+    const saved = db.issues.map((i) => ({ ...i }));
+    try {
+      const ids = [web.id, ...(infra ? [infra.id] : [])];
+      const r = await json(await call("POST", `/orgs/${db.ORG_ID}/issues/assign`, { issue_ids: ids, assignee_id: users.bao.id }));
+      expect(r.data).toEqual({ updated: infra ? 1 : 0, skipped: 1 });
+    } finally {
+      db.issues.forEach((i, n) => Object.assign(i, saved[n]));
+    }
+  });
 });
