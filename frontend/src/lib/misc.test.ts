@@ -50,6 +50,13 @@ describe("scan display", () => {
     // An older server without the v0.3 limit still gets a full set.
     expect(withDefaults({ upload_max_mb: 50 } as never)).toMatchObject({ upload_max_mb: 50, image_upload_max_mb: 2048 });
   });
+  it("words an abandoned upload (cancelled by the server after an hour), not as a worker failure", () => {
+    expect(scanErrorMessages("UPLOAD_ABANDONED")).toEqual({
+      short: "upload never finished",
+      full: "The upload didn't finish within an hour, so Warden cancelled the scan. Nothing was scanned and no issues changed. Upload the file again.",
+    });
+    expect(isRejected({ status: "cancelled", error_code: "UPLOAD_ABANDONED" })).toBe(false);
+  });
   it("uses the server limits in messages and falls back for unknown codes", () => {
     const limits = { ...withDefaults(null), upload_max_mb: 50, unzip_max_mb: 2048, unzip_max_files: 5000, scan_timeout_minutes: 45, scans_per_hour: 5 };
     expect(scanErrorMessages("ZIP_TOO_LARGE", limits).short).toBe("archive over 50 MB");
