@@ -134,6 +134,7 @@ func Config(opts Options) (*river.Config, error) {
 	river.AddWorker(workers, MatchMaliciousWorker{Env: opts.Env})
 	river.AddWorker(workers, SendWebhooksWorker{Env: opts.Env})
 	river.AddWorker(workers, PruneWebhookDeliveriesWorker{Env: opts.Env})
+	river.AddWorker(workers, PruneNotificationsWorker{Env: opts.Env})
 	cfg.Workers = workers
 	cfg.Queues = map[string]river.QueueConfig{
 		QueueScan:          {MaxWorkers: opts.ScanSlots},
@@ -168,6 +169,9 @@ func Config(opts Options) (*river.Config, error) {
 		river.NewPeriodicJob(HourlyAt(45),
 			func() (river.JobArgs, *river.InsertOpts) { return PruneWebhookDeliveriesArgs{}, nil },
 			&river.PeriodicJobOpts{ID: "prune_webhook_deliveries"}),
+		river.NewPeriodicJob(HourlyAt(50),
+			func() (river.JobArgs, *river.InsertOpts) { return PruneNotificationsArgs{}, nil },
+			&river.PeriodicJobOpts{ID: "prune_notifications"}),
 	}
 	return cfg, nil
 }
