@@ -24,9 +24,9 @@ export function ProjectSettingsTab() {
   const manage = can("manage_project_members", org.role, p.my_role);
   const canArchive = can("create_archive_project", org.role);
 
-  // "#archive" from the archived banner: bring the card into view.
+  // "#archive" from the archived banner, "#ci-setup" from the New scan card: bring the card into view.
   useEffect(() => {
-    if (hash === "#archive") document.getElementById("archive")?.scrollIntoView({ block: "start" });
+    if (hash === "#archive" || hash === "#ci-setup") document.getElementById(hash.slice(1))?.scrollIntoView({ block: "start" });
   }, [hash]);
 
   return (

@@ -44,6 +44,11 @@ type issue struct {
 	Severity  string  `json:"severity"`
 	FilePath  *string `json:"file_path"`
 	StartLine *int    `json:"start_line"`
+	// For --comment.
+	RuleID         string  `json:"rule_id"`
+	PackageName    *string `json:"package_name"`
+	PackageVersion *string `json:"package_version"`
+	KEV            bool    `json:"kev"`
 }
 
 type gate struct {
@@ -53,6 +58,10 @@ type gate struct {
 	FailOn   string         `json:"fail_on"`
 	Counts   map[string]int `json:"counts"`
 	Blocking []issue        `json:"blocking"`
+	// For --comment.
+	FailOnKEV   bool     `json:"fail_on_kev"`
+	KEV         int      `json:"kev"`
+	BlockingNew []string `json:"blocking_new"`
 }
 
 // apiError is a failed API call, as the server described it.
@@ -160,11 +169,16 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	defer os.RemoveAll(tmp)
 	var zipPath string
 	var body map[string]any
-	if o.image != "" || o.imageTar != "" {
+	switch {
+	case o.history:
+		if zipPath, body, err = c.historyArtifact(ctx, tmp); err != nil {
+			return exitError, err
+		}
+	case o.image != "" || o.imageTar != "":
 		if zipPath, body, err = c.imageArtifact(ctx, tmp); err != nil {
 			return exitError, err
 		}
-	} else {
+	default:
 		dir, err := filepath.Abs(o.dir)
 		if err != nil {
 			return exitError, err
@@ -184,7 +198,7 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	}
 	c.printf("==> %s: %d bytes\n", clean(body["file_name"].(string)), size)
 	body["file_size"], body["sha256"] = size, sum
-	if len(o.tools) > 0 {
+	if _, fixed := body["tools"]; !fixed && len(o.tools) > 0 {
 		body["tools"] = o.tools
 	}
 	var created createdScan
@@ -218,7 +232,7 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	}
 
 	if o.sbomOut != "" {
-		if err := c.saveSBOM(ctx, scanPath, o.sbomOut); err != nil {
+		if err := c.saveSBOM(ctx, scanPath, o.sbomFormat, o.sbomOut); err != nil {
 			return exitError, err
 		}
 	}
@@ -231,7 +245,9 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	if err := c.call(ctx, "GET", gatePath, nil, &g); err != nil {
 		return exitError, err
 	}
-	return c.report(g, scanID), nil
+	code := c.report(g, scanID)
+	c.comment(ctx, g, scanID) // best effort: never changes code
+	return code, nil
 }
 
 type sbomLink struct {
@@ -246,15 +262,19 @@ const maxSBOM = 64 << 20
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// saveSBOM downloads the scan's SBOM from its presigned link (without the API
-// token), checks it against the size and SHA-256 the server recorded, and
-// replaces dest only once the whole file is verified.
-func (c client) saveSBOM(ctx context.Context, scanPath, dest string) error {
+// sbomFormats names the --sbom-format values in messages.
+var sbomFormats = map[string]string{"cyclonedx": "CycloneDX", "spdx": "SPDX"}
+
+// saveSBOM downloads the scan's SBOM in format (cyclonedx or spdx) from its
+// presigned link (without the API token), checks it against the size and
+// SHA-256 the server recorded, and replaces dest only once the whole file is
+// verified.
+func (c client) saveSBOM(ctx context.Context, scanPath, format, dest string) error {
 	var l sbomLink
-	if err := c.call(ctx, "GET", scanPath+"/sbom", nil, &l); err != nil {
+	if err := c.call(ctx, "GET", scanPath+"/sbom?format="+url.QueryEscape(format), nil, &l); err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
-			return errors.New("the scan has no SBOM: Trivy must be among the scan's tools and succeed")
+			return fmt.Errorf("the scan has no %s SBOM: Trivy must be among the scan's tools and succeed", sbomFormats[format])
 		}
 		return err
 	}
@@ -288,7 +308,7 @@ func (c client) saveSBOM(ctx context.Context, scanPath, dest string) error {
 	if err := writeFile(dest, body, 0o644); err != nil {
 		return fmt.Errorf("save SBOM: %w", err)
 	}
-	c.printf("==> SBOM (CycloneDX, %d components) saved to %s\n", l.Components, clean(dest))
+	c.printf("==> SBOM (%s, %d components) saved to %s\n", sbomFormats[format], l.Components, clean(dest))
 	return nil
 }
 

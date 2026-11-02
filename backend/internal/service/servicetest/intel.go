@@ -64,16 +64,22 @@ func compareEPSS(a, b *float64) int {
 
 func isLicense(i IssueRow) bool { return i.Tool == "trivy" && strings.HasPrefix(i.RuleID, "license:") }
 
+func isMalicious(i IssueRow) bool {
+	return i.Tool == "trivy" && strings.HasPrefix(i.RuleID, "malicious:")
+}
+
 func (f *Fake) matchIntel(q service.IssueQuery, i IssueRow) bool {
 	in := f.intel(i.CVE)
-	license := isLicense(i)
+	license, malicious := isLicense(i), isMalicious(i)
 	switch {
-	case q.Kind == service.KindVulnerability && (i.Tool != "trivy" || license),
+	case q.Kind == service.KindVulnerability && (i.Tool != "trivy" || license || malicious),
 		q.Kind == service.KindLicense && !license,
+		q.Kind == service.KindMalicious && !malicious,
 		q.KEV && in.KEVAdded == nil,
 		q.EPSSMin != nil && (in.EPSS == nil || *in.EPSS < *q.EPSSMin),
 		q.Source == "code" && i.Target != "",
-		q.Source == "image" && i.Target == "",
+		q.Source == "image" && (i.Target == "" || i.Target == service.HistoryTarget),
+		q.Source == "history" && i.Target != service.HistoryTarget,
 		q.Target != "" && i.Target != q.Target:
 		return false
 	}

@@ -70,6 +70,8 @@ type Limits struct {
 	ScanTimeoutMinutes int `json:"scan_timeout_minutes"`
 	ScansPerHour       int `json:"scans_per_hour"`
 	ImageUploadMaxMB   int `json:"image_upload_max_mb"`
+	HistoryUploadMaxMB int `json:"history_upload_max_mb"`
+	HistoryMaxCommits  int `json:"history_max_commits"`
 }
 
 type OrgRef struct {
@@ -201,25 +203,48 @@ type Scan struct {
 	FinishedAt *Time      `json:"finished_at"`
 	ViaToken   *TokenRef  `json:"via_token"`
 	ToolRuns   *[]ToolRun `json:"tool_runs,omitempty"`
-	// Kind is source (a zip of code) or image (a docker save tarball);
-	// Target is the image repository ("" for source scans).
+	// Kind is source (a zip of code), image (a docker save tarball) or
+	// history (a git bundle); Target is the image repository, HistoryTarget,
+	// or "" for source scans.
 	Kind     string  `json:"kind"`
 	Target   string  `json:"target"`
 	ImageRef *string `json:"image_ref"`
 	// SBOM is set while the scan's SBOM is stored and not expired.
 	SBOM *ScanSBOM `json:"sbom"`
+	// History is set on history scans that finished: the commits Gitleaks
+	// read, and whether scan.history_max_commits cut the history short.
+	History *ScanHistory `json:"history"`
 
 	OrgID     uuid.UUID `json:"-"`
 	ObjectKey string    `json:"-"`
 	SHA256    string    `json:"-"`
 }
 
-type ScanSBOM struct {
-	Components int    `json:"components"`
-	Size       int64  `json:"size"`
-	Key        string `json:"-"`
-	SHA256     string `json:"-"`
+type ScanHistory struct {
+	Commits   int  `json:"commits"`
+	Truncated bool `json:"truncated"`
 }
+
+// ScanSBOM: the CycloneDX file (Size is its size) and, when Trivy's SPDX
+// conversion was stored too, the SPDX file (SPDXKey "" when not).
+type ScanSBOM struct {
+	Components int      `json:"components"`
+	Size       int64    `json:"size"`
+	Formats    []string `json:"formats"`
+	Key        string   `json:"-"`
+	SHA256     string   `json:"-"`
+	SPDXKey    string   `json:"-"`
+	SPDXSize   int64    `json:"-"`
+	SPDXSHA256 string   `json:"-"`
+}
+
+// SBOM download formats (?format=) and the formats they are served as.
+const (
+	SBOMCycloneDX     = "cyclonedx"
+	SBOMSPDX          = "spdx"
+	SBOMCycloneDXJSON = "cyclonedx-json"
+	SBOMSPDXJSON      = "spdx-json"
+)
 
 type Upload struct {
 	Method    string            `json:"method"`
@@ -257,8 +282,9 @@ type IssueSummary struct {
 	// highest score). They only rank issues: severity and status never change.
 	KEV  bool     `json:"kev"`
 	EPSS *float64 `json:"epss"`
+	// LicenseCategory is the Trivy category of a license-policy issue.
+	LicenseCategory *string `json:"license_category"`
 }
-
 type ScanRef struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt Time      `json:"created_at"`
@@ -286,6 +312,16 @@ type Issue struct {
 	AssigneeID          *uuid.UUID `json:"-"`
 	ProjectKey          string     `json:"-"`
 	Number              int        `json:"-"`
+
+	// Commit: for a secret in git history, the oldest commit that added it
+	// (file_path and start_line are from it) and how many commits did.
+	Commit *IssueCommit `json:"commit"`
+}
+
+type IssueCommit struct {
+	SHA         string `json:"sha"`
+	CommittedAt *Time  `json:"committed_at"`
+	Count       int    `json:"count"`
 }
 
 type Event struct {

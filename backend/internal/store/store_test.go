@@ -112,7 +112,9 @@ func TestBuildIssueList(t *testing.T) {
 		{service.IssueQuery{Sort: service.SortEPSS, After: &service.IssueCursor{Sort: service.SortEPSS, ID: uuid.New()}},
 			[]string{"(vi.epss IS NULL AND i.id < "}},
 		{service.IssueQuery{Kind: service.KindVulnerability, KEV: true, EPSSMin: fptr(0.1), Source: "code"},
-			[]string{"i.tool = 'trivy' AND NOT i.rule_id LIKE 'license:%'", "v.kev_added IS NOT NULL", "v.epss >= $", "::real", "i.target = ''"}},
+			[]string{"i.tool = 'trivy' AND NOT i.rule_id LIKE 'license:%' AND NOT i.rule_id LIKE 'malicious:%'", "v.kev_added IS NOT NULL", "v.epss >= $", "::real", "i.target = ''"}},
+		{service.IssueQuery{Kind: service.KindMalicious},
+			[]string{"i.tool = 'trivy' AND i.rule_id LIKE 'malicious:%'", "i.license_category"}},
 		{service.IssueQuery{Kind: service.KindLicense, Source: "image", Target: "ghcr.io/acme/api"},
 			[]string{"i.tool = 'trivy' AND i.rule_id LIKE 'license:%'", "i.target <> ''", "i.target = $"}},
 	} {

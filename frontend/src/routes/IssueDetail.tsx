@@ -13,7 +13,8 @@ import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
 import { focusFirstInvalid, TextArea, TextField } from "../components/Field";
-import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, LockIcon, RefreshIcon } from "../components/Icons";
+import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, CommitIcon, LockIcon, RefreshIcon } from "../components/Icons";
+import { CopyButton } from "../components/CopyButton";
 import { PageHeader } from "../components/PageHeader";
 import { ActionError, ErrorState, Loading, NotFoundState, Skeleton, SkeletonBlock } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
@@ -34,6 +35,8 @@ import {
 import { issueActions, workflowSteps } from "../lib/issueActions";
 import type { IssueAction } from "../lib/issueActions";
 import { formatEpss, isVulnIssue, KEV_CATALOG_URL, licenseOf, nvdUrl, percentileText } from "../lib/intel";
+import { maliciousAdvisory, MALICIOUS_REMEDIATION } from "../lib/malicious";
+import { HISTORY_ROTATE, historyWhere, isHistoryIssue, moreCommitsText, shortSha } from "../lib/history";
 import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
 import { showToast } from "../lib/toast";
@@ -247,6 +250,8 @@ function IssueView({
 
       <div className="detail-grid">
         <div className="stack detail-main">
+          <HistoryCard issue={issue} />
+          <MaliciousCard issue={issue} />
           <ExploitCard issue={issue} />
           <WhereCard issue={issue} />
           {issue.description && (
@@ -257,6 +262,10 @@ function IssueView({
           <Card title="How to fix" titleId={`${titleId}-fix`}>
             {issue.remediation ? (
               <p className="prose">{issue.remediation}</p>
+            ) : maliciousAdvisory(issue) ? (
+              <p className="prose">{MALICIOUS_REMEDIATION}</p>
+            ) : isHistoryIssue(issue) ? (
+              <p className="prose">{HISTORY_ROTATE}</p>
             ) : (
               <p className="muted">The scanner gave no fix advice for this rule.</p>
             )}
@@ -355,18 +364,125 @@ function ExploitCard({ issue }: { issue: Issue }) {
   );
 }
 
+/** v0.4 wave 2: a secret found in git history. Shown first: deleting the file doesn't help, the
+ *  secret has to be rotated. The commit sha is text with a copy button, never a link (the UI
+ *  doesn't know where the repository is hosted, and the sha comes from scanned data). */
+function HistoryCard({ issue }: { issue: Issue }) {
+  if (!isHistoryIssue(issue)) return null;
+  const c = issue.commit;
+  const more = c ? moreCommitsText(c.count) : null;
+  const where = issue.file_path ? `${issue.file_path}${issue.start_line ? `:${issue.start_line}` : ""}` : null;
+  return (
+    <Card title="Found in git history" titleId={`history-${issue.id}`} className="history-card">
+      <div className="stack" style={{ gap: 12 }}>
+        {c ? (
+          <p className="history-commit">
+            <CommitIcon />
+            <span>
+              Added in commit{" "}
+              <span className="mono sha" title={c.sha}>
+                <span aria-hidden="true">{shortSha(c.sha)}</span>
+                <span className="visually-hidden">{c.sha}</span>
+              </span>
+              {c.committed_at && <> on {formatDate(c.committed_at)}</>}
+              {more && <>, {more}</>}
+              {where && (
+                <>
+                  {" "}
+                  · <span className="mono">{where}</span>
+                </>
+              )}
+            </span>
+            <CopyButton text={c.sha} label="Copy sha" copiedText={`Commit ${c.sha} copied to the clipboard.`} />
+          </p>
+        ) : (
+          <p className="muted">The scan didn't report which commit added it.</p>
+        )}
+        <p className="history-rotate">
+          <strong>{HISTORY_ROTATE}</strong>
+        </p>
+        <p className="faint small">
+          It moves to Fixed only when a later history scan no longer finds it in any commit, after the history is rewritten. Warden
+          keeps the commit's sha and date, never its author, email or message.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/** v0.4: an OSV malicious-package advisory lists this package version. Shown first: unlike a
+ *  vulnerability, there is no safe version of the same release to upgrade to. The OSV link is
+ *  built only from a well-formed MAL id (lib/malicious.ts); package names stay text. */
+function MaliciousCard({ issue }: { issue: Issue }) {
+  const advisory = maliciousAdvisory(issue);
+  if (!advisory) return null;
+  const titleId = `malicious-${issue.id}`;
+  return (
+    <Card title="Malicious package" titleId={titleId} className="malicious-card">
+      <div className="stack" style={{ gap: 12 }}>
+        <div className="kev-block mal-block">
+          <span className="tag mal-tag" aria-hidden="true">
+            Malicious
+          </span>
+          <div className="stack" style={{ gap: 4 }}>
+            <strong>
+              {issue.package_name ? (
+                <>
+                  <span className="mono">
+                    {issue.package_name} {issue.package_version}
+                  </span>{" "}
+                  is listed as malicious
+                </>
+              ) : (
+                "This package version is listed as malicious"
+              )}
+            </strong>
+            <span>
+              Installing it can run the attacker's code wherever it was installed: developer machines, CI runners and the images built
+              from them.
+            </span>
+            <span>
+              Advisory{" "}
+              {advisory.url ? (
+                <a href={advisory.url} target="_blank" rel="noopener noreferrer" className="mono">
+                  {advisory.id}
+                  <span className="visually-hidden"> on OSV (opens in a new tab)</span>
+                </a>
+              ) : (
+                <span className="mono">{advisory.id}</span>
+              )}
+            </span>
+          </div>
+        </div>
+        <p className="mal-fix">
+          <strong>{MALICIOUS_REMEDIATION}</strong> Treat secrets the build or the installing machines could read as exposed.
+        </p>
+        <p className="faint small">
+          The advisory raised this issue as Critical. It moves to Fixed when the package is gone from the next scan; advisories never
+          close an issue.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 function WhereCard({ issue }: { issue: Issue }) {
   const lines = issue.snippet ? issue.snippet.replace(/\n$/, "").split("\n") : [];
   const first = issue.start_line ?? 1;
   const last = issue.end_line ?? issue.start_line ?? 0;
   const where = issue.file_path ?? issue.package_name ?? "";
   const license = licenseOf(issue);
+  const malicious = !!maliciousAdvisory(issue);
+  const history = isHistoryIssue(issue);
   return (
     <Card
       title="Where"
       titleId={`where-${issue.id}`}
       actions={
-        where ? (
+        history ? (
+          // v0.4 wave 2: "<file>:<line> in commit abc1234" (text; the sha is never a link).
+          <span className="mono faint where-path">{historyWhere(issue)}</span>
+        ) : where ? (
           <span className="mono faint where-path">
             {where}
             {issue.start_line ? `:${issue.start_line}` : ""}
@@ -424,7 +540,9 @@ function WhereCard({ issue }: { issue: Issue }) {
             <span className="mono">
               {issue.package_name} {issue.package_version}
             </span>
-            {issue.fixed_version ? (
+            {malicious ? (
+              <span className="muted"> · remove this version</span>
+            ) : issue.fixed_version ? (
               <>
                 {" "}
                 → upgrade to <span className="mono">{issue.fixed_version}</span>
@@ -470,6 +588,7 @@ function DetailsCard({ issue }: { issue: Issue }) {
   const org = useOrg(orgId);
   const sla = issue.severity !== "info" ? org.data?.sla_days[issue.severity] : undefined;
   const license = licenseOf(issue);
+  const advisory = maliciousAdvisory(issue);
   const scanLink = (scan: { id: string; created_at: string }) => (
     <Link to={`/orgs/${orgId}/projects/${issue.project_id}/scans?scan=${encodeURIComponent(scan.id)}`}>
       Scan of {formatDateTime(scan.created_at)}
@@ -509,6 +628,21 @@ function DetailsCard({ issue }: { issue: Issue }) {
         <dd>{TOOL_LABELS[issue.tool]}</dd>
         <dt>Rule</dt>
         <dd className="mono">{issue.rule_id}</dd>
+        {advisory && (
+          <>
+            <dt>Advisory</dt>
+            <dd className="mono">
+              {advisory.url ? (
+                <a href={advisory.url} target="_blank" rel="noopener noreferrer">
+                  {advisory.id}
+                  <span className="visually-hidden"> on OSV (opens in a new tab)</span>
+                </a>
+              ) : (
+                advisory.id
+              )}
+            </dd>
+          </>
+        )}
         {issue.cwe.length > 0 && (
           <>
             <dt>CWE</dt>
@@ -548,11 +682,27 @@ function DetailsCard({ issue }: { issue: Issue }) {
             </dd>
           </>
         )}
-        {issue.target && (
+        {issue.target && isHistoryIssue(issue) ? (
           <>
-            <dt>Image</dt>
-            <dd className="mono">{issue.target}</dd>
+            <dt>Source</dt>
+            <dd>Git history</dd>
+            {issue.commit && (
+              <>
+                <dt>Commit</dt>
+                <dd className="mono" title={issue.commit.sha}>
+                  {shortSha(issue.commit.sha)}
+                  {issue.commit.count > 1 && <span className="muted sans"> · {issue.commit.count} commits</span>}
+                </dd>
+              </>
+            )}
           </>
+        ) : (
+          issue.target && (
+            <>
+              <dt>Image</dt>
+              <dd className="mono">{issue.target}</dd>
+            </>
+          )
         )}
         {issue.package_name && (
           <>
@@ -596,7 +746,9 @@ export function describeEvent(e: IssueEvent): { who: string; what: string } {
   const who = e.actor ? userName(e.actor) : "";
   switch (e.type) {
     case "created":
-      return { who: "Created", what: "from a scan" };
+      // v0.4: an issue opened by a malicious-package advisory without a scan carries the
+      // server's note ("Found by malicious-package advisory MAL-… (no scan)") instead.
+      return { who: "Created", what: e.note ? "" : "from a scan" };
     case "status_changed":
       return { who: who || "Status", what: `${who ? "changed status " : "changed "}from ${statusText(e.from_value)} to ${statusText(e.to_value)}` };
     case "assigned":

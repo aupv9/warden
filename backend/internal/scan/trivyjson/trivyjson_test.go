@@ -232,3 +232,62 @@ func TestLoadCapsFileSize(t *testing.T) {
 func io0(n int) *bytes.Reader {
 	return bytes.NewReader(append(bytes.Repeat([]byte(" "), n), []byte(`{"Results":[]}`)...))
 }
+
+func TestParsePackages(t *testing.T) {
+	withPURL := func(m M, purl, rel string) M { m["Identifier"] = M{"PURL": purl}; m["Relationship"] = rel; return m }
+	b := report(
+		M{"Target": "go.mod", "Class": "lang-pkgs", "Type": "gomod", "Packages": []any{
+			withPURL(M{"ID": "example.com/app", "Name": "example.com/app"}, "pkg:golang/example.com/app", "root"),
+			withPURL(pkg("golang.org/x/net", "v0.7.0"), "pkg:golang/golang.org/x/net@v0.7.0", "direct"),
+		}},
+		M{"Target": "package-lock.json", "Class": "lang-pkgs", "Type": "npm", "Packages": []any{
+			withPURL(pkg("@Scope/Pkg", "1.0.0", "MIT", "(MIT)", "Apache-2.0"), "pkg:npm/%40scope/pkg@1.0.0", "direct"),
+			withPURL(pkg("@scope/pkg", "1.0.0", "MIT"), "pkg:npm/%40scope/pkg@1.0.0", "indirect"), // same match name: one entry
+			withPURL(pkg("evil", "1.0.0"), "javascript:alert(1)", "direct"),
+			withPURL(pkg("spaced", "1.0.0"), "pkg:npm/a b@1", "direct"),
+			withPURL(pkg("long", "1.0.0"), "pkg:npm/"+strings.Repeat("a", MaxPURL), "direct"),
+			withPURL(pkg("ws", "0.0.0"), "pkg:npm/ws@0.0.0", "workspace"),
+		}},
+		M{"Target": "requirements.txt", "Class": "lang-pkgs", "Type": "pip", "Packages": []any{pkg("Django_Rest.Framework", "3.0RC1")}},
+		M{"Target": "x", "Class": "secret", "Type": "npm", "Packages": []any{pkg("not-a-package-result", "1")}},
+	)
+	r := parse(t, b)
+	got := map[string]Package{}
+	for _, p := range r.Packages {
+		got[p.Name] = p
+	}
+	if len(r.Packages) != 6 {
+		t.Fatalf("%d packages: %+v", len(r.Packages), r.Packages)
+	}
+	if _, ok := got["example.com/app"]; ok {
+		t.Fatal("root package listed")
+	}
+	if p := got["golang.org/x/net"]; p.Ecosystem != "Go" || p.MatchVersion != "0.7.0" || p.PURL != "pkg:golang/golang.org/x/net@v0.7.0" || p.Target != "go.mod" {
+		t.Fatalf("%+v", p)
+	}
+	if p := got["@Scope/Pkg"]; p.MatchName != "@scope/pkg" || !reflect.DeepEqual(p.Licenses, []string{"MIT", "Apache-2.0"}) {
+		t.Fatalf("%+v", p)
+	}
+	for _, n := range []string{"evil", "spaced", "long"} {
+		if got[n].PURL != "" {
+			t.Errorf("%s: PURL %q kept", n, got[n].PURL)
+		}
+	}
+	if p := got["Django_Rest.Framework"]; p.Ecosystem != "PyPI" || p.MatchName != "django-rest-framework" || p.MatchVersion != "3.0rc1" {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestParsePackagesSanitized(t *testing.T) {
+	b := report(M{"Target": "t\u202e", "Class": "os-pkgs", "Type": "alpine\x00", "Packages": []any{
+		M{"Name": "bad\u202ename\x1b", "Version": "1\x00", "Identifier": M{"PURL": "pkg:apk/alpine/x\u202e@1"}},
+	}})
+	r := parse(t, b)
+	if len(r.Packages) != 1 {
+		t.Fatal(r.Packages)
+	}
+	p := r.Packages[0]
+	if strings.ContainsAny(p.Name+p.Version+p.Target, "\x00\x1b\u202e") || p.PURL != "" || p.Ecosystem != "unknown" {
+		t.Fatalf("%+v", p)
+	}
+}

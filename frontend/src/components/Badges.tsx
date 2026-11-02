@@ -1,8 +1,30 @@
 import type { ReactNode } from "react";
 import type { IssueStatus, ScanStatus, Severity, ToolStatus } from "../api/types";
 import { SCAN_STATUS_LABELS, SEVERITY_LABELS, STATUS_LABELS, TOOL_STATUS_LABELS } from "../lib/format";
+import { MALICIOUS_LABEL } from "../lib/malicious";
 
-type Tone = "default" | "success" | "accent" | "danger" | "warn";
+/** v0.4: a red "Malicious" tag (an OSV malicious-package advisory), with its full accessible
+ *  name; the word carries the meaning, the colour is a second cue. */
+export function MaliciousTag() {
+  return (
+    <span className="tag mal-tag" title={MALICIOUS_LABEL}>
+      <span aria-hidden="true">Malicious</span>
+      <span className="visually-hidden">{MALICIOUS_LABEL}</span>
+    </span>
+  );
+}
+
+/** v0.4 wave 2: a secret found in git history (a history scan), beside the issue title. */
+export function HistoryTag() {
+  return (
+    <span className="tag history-tag" title="Found in git history (a history scan)">
+      <span aria-hidden="true">History</span>
+      <span className="visually-hidden">Found in git history</span>
+    </span>
+  );
+}
+
+type Tone ="default" | "success" | "accent" | "danger" | "warn";
 
 /** A small neutral tag (role, exception type). Square-ish corners: full pills are for counts only. */
 export function Pill({ tone = "default", children, title }: { tone?: Tone; children: ReactNode; title?: string }) {

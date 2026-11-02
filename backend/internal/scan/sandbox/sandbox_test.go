@@ -110,13 +110,44 @@ func TestImageTrivy(t *testing.T) {
 	if tmp := a[slices.Index(a, "--tmpfs")+1]; tmp != "/tmp:rw,noexec,nosuid,size=1g,mode=1777" {
 		t.Fatal(tmp)
 	}
-	if spec.Name != "trivy" || spec.Timeout != 15*time.Minute || len(spec.Artifacts) != 2 ||
+	if spec.Name != "trivy" || spec.Timeout != 15*time.Minute || len(spec.Artifacts) != 3 ||
 		!strings.Contains(spec.Command[2], "trivy image --input /src/image.tar --scanners vuln,license --list-all-pkgs") ||
 		!strings.Contains(spec.Command[2], "--offline-scan") || strings.Contains(spec.Command[2], "trivy fs") {
 		t.Fatal(spec.Command)
 	}
 	if tmp := argv(t, Tools["trivy"], "/scan")[slices.Index(argv(t, Tools["trivy"], "/scan"), "--tmpfs")+1]; !strings.Contains(tmp, "size=256m") {
 		t.Fatal(tmp)
+	}
+}
+
+// History scans run Gitleaks in git mode on the read-only bundle, with the
+// same isolation; the commit limit and sizes come from the configuration,
+// and the timeout never exceeds the scan's.
+func TestHistoryGitleaks(t *testing.T) {
+	spec := HistoryTool(HistoryLimits{MaxBytes: 1024 << 20, MaxCommits: 50_000, ScanTimeout: 30 * time.Minute})
+	a := argv(t, spec, "/scan")
+	for _, want := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+		"--user", "65532:65532", "/scan/src:/src:ro", "/scan/secrets/hmac:/run/warden/hmac:ro", "--memory=3072m"} {
+		if !slices.Contains(a, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if tmp := a[slices.Index(a, "--tmpfs")+1]; tmp != "/tmp:rw,noexec,nosuid,size=1536m,mode=1777" {
+		t.Fatal(tmp)
+	}
+	if got := a[slices.Index(a, "--entrypoint")+1:]; !slices.Equal(got, []string{"warden-gitleaks", digest, "history", "50000"}) {
+		t.Fatal(got)
+	}
+	if spec.Name != "gitleaks" || spec.Timeout != 25*time.Minute || spec.Artifacts[ArtifactHistory].File != "history.json" ||
+		spec.Artifacts[ArtifactHistory].MaxBytes > 1024 {
+		t.Fatalf("%+v", spec)
+	}
+	if s := HistoryTool(HistoryLimits{MaxBytes: 1 << 20, MaxCommits: 7, ScanTimeout: 10 * time.Minute}); s.Timeout != 10*time.Minute ||
+		s.Command[2] != "7" || s.TmpfsSize != "257m" {
+		t.Fatalf("%+v", s)
+	}
+	if !slices.Equal(HistoryToolNames, []string{"gitleaks"}) {
+		t.Fatal(HistoryToolNames)
 	}
 }
 
@@ -128,13 +159,15 @@ func TestTrivyScript(t *testing.T) {
 	for _, want := range []string{"set -eu;", "trivy fs /src ", "--scanners vuln,license", "--list-all-pkgs", "--offline-scan",
 		"--skip-db-update", "--format json --output /out/trivy.json",
 		"trivy convert --format sarif --output /out/result.sarif /out/trivy.json",
-		"trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json"} {
+		"trivy convert --format cyclonedx --output /out/sbom.cdx.json /out/trivy.json",
+		"{ trivy convert --format spdx-json --output /out/sbom.spdx.json /out/trivy.json || rm -f /out/sbom.spdx.json; }"} {
 		if !strings.Contains(c[2], want) {
 			t.Errorf("script lacks %q: %s", want, c[2])
 		}
 	}
 	a := Tools["trivy"].Artifacts
-	if a[ArtifactTrivyJSON].File != "trivy.json" || a[ArtifactSBOM].MaxBytes != 64<<20 {
+	if a[ArtifactTrivyJSON].File != "trivy.json" || a[ArtifactSBOM].MaxBytes != 64<<20 ||
+		a[ArtifactSPDX].File != "sbom.spdx.json" || a[ArtifactSPDX].MaxBytes != 64<<20 {
 		t.Fatal(a)
 	}
 }

@@ -186,6 +186,17 @@ export function IssuesIcon({ size = 15 }: P) {
   );
 }
 
+/** v0.4: a package (the component inventory). */
+export function PackageIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+      <path d="M4 7.5l8 4.5 8-4.5" />
+      <path d="M12 12v9" />
+    </Svg>
+  );
+}
+
 export function ProjectsIcon({ size = 15 }: P) {
   return (
     <Svg size={size}>
@@ -345,6 +356,37 @@ export function TrashIcon({ size = 14 }: P) {
   return (
     <Svg size={size}>
       <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+    </Svg>
+  );
+}
+
+/** v0.4 wave 2: Integrations (webhooks and Slack): a plug. */
+export function IntegrationsIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M9 2v5M15 2v5" />
+      <path d="M6 7h12v4a6 6 0 0 1-12 0V7z" />
+      <path d="M12 17v5" />
+    </Svg>
+  );
+}
+
+/** Send a test delivery: a paper plane. */
+export function SendIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M22 2 11 13" />
+      <path d="M22 2 15 22l-4-9-9-4 20-7z" />
+    </Svg>
+  );
+}
+
+/** A git commit: a dot on a line. */
+export function CommitIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M2 12h6.5M15.5 12H22" />
     </Svg>
   );
 }

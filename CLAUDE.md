@@ -11,6 +11,10 @@ go under `[Unreleased]` in `CHANGELOG.md`.
   build tag `integration`; on Colima the Makefile sets DOCKER_HOST from the docker context
   and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock`)
 - `make lint` (gofmt, go vet incl. integration tag, staticcheck, tsc), `make vulncheck` (govulncheck)
+- `make image-smoke` (image: UI + CSP, web-config, docker CLI) and `scripts/compose-smoke.sh`
+  (production compose, app.env=prod behind Caddy's internal CA; CI adds the worker on runsc).
+- `make e2e` (`scripts/e2e.sh`): smoke test against the running local stack; not in CI. Creates a new org,
+  Keycloak user/client secrets stay in `.cache/e2e` (mode 600).
 - `make selfscan` / `make selfscan-release` (needs `make mirror` once; needs `jq`). CI runs the
   release gate (`-fail-on high`) on every PR and push: fix or baseline a High before merging.
 - Backend is a Go module in `backend/` (module `github.com/aupv9/warden/backend`, Go 1.27.3 set by the
@@ -26,21 +30,34 @@ go under `[Unreleased]` in `CHANGELOG.md`.
   The provider is server config only; an org's sign-in policy (`internal/service/signin.go`) may only
   tighten it. Never link accounts by email: `warden-admin user relink` is the only way to move a subject.
 - CISA KEV / FIRST EPSS (`internal/intel`, job `load_vuln_intel`) only rank issues: never let them change
-  severity, status or SLA, or hide an issue. Image-scan issues are scoped by `issue.target`; auto-fix
+  severity, status or SLA, or hide an issue. OSV malicious-package advisories (`intel/osv.go`) are the
+  exception that adds: a match is a Critical issue, and `results.Inject` (job `match_malicious`) may only
+  create or reopen, never fix. Inject must build the same fingerprint a scan would.
+- Component inventory (`component` table) is replaced per (project, target) inside the results
+  transaction; names compare via `domain/ecosystem` (Go `MatchName`/`MatchVersion`, SQL `*SQL` twins, kept
+  in agreement by an integration test). Image-scan issues are scoped by `issue.target`; auto-fix
   must stay per target.
-- Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`).
+- Config: env prefix `WARDEN_`, `__` for nesting (e.g. `WARDEN_SCAN__TIMEOUT`). `app.env=prod`
+  guardrails live in `config/prod.go` (worker-only ones in `worker.NewEnv` / preflight); a new
+  secret setting joins the placeholder check, a new public URL the https check.
+- The web UI ships inside `warden-api` (`-tags webui`, `internal/webui`); its OIDC settings come
+  from `GET /web-config` at run time, never from build-time env. HTML CSP sources are origins.
+- Metrics (`internal/metrics`) never carry org, project, user or other unbounded labels.
 
 ## Rules
 - This is a security product, and its own security beats features. Keep the invariants in
   README "Security invariants".
-- Hostile-input code (`zipcheck`, `imagecheck`, `sarif`, `trivyjson`, `sbom`, `redact`, `intel`) must
-  have tests for the attack, not just the happy path. Only `zipcheck` extracts archives; `imagecheck`
-  validates `docker save` tarballs without unpacking them (Trivy reads them in the sandbox).
+- Hostile-input code (`zipcheck`, `imagecheck`, `bundlecheck`, `sarif`, `trivyjson`, `sbom`, `redact`,
+  `intel`, `webhook` URL checks, the CLI's PR/MR comment text) must have tests for the attack, not just
+  the happy path. Only `zipcheck` extracts archives; `imagecheck` validates `docker save` tarballs and
+  `bundlecheck` git bundles without unpacking them (Trivy / git read them in the sandbox).
 - New scanner flags or images: verify against real scanner output with
   `go -C backend run ./cmd/selfscan -root .. -zip <sample.zip>`, and check that no raw secret
   appears in any SARIF. Pin new images by digest to a release ≥ 2 weeks old.
 - Never commit real-looking secrets as fixtures; build them at test time (see `backend/internal/scan/scantest`).
 - Migrations run as `warden_owner`; runtime uses `warden_app`. Don't grant BYPASSRLS to the app.
+  The schema gate stops an older binary on a newer database, so a migration must stay
+  compatible with the previous minor's binaries (add, don't rename or drop what they read).
   New tables get app grants from `internal/migrations/grants.sql`, which runs after every migrate.
 - Exception to the 2-week rule: Go 1.27.3 (released 2026-10-19) was adopted on 2026-10-26 at the
   owner's request, to fix GO-2026-6809 (crypto/x509).

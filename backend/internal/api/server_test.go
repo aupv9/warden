@@ -50,7 +50,7 @@ func server(t *testing.T, dbErr error) http.Handler {
 	return serverWith(t, dbErr, service.New(servicetest.New(), nil, service.Config{}, nil))
 }
 
-func serverWith(t *testing.T, dbErr error, svc *service.Service) http.Handler {
+func serverWith(t *testing.T, dbErr error, svc *service.Service, opts ...Option) http.Handler {
 	t.Helper()
 	var engine *gin.Engine
 	app := fx.New(
@@ -60,7 +60,7 @@ func serverWith(t *testing.T, dbErr error, svc *service.Service) http.Handler {
 		health.Module,
 		httpserver.Module(ServerOptions()...),
 		fx.Invoke(func(reg *health.Registry) { reg.Register(db.Checker(pinger{dbErr}, slog.New(slog.DiscardHandler))) }),
-		fx.Invoke(func(e *gin.Engine) { Register(e, verifier(), svc) }),
+		fx.Invoke(func(e *gin.Engine) { Register(e, verifier(), svc, opts...) }),
 		fx.Populate(&engine),
 	)
 	if err := app.Err(); err != nil {

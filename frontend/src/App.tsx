@@ -4,7 +4,9 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider } from "react-rou
 import type { RouteObject } from "react-router";
 import { ApiError } from "./api/client";
 import { errorMessage, isForbidden, isToastedActionError, isUnauthorized, supportReference } from "./api/errors";
-import { AuthGate, sessionEnded } from "./auth/AuthGate";
+import type { ErrorOverrides } from "./api/errors";
+import { AuthBoot, AuthGate, sessionEnded } from "./auth/AuthGate";
+import { appBoot } from "./auth/boot";
 import { Toaster } from "./components/Toaster";
 import { NotFoundPage, OrgLayout, OrgNotFound } from "./layout/OrgLayout";
 import { lazyRoute } from "./lib/lazyRoute";
@@ -25,11 +27,14 @@ const ProjectMembersTab = lazyRoute(() => import("./routes/ProjectLayout"), "Pro
 const ProjectScansTab = lazyRoute(() => import("./routes/ProjectScans"), "ProjectScansTab");
 const ProjectSettingsTab = lazyRoute(() => import("./routes/ProjectSettings"), "ProjectSettingsTab");
 const IssuesPage = lazyRoute(() => import("./routes/IssueList"), "IssuesPage");
+const ComponentsPage = lazyRoute(() => import("./routes/Components"), "ComponentsPage");
+const ProjectComponentsTab = lazyRoute(() => import("./routes/ProjectComponents"), "ProjectComponentsTab");
 const ExceptionsPage = lazyRoute(() => import("./routes/Exceptions"), "ExceptionsPage");
 const MembersPage = lazyRoute(() => import("./routes/Members"), "MembersPage");
 const AuditLogPage = lazyRoute(() => import("./routes/AuditLog"), "AuditLogPage");
 const OrgSettingsPage = lazyRoute(() => import("./routes/OrgSettings"), "OrgSettingsPage");
 const PreferencesPage = lazyRoute(() => import("./routes/Preferences"), "PreferencesPage");
+const IntegrationsPage = lazyRoute(() => import("./routes/Integrations"), "IntegrationsPage");
 
 export function createQueryClient(): QueryClient {
   const qc: QueryClient = new QueryClient({
@@ -40,7 +45,7 @@ export function createQueryClient(): QueryClient {
       },
     }),
     mutationCache: new MutationCache({
-      onError: (err) => {
+      onError: (err, _vars, _result, mutation) => {
         if (isUnauthorized(err)) {
           sessionEnded.dispatchEvent(new Event("ended"));
           return;
@@ -51,10 +56,13 @@ export function createQueryClient(): QueryClient {
         // refetches so the page shows only what the role allows.
         if (!isToastedActionError(err)) return;
         const rateLimited = err instanceof ApiError && err.code === "RATE_LIMITED";
+        // A mutation may word a code itself (meta.errorMessages), e.g. the webhook test's 429.
+        const overrides = (mutation.meta?.errorMessages ?? undefined) as ErrorOverrides | undefined;
+        const custom = err instanceof ApiError && !!overrides?.[err.code];
         showToast({
           tone: rateLimited ? "warning" : "error",
-          title: rateLimited ? "Slow down." : undefined,
-          message: errorMessage(err),
+          title: rateLimited && !custom ? "Slow down." : undefined,
+          message: errorMessage(err, overrides),
           reference: supportReference(err),
         });
         if (isForbidden(err)) void qc.invalidateQueries();
@@ -92,6 +100,7 @@ export const appRoutes: RouteObject[] = [
               { index: true, element: <Navigate to="issues" replace /> },
               { path: "issues", element: <ProjectIssuesTab /> },
               { path: "scans", element: <ProjectScansTab /> },
+              { path: "components", element: <ProjectComponentsTab /> },
               { path: "members", element: <ProjectMembersTab /> },
               { path: "settings", element: <ProjectSettingsTab /> },
             ],
@@ -100,10 +109,13 @@ export const appRoutes: RouteObject[] = [
           // selection) while the split view's pane changes. IssuesPage decides between the
           // split view (≥ 1200 px) and the issue as its own page.
           { path: "issues", element: <IssuesPage />, children: [{ path: ":issueId", element: null }] },
+          { path: "components", element: <ComponentsPage /> },
           { path: "exceptions", element: <ExceptionsPage /> },
           { path: "members", element: <MembersPage /> },
           { path: "audit-log", element: <AuditLogPage /> },
           { path: "settings", element: <OrgSettingsPage /> },
+          // v0.4 wave 2: webhooks and Slack (org admins and security leads).
+          { path: "integrations", element: <IntegrationsPage /> },
           // Notification preferences are the user's own (they apply in every org); the page
           // sits under the org so the navigation stays.
           { path: "preferences", element: <PreferencesPage /> },
@@ -115,14 +127,18 @@ export const appRoutes: RouteObject[] = [
   },
 ];
 
-export function App({ authFailed }: { authFailed: boolean }) {
+export function App() {
   const [qc] = useState(createQueryClient);
   const [router] = useState(() => createBrowserRouter(appRoutes));
   return (
     <QueryClientProvider client={qc}>
-      <AuthGate authFailed={authFailed}>
-        <RouterProvider router={router} />
-      </AuthGate>
+      <AuthBoot boot={appBoot}>
+        {(authFailed) => (
+          <AuthGate authFailed={authFailed}>
+            <RouterProvider router={router} />
+          </AuthGate>
+        )}
+      </AuthBoot>
       <Toaster />
     </QueryClientProvider>
   );

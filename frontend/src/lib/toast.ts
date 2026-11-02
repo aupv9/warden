@@ -39,6 +39,11 @@ export function dismissToast(id: number): void {
   emit();
 }
 
+/** The toasts on screen now (for tests and code outside React). */
+export function currentToasts(): readonly Toast[] {
+  return toasts;
+}
+
 export function clearToasts(): void {
   toasts = [];
   emit();

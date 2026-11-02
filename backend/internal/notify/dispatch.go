@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/metrics"
 )
 
 // TxFunc runs fn in one transaction with app.org_id set to org (db.WithOrg).
@@ -25,8 +27,16 @@ type Dispatcher struct {
 	Mailer Sender
 	// BaseURL is the validated smtp.public_base_url.
 	BaseURL string
-	Now     func() time.Time
-	Log     *slog.Logger
+	// Webhooks queues webhook deliveries for WebhookTypes events in the
+	// dispatch transaction; nil sends none.
+	Webhooks WebhookQueue
+	Now      func() time.Time
+	Log      *slog.Logger
+}
+
+// WebhookQueue writes an event's webhook deliveries (webhook.Queue).
+type WebhookQueue interface {
+	Enqueue(ctx context.Context, db DB, org uuid.UUID, eventID int64, typ string, payload []byte) error
 }
 
 const (
@@ -80,8 +90,9 @@ func (d *Dispatcher) DispatchOrg(ctx context.Context, org uuid.UUID) error {
 // notification insert is idempotent per (event, user) and dispatched_at is
 // set in the same transaction, so a retry never duplicates.
 func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, error) {
-	var n int
+	var n, inApp int
 	err := d.Tx(ctx, org, func(db DB) error {
+		inApp = 0 // counted once the transaction commits
 		rows, err := db.Query(ctx, `SELECT id, type, payload FROM outbox_event WHERE dispatched_at IS NULL
 			ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, outboxBatch)
 		if err != nil {
@@ -108,8 +119,17 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, err
 				return fmt.Errorf("outbox event %d: %w", ev.ID, err)
 			}
 			for _, nt := range notes {
-				if err := r.insert(ctx, ev, nt); err != nil {
+				added, err := r.insert(ctx, ev, nt)
+				if err != nil {
 					return err
+				}
+				if added {
+					inApp++
+				}
+			}
+			if d.Webhooks != nil && slices.Contains(WebhookTypes, ev.Type) {
+				if err := d.Webhooks.Enqueue(ctx, db, org, ev.ID, ev.Type, ev.Payload); err != nil {
+					return fmt.Errorf("outbox event %d: webhooks: %w", ev.ID, err)
 				}
 			}
 			if _, err := db.Exec(ctx, `UPDATE outbox_event SET dispatched_at = $2 WHERE id = $1`, ev.ID, r.now); err != nil {
@@ -118,6 +138,9 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context, org uuid.UUID) (int, err
 		}
 		return nil
 	})
+	if err == nil {
+		metrics.NotificationsSent(metrics.ChannelInApp, inApp)
+	}
 	return n, err
 }
 
@@ -234,7 +257,7 @@ func (r *resolver) resolve(ctx context.Context, ev outboxRow) ([]note, error) {
 		c       = Content{Type: ev.Type, OrgName: orgName, ActorName: actor}
 	)
 	switch ev.Type {
-	case IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided:
+	case IssueAssigned, IssueReopened, ExceptionRequested, ExceptionDecided, ComponentMalicious:
 		if err := need(p.IssueID, "issue_id"); err != nil {
 			return nil, err
 		}
@@ -275,6 +298,15 @@ func (r *resolver) resolve(ctx context.Context, ev outboxRow) ([]note, error) {
 			}
 			c.Title = "Exception for " + f.key() + " " + c.Decision
 			users = without(one(p.UserID), p.ActorID)
+		case ComponentMalicious:
+			// Everyone who has to act now: the org's security leads and the
+			// project's owners (the assignee may not be set yet).
+			c.Title = "Malicious package found: " + f.key()
+			if users, err = r.userIDs(ctx, `SELECT user_id FROM org_member WHERE org_id = $1 AND role = 'security_lead'
+				UNION SELECT user_id FROM project_member WHERE project_id = $2 AND role = 'owner'
+				ORDER BY 1`, r.org, f.ProjectID); err != nil {
+				return nil, err
+			}
 		}
 	case ScanFinished:
 		if err := need(p.ScanID, "scan_id"); err != nil {
@@ -298,6 +330,24 @@ func (r *resolver) resolve(ctx context.Context, ev outboxRow) ([]note, error) {
 			return nil, err
 		}
 		return r.digest(ctx, ev.Type, *p.UserID, c)
+	case WebhookDisabled:
+		// Org-level: the people who can turn it on again.
+		if err := need(p.WebhookID, "webhook_id"); err != nil {
+			return nil, err
+		}
+		err := r.db.QueryRow(ctx, `SELECT name FROM webhook WHERE id = $1`, *p.WebhookID).Scan(&c.WebhookName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // deleted meanwhile
+		}
+		if err != nil {
+			return nil, err
+		}
+		c.Title = "Webhook " + strconv.Quote(c.WebhookName) + " turned off after failed deliveries"
+		c.Link = "/orgs/" + r.org.String() + "/integrations"
+		if users, err = r.userIDs(ctx, `SELECT user_id FROM org_member WHERE org_id = $1 AND role IN ('org_admin', 'security_lead')
+			ORDER BY user_id`, r.org); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, &badEvent{fmt.Errorf("unknown type %q", ev.Type)}
 	}
@@ -417,11 +467,12 @@ func recipient(ctx context.Context, db DB, org, user, project uuid.UUID) (bool, 
 	return ok, email, nil
 }
 
-func (r *resolver) insert(ctx context.Context, ev outboxRow, n note) error {
+// insert writes one notification; added is false when it already existed.
+func (r *resolver) insert(ctx context.Context, ev outboxRow, n note) (added bool, err error) {
 	email := DefaultEmail(n.content.Type)
-	err := r.db.QueryRow(ctx, `SELECT email FROM notification_pref WHERE user_id = $1 AND type = $2`, n.user, n.content.Type).Scan(&email)
+	err = r.db.QueryRow(ctx, `SELECT email FROM notification_pref WHERE user_id = $1 AND type = $2`, n.user, n.content.Type).Scan(&email)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
+		return false, err
 	}
 	state, next := "none", (*time.Time)(nil)
 	if email {
@@ -429,18 +480,18 @@ func (r *resolver) insert(ctx context.Context, ev outboxRow, n note) error {
 	}
 	payload, err := json.Marshal(n.content)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var actor *uuid.UUID
 	var p Payload
 	if json.Unmarshal(ev.Payload, &p) == nil {
 		actor = p.ActorID
 	}
-	_, err = r.db.Exec(ctx, `INSERT INTO notification (id, org_id, user_id, event_id, type, title, link, actor_id, payload,
+	tag, err := r.db.Exec(ctx, `INSERT INTO notification (id, org_id, user_id, event_id, type, title, link, actor_id, payload,
 			email_state, email_next_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (event_id, user_id) DO NOTHING`,
 		ids.New(), r.org, n.user, ev.ID, n.content.Type, n.content.Title, n.content.Link, actor, payload, state, next, r.now)
-	return err
+	return err == nil && tag.RowsAffected() > 0, err
 }
 
 type queuedEmail struct {
@@ -552,6 +603,9 @@ func (d *Dispatcher) sendOne(ctx context.Context, org uuid.UUID, q queuedEmail) 
 	})
 	if txErr != nil {
 		return txErr
+	}
+	if err == nil {
+		metrics.NotificationsSent(metrics.ChannelEmail, 1)
 	}
 	var ce *ConnError
 	if errors.As(err, &ce) {

@@ -4,10 +4,12 @@
 //
 // Try: append ?mock_error=CODE to any page URL (e.g. VERSION_CONFLICT, RATE_LIMITED, NOT_FOUND)
 // to make the next write fail with that code.
-import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS } from "../types";
+import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS, WEBHOOK_EVENT_TYPES } from "../types";
 import type {
   ApiToken,
   AssignRule,
+  ComponentSummary,
+  ComponentUsage,
   CreateScanBody,
   CreateTokenBody,
   ExceptionRequest,
@@ -18,9 +20,13 @@ import type {
   NotificationPref,
   OrgRole,
   Project,
+  ProjectComponent,
+  ProjectTarget,
   Scan,
   SeverityCounts,
   UpdatePolicyBody,
+  Webhook,
+  WebhookDelivery,
 } from "../types";
 import * as db from "./fixtures";
 
@@ -114,7 +120,7 @@ function advance(s: Scan): Scan {
     s.stats = { new: 2, fixed: 1, reopened: 0, total: 12 };
     // An SBOM when Trivy finished (the server stores it from the same Trivy run).
     if (runs.some((r) => r.tool === "trivy" && r.status === "succeeded")) {
-      s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118 };
+      s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118, formats: ["cyclonedx-json", "spdx-json"] };
     }
     // Name a file …traversal….zip, …multiple….tar or …invalid….tar to see a rejection.
     const reject = s.file_name.includes("traversal")
@@ -186,6 +192,263 @@ function findProject(id: string): Project {
   return p;
 }
 
+/** v0.4: projects and issues belong to one org (Acme Labs has LAB); another org's look missing. */
+function inOrg(orgId: string, projectId: string): boolean {
+  return db.orgOfProject(projectId) === orgId;
+}
+function orgProject(orgId: string, id: string): Project {
+  const p = findProject(id);
+  if (!inOrg(orgId, p.id)) throw NOT_FOUND();
+  return p;
+}
+
+// ---- v0.4: component inventory ----
+
+/** Like ecosystem.MatchName on the server: PyPI names per PEP 503, everything else lowercase
+ *  (case-insensitive prefix search). */
+function matchName(eco: string, name: string): string {
+  return eco === "PyPI" ? name.toLowerCase().replace(/[-_.]+/g, "-") : name.toLowerCase();
+}
+
+/** Projects whose components the caller sees: org admins and security leads every project,
+ *  members only their own; archived projects never. */
+function visibleProjects(orgId: string): Project[] {
+  const role = callerRole(orgId);
+  return db.projects.filter((p) => inOrg(orgId, p.id) && !p.archived_at && (role !== "member" || p.my_role !== null));
+}
+
+function isMalicious(eco: string, name: string, version: string): boolean {
+  return db.maliciousPackages.some((m) => m.ecosystem === eco && matchName(eco, m.name) === matchName(eco, name) && (m.versions === "all" || m.versions.includes(version)));
+}
+
+/** Active Trivy issues on this package version in these projects (and target, when given). */
+function openIssuesFor(projectIds: Set<string>, name: string, version: string, target?: string): number {
+  return db.issues.filter(
+    (i) =>
+      projectIds.has(i.project_id) &&
+      ACTIVE.includes(i.status) &&
+      i.tool === "trivy" &&
+      i.package_name === name &&
+      i.package_version === version &&
+      (target === undefined || i.target === target),
+  ).length;
+}
+
+const ECOSYSTEM = /^[A-Za-z0-9.+_-]{1,32}$/;
+
+function inventoryFilter(url: URL): (r: db.InventoryRow) => boolean {
+  const sp = url.searchParams;
+  const q = sp.get("q") ?? "";
+  const eco = sp.get("ecosystem");
+  const version = sp.get("version");
+  const fields: Record<string, string> = {};
+  if (q.length > 128) fields.q = "at most 128 characters";
+  if (eco !== null && !ECOSYSTEM.test(eco)) fields.ecosystem = "not an ecosystem name";
+  if (version !== null && version.length > 128) fields.version = "at most 128 characters";
+  if (sp.has("malicious") && !["true", "false"].includes(sp.get("malicious")!)) fields.malicious = "true or false";
+  if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+  const malicious = sp.get("malicious") === "true";
+  return (r) =>
+    (!q || matchName(r.ecosystem, r.name).startsWith(matchName(eco ?? r.ecosystem, q))) &&
+    (!eco || r.ecosystem === eco) &&
+    (!version || r.version === version) &&
+    (!malicious || isMalicious(r.ecosystem, r.name, r.version));
+}
+
+const byName = (a: { name: string; ecosystem: string; version: string }, b: { name: string; ecosystem: string; version: string }) =>
+  a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.ecosystem.localeCompare(b.ecosystem) || a.version.localeCompare(b.version);
+
+function listComponents(orgId: string, url: URL) {
+  const pid = url.searchParams.get("project_id");
+  const visible = visibleProjects(orgId).filter((p) => !pid || p.id === pid);
+  const ids = new Set(visible.map((p) => p.id));
+  const keep = inventoryFilter(url);
+  const groups = new Map<string, db.InventoryRow[]>();
+  for (const r of db.inventory) {
+    if (!ids.has(r.project_id) || !keep(r)) continue;
+    const k = `${r.ecosystem}\u0000${matchName(r.ecosystem, r.name)}\u0000${r.version}`;
+    groups.set(k, [...(groups.get(k) ?? []), r]);
+  }
+  const items: (ComponentSummary & { id: string })[] = [...groups.entries()].map(([k, rs]) => {
+    const r = rs[0]!;
+    const projects = new Set(rs.map((x) => x.project_id));
+    return {
+      id: k,
+      ecosystem: r.ecosystem,
+      name: r.name,
+      version: r.version,
+      purl: r.purl,
+      licenses: [...new Set(rs.flatMap((x) => x.licenses))],
+      projects: projects.size,
+      targets: new Set(rs.map((x) => `${x.project_id}\u0000${x.target}`)).size,
+      open_issues: openIssuesFor(projects, r.name, r.version),
+      malicious: isMalicious(r.ecosystem, r.name, r.version),
+    };
+  });
+  const { items: pageItems, next_cursor } = page(items.sort(byName), url);
+  return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
+}
+
+function componentUsage(orgId: string, url: URL) {
+  const sp = url.searchParams;
+  const eco = sp.get("ecosystem") ?? "";
+  const name = sp.get("name") ?? "";
+  const version = sp.get("version") ?? "";
+  const fields: Record<string, string> = {};
+  if (!ECOSYSTEM.test(eco)) fields.ecosystem = "required";
+  if (name.length < 1 || name.length > 256) fields.name = "1 to 256 characters";
+  if (version.length < 1 || version.length > 128) fields.version = "1 to 128 characters";
+  if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+  const visible = new Map(visibleProjects(orgId).map((p) => [p.id, p]));
+  const items: (ComponentUsage & { id: string })[] = db.inventory
+    .filter((r) => visible.has(r.project_id) && r.ecosystem === eco && matchName(eco, r.name) === matchName(eco, name) && r.version === version)
+    .map((r) => {
+      const p = visible.get(r.project_id)!;
+      const s = db.scans.find((x) => x.id === r.scan_id)!;
+      return {
+        id: `${r.project_id}${r.target}${r.path}`,
+        project_id: p.id,
+        project_key: p.key,
+        project_name: p.name,
+        target: r.target,
+        path: r.path,
+        scan_id: s.id,
+        scanned_at: s.finished_at ?? s.created_at,
+        first_seen: r.first_seen,
+      };
+    })
+    .sort((a, b) => a.project_key.localeCompare(b.project_key) || a.target.localeCompare(b.target) || a.path.localeCompare(b.path));
+  const { items: pageItems, next_cursor } = page(items, url);
+  return { items: pageItems.map(({ id: _id, ...u }) => u), next_cursor };
+}
+
+function projectComponents(orgId: string, p: Project, url: URL) {
+  const sp = url.searchParams;
+  if (sp.has("target") && sp.get("target")!.length > 255) throw new Fail(422, "VALIDATION_FAILED", { target: "at most 255 characters" });
+  const keep = inventoryFilter(url);
+  const target = sp.get("target");
+  const items: (ProjectComponent & { id: string })[] = db.inventory
+    .filter((r) => r.project_id === p.id && keep(r) && (target === null || r.target === target))
+    .map((r) => ({
+      id: `${r.target}${r.path}${r.ecosystem}${r.name}${r.version}`,
+      ecosystem: r.ecosystem,
+      name: r.name,
+      version: r.version,
+      purl: r.purl,
+      licenses: r.licenses,
+      target: r.target,
+      path: r.path,
+      first_seen: r.first_seen,
+      open_issues: openIssuesFor(new Set([p.id]), r.name, r.version, r.target),
+      malicious: isMalicious(r.ecosystem, r.name, r.version),
+    }))
+    // Malicious first, then by name: the tab is per project, so the most urgent rows lead.
+    .sort((a, b) => Number(b.malicious) - Number(a.malicious) || byName(a, b));
+  void orgId;
+  const { items: pageItems, next_cursor } = page(items, url);
+  return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
+}
+
+// ---- v0.4 wave 2: webhooks and Slack ----
+
+/** manage_integrations: org admins and security leads. */
+function requireIntegrations(orgId: string): Webhook[] {
+  const role = callerRole(orgId);
+  if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+  return (db.webhooks[orgId] ??= []);
+}
+
+function findWebhook(orgId: string, id: string): Webhook {
+  const w = requireIntegrations(orgId).find((x) => x.id === id);
+  if (!w) throw NOT_FOUND();
+  return w;
+}
+
+const SLACK_PREFIX = "https://hooks.slack.com/services/";
+/** Like the server's checks on a webhook URL: https, no user info, not a private or internal
+ *  address (the mock can't resolve names; it refuses the obvious ones), Slack's prefix. */
+function checkWebhookUrl(kind: Webhook["kind"], raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length < 1 || raw.length > 2048) return "must be a URL of at most 2048 characters";
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return "must be an absolute URL";
+  }
+  if (u.protocol !== "https:") return "must use https";
+  if (u.username || u.password) return "must not contain user info";
+  if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[|metadata\.)|\.internal$|\.local$/i.test(u.hostname)) {
+    return "resolves to a private address";
+  }
+  if (kind === "slack" && !raw.startsWith(SLACK_PREFIX)) return `Slack URLs start with ${SLACK_PREFIX}`;
+  return null;
+}
+
+function checkWebhookFields(orgId: string, b: Record<string, unknown>, fields: Record<string, string>, kind: Webhook["kind"]) {
+  if ("name" in b && (typeof b.name !== "string" || b.name.trim().length < 1 || b.name.length > 80)) fields.name = "1 to 80 characters";
+  if ("url" in b) {
+    const bad = checkWebhookUrl(kind, b.url);
+    if (bad) fields.url = bad;
+  }
+  if ("events" in b) {
+    const ev = b.events;
+    if (!Array.isArray(ev) || ev.length < 1) fields.events = "at least one event";
+    else if (ev.some((e) => !WEBHOOK_EVENT_TYPES.includes(e as never))) fields.events = "unknown event type";
+    else if (new Set(ev).size !== ev.length) fields.events = "duplicate event";
+  }
+  if ("project_ids" in b) {
+    const ids = b.project_ids;
+    if (!Array.isArray(ids) || ids.length > 100) fields.project_ids = "at most 100 projects";
+    else
+      ids.forEach((id, i) => {
+        if (typeof id !== "string" || !db.projects.some((p) => p.id === id && inOrg(orgId, p.id))) fields[`project_ids[${i}]`] = "not a project in this org";
+      });
+  }
+  if ("min_severity" in b && b.min_severity !== null && !SEVERITIES.includes(b.min_severity as never)) fields.min_severity = "unknown severity";
+}
+
+/** A plainly fake signing secret, built at runtime (CLAUDE.md: no secret-shaped fixtures). */
+function mockSigningSecret(): string {
+  return `whsec_${btoa(`mock-signing-secret-${Math.random().toString(36).slice(2, 10)}`)}`;
+}
+
+/** A test delivery is answered a few seconds after it was queued (the relay fails, like its log). */
+function advanceDelivery(orgId: string, webhookId: string, d: WebhookDelivery): WebhookDelivery {
+  const t = (d as WebhookDelivery & { _t?: number })._t;
+  if (t === undefined || d.state !== "pending" || db.now() - t < 3000) return d;
+  const w = db.webhooks[orgId]?.find((x) => x.id === webhookId);
+  const fails = w?.name === "Ticket relay";
+  const at = new Date().toISOString();
+  Object.assign(d, {
+    state: fails ? "failed" : "delivered",
+    attempts: 1,
+    status_code: fails ? 500 : 200,
+    error: fails ? "http_status" : null,
+    last_attempt_at: at,
+    delivered_at: fails ? null : at,
+  });
+  if (w) w.last_delivery = { at, state: d.state, status_code: d.status_code };
+  return d;
+}
+
+function projectTargets(p: Project): { items: ProjectTarget[] } {
+  const targets = new Set<string>();
+  for (const s of db.scans) if (s.project_id === p.id) targets.add(s.target);
+  for (const i of db.issues) if (i.project_id === p.id) targets.add(i.target);
+  const items = [...targets]
+    .sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
+    .map((target) => {
+      const last = db.scans.filter((s) => s.project_id === p.id && s.target === target).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      return {
+        target,
+        kind: (target === "" ? "source" : target === "(history)" ? "history" : "image") as ProjectTarget["kind"],
+        last_scan_at: last?.created_at ?? null,
+        open_issues: db.issues.filter((i) => i.project_id === p.id && i.target === target && ACTIVE.includes(i.status)).length,
+      };
+    });
+  return { items };
+}
+
 function memberUser(userId: string) {
   const m = db.orgMembers.find((x) => x.user.id === userId);
   if (!m) throw new Fail(422, "VALIDATION_FAILED", { user_id: "not an org member" });
@@ -237,6 +500,16 @@ function validateRules(p: Project, items: AssignRule[]): void {
 
 const O = "/orgs/([^/]+)";
 const routes: [string, RegExp, Handler][] = [
+  // ---- v0.5: the UI's OIDC settings (public) ----
+  [
+    "GET",
+    /^\/web-config$/,
+    () => {
+      if (db.mockFlags.webConfig === "unavailable") throw new Fail(500, "INTERNAL");
+      if (db.mockFlags.webConfig === "invalid") return { ...db.webConfig, issuer: "http://id.acme.example/realms/warden" };
+      return db.webConfig;
+    },
+  ],
   ["GET", /^\/me$/, () => db.me],
   // ---- v0.2 notifications (own data only) ----
   [
@@ -311,9 +584,9 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/issues/counts$`),
-    (_m, url) => {
+    (m, url) => {
       const pid = url.searchParams.get("project_id");
-      const active = db.issues.filter((i) => ACTIVE.includes(i.status) && (!pid || i.project_id === pid));
+      const active = db.issues.filter((i) => ACTIVE.includes(i.status) && inOrg(m[1]!, i.project_id) && (!pid || i.project_id === pid));
       return {
         active: active.length,
         mine: active.filter((i) => i.assignee?.id === db.me.id).length,
@@ -321,6 +594,7 @@ const routes: [string, RegExp, Handler][] = [
         secrets: active.filter((i) => i.tool === "gitleaks").length,
         kev: active.filter((i) => i.kev).length,
         licenses: active.filter((i) => i.tool === "trivy" && i.rule_id.startsWith("license:")).length,
+        malicious: active.filter((i) => i.tool === "trivy" && i.rule_id.startsWith("malicious:")).length,
       };
     },
   ],
@@ -351,18 +625,160 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/scans/([^/]+)/sbom$`),
-    (m) => {
+    (m, url) => {
+      const format = url.searchParams.get("format") ?? "cyclonedx";
+      if (format !== "cyclonedx" && format !== "spdx") throw new Fail(422, "VALIDATION_FAILED", { format: "cyclonedx or spdx" });
       const s = db.scans.find((x) => x.id === m[2]);
-      if (!s || !s.sbom) throw NOT_FOUND();
+      const wire = format === "spdx" ? "spdx-json" : "cyclonedx-json";
+      if (!s || !s.sbom || !s.sbom.formats.includes(wire)) throw NOT_FOUND();
+      // The SPDX file is a little larger than the CycloneDX one for the same components.
+      const size = format === "spdx" ? Math.round(s.sbom.size * 1.37) : s.sbom.size;
       return {
         // Never followed in mock mode (there is no object store); shaped like a presigned GET.
-        url: `https://storage.mock.invalid/warden/sboms/${m[1]}/${s.id}.cdx.json?X-Amz-Expires=300&X-Amz-Signature=mock`,
+        url: `https://storage.mock.invalid/warden/sboms/${m[1]}/${s.id}.${format === "spdx" ? "spdx" : "cdx"}.json?X-Amz-Expires=300&X-Amz-Signature=mock`,
         expires_at: new Date(db.now() + 5 * 60_000).toISOString(),
-        format: "cyclonedx-json",
-        size: s.sbom.size,
-        sha256: db.fakeSha256(s.sbom.size),
+        format: wire,
+        size,
+        sha256: db.fakeSha256(size),
         components: s.sbom.components,
       };
+    },
+  ],
+  // ---- v0.4 component inventory ----
+  ["GET", new RegExp(`^${O}/components$`), (m, url) => listComponents(m[1]!, url)],
+  ["GET", new RegExp(`^${O}/components/usage$`), (m, url) => componentUsage(m[1]!, url)],
+  ["GET", new RegExp(`^${O}/projects/([^/]+)/components$`), (m, url) => projectComponents(m[1]!, orgProject(m[1]!, m[2]!), url)],
+  ["GET", new RegExp(`^${O}/projects/([^/]+)/targets$`), (m) => projectTargets(orgProject(m[1]!, m[2]!))],
+  // ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
+  ["GET", new RegExp(`^${O}/webhooks$`), (m) => ({ items: requireIntegrations(m[1]!), available: !db.mockFlags.integrationsUnavailable })],
+  [
+    "POST",
+    new RegExp(`^${O}/webhooks$`),
+    (m, _u, body) => {
+      const list = requireIntegrations(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      if (db.mockFlags.integrationsUnavailable || list.length >= 20) throw new Fail(409, "CONFLICT");
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["kind", "name", "url", "events", "project_ids", "min_severity"].includes(k)) fields[k] = "unknown field";
+      const kind = b.kind === "slack" || b.kind === "generic" ? b.kind : null;
+      if (!kind) fields.kind = "slack or generic";
+      for (const k of ["name", "url", "events"]) if (!(k in b)) fields[k] = "required";
+      checkWebhookFields(m[1]!, b, fields, kind ?? "generic");
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const url = new URL(b.url as string);
+      const at = new Date().toISOString();
+      const w: Webhook = {
+        id: db.uuid(),
+        kind: kind!,
+        name: (b.name as string).trim(),
+        url_hint: `${url.protocol}//${url.host}`,
+        events: WEBHOOK_EVENT_TYPES.filter((e) => (b.events as string[]).includes(e)),
+        project_ids: (b.project_ids as string[] | undefined) ?? [],
+        min_severity: (b.min_severity as Webhook["min_severity"] | undefined) ?? null,
+        enabled: true,
+        disabled_reason: null,
+        consecutive_failures: 0,
+        last_delivery: null,
+        created_by: meRef(),
+        created_at: at,
+        updated_at: at,
+      };
+      list.push(w);
+      db.deliveries[w.id] = [];
+      audit("webhook.created", "webhook", w.id, { name: w.name, kind: w.kind, url_hint: w.url_hint, events: w.events });
+      return [201, { webhook: w, secret: w.kind === "generic" ? mockSigningSecret() : null }];
+    },
+  ],
+  ["GET", new RegExp(`^${O}/webhooks/([^/]+)$`), (m) => findWebhook(m[1]!, m[2]!)],
+  [
+    "PATCH",
+    new RegExp(`^${O}/webhooks/([^/]+)$`),
+    (m, _u, body) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      const keys = Object.keys(b);
+      if (keys.length === 0) fields.body = "nothing to change";
+      for (const k of keys) if (!["name", "url", "events", "project_ids", "min_severity", "enabled"].includes(k)) fields[k] = "unknown field";
+      if ("enabled" in b && typeof b.enabled !== "boolean") fields.enabled = "true or false";
+      checkWebhookFields(m[1]!, b, fields, w.kind);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (typeof b.name === "string") w.name = b.name.trim();
+      if (typeof b.url === "string") {
+        const url = new URL(b.url);
+        w.url_hint = `${url.protocol}//${url.host}`;
+      }
+      if (Array.isArray(b.events)) w.events = WEBHOOK_EVENT_TYPES.filter((e) => (b.events as string[]).includes(e));
+      if (Array.isArray(b.project_ids)) w.project_ids = b.project_ids as string[];
+      if ("min_severity" in b) w.min_severity = (b.min_severity as Webhook["min_severity"]) ?? null;
+      if (b.enabled === true) {
+        w.enabled = true;
+        w.disabled_reason = null;
+        w.consecutive_failures = 0;
+      } else if (b.enabled === false) {
+        w.enabled = false;
+        w.disabled_reason = null;
+      }
+      w.updated_at = new Date().toISOString();
+      audit("webhook.updated", "webhook", w.id, { name: w.name, fields: keys });
+      return w;
+    },
+  ],
+  [
+    "DELETE",
+    new RegExp(`^${O}/webhooks/([^/]+)$`),
+    (m) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const list = db.webhooks[m[1]!]!;
+      list.splice(list.indexOf(w), 1);
+      delete db.deliveries[w.id];
+      audit("webhook.deleted", "webhook", w.id, { name: w.name, kind: w.kind });
+      return [204, null];
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/webhooks/([^/]+)/rotate-secret$`),
+    (m) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      if (w.kind !== "generic") throw new Fail(422, "VALIDATION_FAILED", { kind: "Slack webhooks have no signing secret" });
+      audit("webhook.secret_rotated", "webhook", w.id, { name: w.name });
+      return { secret: mockSigningSecret() };
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/webhooks/([^/]+)/test$`),
+    (m) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const log = (db.deliveries[w.id] ??= []);
+      const hourAgo = new Date(db.now() - 3_600_000).toISOString();
+      if (log.filter((d) => d.type === "webhook.test" && d.created_at >= hourAgo).length >= 10) throw new Fail(429, "RATE_LIMITED");
+      const d: WebhookDelivery = {
+        id: db.uuid(),
+        type: "webhook.test",
+        state: "pending",
+        attempts: 0,
+        status_code: null,
+        error: null,
+        created_at: new Date().toISOString(),
+        last_attempt_at: null,
+        next_attempt_at: new Date().toISOString(),
+        delivered_at: null,
+      };
+      (d as WebhookDelivery & { _t?: number })._t = db.now();
+      log.unshift(d);
+      return [202, d];
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/webhooks/([^/]+)/deliveries$`),
+    (m, url) => {
+      const w = findWebhook(m[1]!, m[2]!);
+      const log = (db.deliveries[w.id] ?? []).map((d) => advanceDelivery(m[1]!, w.id, d));
+      const { items, next_cursor } = page(log, url);
+      return { items: items.map(({ _t: _omit, ...d }: WebhookDelivery & { _t?: number }) => d), next_cursor };
     },
   ],
   // ---- v0.2 API tokens ----
@@ -456,8 +872,8 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/summary$`),
-    () => {
-      const open = db.issues.filter((i) => ACTIVE.includes(i.status));
+    (m) => {
+      const open = db.issues.filter((i) => ACTIVE.includes(i.status) && inOrg(m[1]!, i.project_id));
       return {
         open_issues: open.length,
         critical_high_open: open.filter((i) => i.severity === "critical" || i.severity === "high").length,
@@ -583,8 +999,8 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/projects$`),
-    (_m, url) => ({
-      items: db.projects.filter((p) => !p.archived_at || url.searchParams.get("include_archived") === "true").map(projectView),
+    (m, url) => ({
+      items: db.projects.filter((p) => inOrg(m[1]!, p.id) && (!p.archived_at || url.searchParams.get("include_archived") === "true")).map(projectView),
     }),
   ],
   [
@@ -608,12 +1024,13 @@ const routes: [string, RegExp, Handler][] = [
         archived_at: null,
       };
       db.projects.push(p);
+      db.projectOrg[p.id] = _m[1]!;
       db.projectMembers[p.id] = [];
       audit("project.created", "project", p.id, { project_key: p.key, name: p.name });
       return [201, projectView(p)];
     },
   ],
-  ["GET", new RegExp(`^${O}/projects/([^/]+)$`), (m) => projectView(findProject(m[2]!))],
+  ["GET", new RegExp(`^${O}/projects/([^/]+)$`), (m) => projectView(orgProject(m[1]!, m[2]!))],
   ["GET", new RegExp(`^${O}/projects/([^/]+)/members$`), (m) => ({ items: db.projectMembers[findProject(m[2]!).id] ?? [] })],
   [
     "PUT",
@@ -670,12 +1087,17 @@ const routes: [string, RegExp, Handler][] = [
         if (b.tools && b.tools.some((t) => t !== "trivy")) fields.tools = "image scans run trivy only";
         if (b.image_ref && b.image_ref.length > 512) fields.image_ref = "at most 512 characters";
         if (b.file_size > db.me.limits.image_upload_max_mb * 1024 * 1024) fields.file_size = "larger than image_upload_max_mb";
+      } else if (kind === "history") {
+        // v0.4 wave 2: only the CLI makes these (the web UI can't build a git bundle).
+        if (!/\.bundle$/i.test(b.file_name)) fields.file_name = "must be a .bundle for a history scan";
+        if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
+        if (b.tools && b.tools.some((t) => t !== "gitleaks")) fields.tools = "history scans run gitleaks only";
       } else {
         if (!/\.zip$/i.test(b.file_name)) fields.file_name = "must be a .zip for a source scan";
         if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
       }
       if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
-      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : (b.tools ?? p.default_tools);
+      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : kind === "history" ? (["gitleaks"] as Scan["tools"]) : (b.tools ?? p.default_tools);
       const scan: Scan = {
         id: db.uuid(),
         project_id: p.id,
@@ -692,9 +1114,10 @@ const routes: [string, RegExp, Handler][] = [
         finished_at: null,
         via_token: null,
         kind,
-        target: kind === "image" ? b.target! : "",
+        target: kind === "image" ? b.target! : kind === "history" ? "(history)" : "",
         image_ref: kind === "image" ? (b.image_ref ?? null) : null,
         sbom: null,
+        history: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
@@ -745,7 +1168,7 @@ const routes: [string, RegExp, Handler][] = [
   [
     "GET",
     new RegExp(`^${O}/issues$`),
-    (_m, url) => {
+    (m, url) => {
       const sp = url.searchParams;
       const statuses = sp.getAll("status");
       const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
@@ -753,15 +1176,17 @@ const routes: [string, RegExp, Handler][] = [
       const base = db.issues.filter(
         (i) =>
           want.includes(i.status) &&
+          inOrg(m[1]!, i.project_id) &&
           (!sp.get("project_id") || i.project_id === sp.get("project_id")) &&
           (!sp.get("tool") || i.tool === sp.get("tool")) &&
           (sp.get("past_sla") !== "true" || i.past_sla) &&
           // v0.3
           (sp.get("kev") !== "true" || i.kev) &&
           (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
-          (!sp.get("kind") ||
-            (i.tool === "trivy" && (sp.get("kind") === "license") === i.rule_id.startsWith("license:"))) &&
-          (!sp.get("source") || (sp.get("source") === "image") === (i.target !== "")) &&
+          (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
+          // v0.4 wave 2: history issues have the target "(history)".
+          (!sp.get("source") ||
+            (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
           (!sp.get("target") || i.target === sp.get("target")) &&
           (!sp.get("assignee") ||
             (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
@@ -927,8 +1352,13 @@ const routes: [string, RegExp, Handler][] = [
   ],
 ];
 
+/** v0.4: Trivy issues are license-policy issues, malicious packages or vulnerabilities. */
+function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
+  return ruleId.startsWith("license:") ? "license" : ruleId.startsWith("malicious:") ? "malicious" : "vulnerability";
+}
+
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, ...rest } = i;
   return rest;
 }
 

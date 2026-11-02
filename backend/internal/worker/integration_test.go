@@ -236,7 +236,8 @@ func TestScanEndToEnd(t *testing.T) {
 func TestSBOMAndLicensesEndToEnd(t *testing.T) {
 	it := newITest(t)
 	it.env.Images = map[string]string{"trivy": "docker.io/aquasec/trivy:0.75.0@sha256:" + strings.Repeat("c", 64)}
-	it.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"}]}`}
+	it.sb.files = map[string]string{"trivy.json": trivyReport, "sbom.cdx.json": `{"bomFormat":"CycloneDX","components":[{"name":"x"}]}`,
+		"sbom.spdx.json": `{"spdxVersion":"SPDX-2.3","name":"/src","packages":[{"name":"x"}]}`}
 	owner(t, it.org, fmt.Sprintf(`UPDATE organization SET license_policy = '{"categories":{"restricted":"block"}}' WHERE id = '%s'`, it.org))
 	data, sha := zipBytes()
 	id, key := it.scan("queued", sha, 0, "trivy")
@@ -251,6 +252,18 @@ func TestSBOMAndLicensesEndToEnd(t *testing.T) {
 	if status != "completed" || storedKey != sbomKey || components != 1 || severity != "high" || it.store.objects[sbomKey] == nil {
 		t.Fatal(status, storedKey, components, severity)
 	}
+	// The SPDX file is stored next to it; the license issue has its category;
+	// the package is in the inventory with the scan's path.
+	spdxKey := SPDXKey(it.org, id)
+	var storedSPDX, category, path string
+	var spdxSize int64
+	it.one(fmt.Sprintf(`SELECT sbom_spdx_key, sbom_spdx_size FROM scan WHERE id = '%s'`, id), &storedSPDX, &spdxSize)
+	it.one(fmt.Sprintf(`SELECT license_category FROM issue WHERE project_id = '%s' AND rule_id = 'license:GPL-3.0-only'`, it.project), &category)
+	it.one(fmt.Sprintf(`SELECT path FROM component WHERE project_id = '%s' AND target = '' AND name = 'gpl-thing' AND scan_id = '%s'`, it.project, id), &path)
+	if storedSPDX != spdxKey || spdxSize != int64(len(it.store.objects[spdxKey])) || category != "restricted" || path != "package-lock.json" ||
+		!strings.Contains(string(it.store.objects[spdxKey]), `"documentNamespace":"urn:uuid:`+id.String()) {
+		t.Fatal(storedSPDX, spdxSize, category, path)
+	}
 
 	// Not expired yet: kept.
 	if err := it.env.PurgeExpiredSources(context.Background()); err != nil || contains(it.store.deleted, sbomKey) {
@@ -262,8 +275,8 @@ func TestSBOMAndLicensesEndToEnd(t *testing.T) {
 	}
 	var cleared bool
 	it.one(fmt.Sprintf(`SELECT sbom_key IS NULL AND sbom_size IS NULL AND sbom_sha256 IS NULL AND sbom_components IS NULL
-		AND sbom_expires_at IS NULL FROM scan WHERE id = '%s'`, id), &cleared)
-	if !cleared || !contains(it.store.deleted, sbomKey) {
+		AND sbom_expires_at IS NULL AND sbom_spdx_key IS NULL AND sbom_spdx_size IS NULL AND sbom_spdx_sha256 IS NULL FROM scan WHERE id = '%s'`, id), &cleared)
+	if !cleared || !contains(it.store.deleted, sbomKey) || !contains(it.store.deleted, spdxKey) {
 		t.Fatal(cleared, it.store.deleted)
 	}
 }

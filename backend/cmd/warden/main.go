@@ -4,14 +4,17 @@
 //	export WARDEN_TOKEN=wdn_...        # an API token with scope scan:write
 //	warden scan --url https://warden.example --org ORG_ID --project PROJECT_ID \
 //	    [--dir .] [--tools gitleaks,opengrep] [--fail-on high] [--fail-on-kev] [--timeout 30m] \
-//	    [--sbom-out bom.cdx.json]
+//	    [--sbom-out bom.cdx.json [--sbom-format cyclonedx|spdx]]
 //	warden scan ... --image ghcr.io/acme/api:1.2           # docker save, then an image scan
 //	warden scan ... --image-tar api.tar --target ghcr.io/acme/api [--image-ref ghcr.io/acme/api:1.2]
+//	warden scan ... [--dir .] --history                   # every commit (git bundle), Gitleaks only
 //
-// --sbom-out saves the scan's CycloneDX SBOM (Trivy must be among the tools),
-// after checking it against the SHA-256 the server recorded. --fail-on-kev also
-// fails the gate on any issue whose CVE is on CISA's Known Exploited
-// Vulnerabilities list, whatever its severity.
+// --sbom-out saves the scan's SBOM, CycloneDX or (--sbom-format spdx) SPDX
+// JSON (Trivy must be among the tools), after checking it against the SHA-256
+// the server recorded. --fail-on-kev also fails the gate on any issue whose
+// CVE is on CISA's Known Exploited Vulnerabilities list, whatever its severity.
+// --comment auto|github|gitlab posts a summary on the pull or merge request
+// (comment.go); it never changes the exit status.
 //
 // Exit status: 0 the gate passed, 1 the gate failed (blocking issues), 2 any
 // error (bad arguments, network, authentication, the scan failed or timed out,
@@ -50,9 +53,10 @@ const (
 	exitError      = 2
 
 	usage = `usage: warden scan --url URL --org ORG_ID --project PROJECT_ID [--dir DIR] [--tools a,b] [--fail-on high]
-                   [--fail-on-kev] [--timeout 30m] [--sbom-out FILE]
-                   [--image REF | --image-tar FILE --target REPO [--image-ref REF]]
-The API token is read from $WARDEN_TOKEN.`
+                   [--fail-on-kev] [--timeout 30m] [--sbom-out FILE [--sbom-format cyclonedx|spdx]]
+                   [--image REF | --image-tar FILE --target REPO [--image-ref REF] | --history]
+                   [--comment auto|github|gitlab|off]
+The API token is read from $WARDEN_TOKEN; --comment uses $GITHUB_TOKEN or $WARDEN_GITLAB_TOKEN.`
 )
 
 func main() {
@@ -68,8 +72,10 @@ type deps struct {
 	upload *http.Client // object storage: the archive upload, the SBOM download
 	pack   func(dir, dest, prefix string) (int, error)
 	save   func(ctx context.Context, ref, dest string) error // docker save
+	bundle func(ctx context.Context, dir, dest string) error // git bundle create --all
 	sleep  func(ctx context.Context, d time.Duration) error
 	poll   time.Duration // first polling interval (backs off to maxPoll)
+	ci     *http.Client  // the CI's API (--comment): no redirects
 }
 
 const maxPoll = 15 * time.Second
@@ -88,8 +94,10 @@ func defaultDeps() deps {
 		upload: &http.Client{Transport: transport, Timeout: 30 * time.Minute, CheckRedirect: noRedirects},
 		pack:   pack.Repo,
 		save:   dockerSave,
+		bundle: gitBundle,
 		sleep:  sleep,
 		poll:   2 * time.Second,
+		ci:     &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: noRedirects},
 	}
 }
 
@@ -116,12 +124,19 @@ type options struct {
 	failOn       string
 	failOnKEV    bool
 	sbomOut      string
+	sbomFormat   string // cyclonedx or spdx
 	// Image scans: image (docker save it) or imageTar, with target and imageRef.
 	image, imageTar  string
 	target, imageRef string
 	timeout          time.Duration
 	token            string
 	stdout, stderr   io.Writer
+	// --comment: off, auto, github or gitlab; getenv reads the CI's variables.
+	comment string
+	getenv  func(string) string
+
+	// history: bundle every commit of dir (a history scan, Gitleaks only).
+	history bool
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, d deps) int {
@@ -139,21 +154,29 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	failOn := fs.String("fail-on", "high", "critical|high|medium|low")
 	timeout := fs.Duration("timeout", 30*time.Minute, "give up (and cancel the scan) after this long")
 	failOnKEV := fs.Bool("fail-on-kev", false, "also fail on any issue whose CVE is known exploited (CISA KEV)")
-	sbomOut := fs.String("sbom-out", "", "save the scan's CycloneDX SBOM to this file")
+	sbomOut := fs.String("sbom-out", "", "save the scan's SBOM to this file")
+	sbomFormat := fs.String("sbom-format", "cyclonedx", "SBOM format for --sbom-out: cyclonedx|spdx")
 	image := fs.String("image", "", "scan this container image (docker save) instead of --dir")
 	imageTar := fs.String("image-tar", "", "scan this docker save tarball instead of --dir")
 	target := fs.String("target", "", "image repository without tag (required with --image-tar)")
 	imageRef := fs.String("image-ref", "", "image reference shown on the scan (with --image-tar)")
+	comment := fs.String("comment", commentOff, "comment on the pull/merge request: auto|github|gitlab|off")
+	history := fs.Bool("history", false, "scan every commit of --dir for secrets (needs the full history, not a shallow clone)")
 	if err := fs.Parse(args[1:]); err != nil {
 		fmt.Fprintln(stderr, usage)
 		return exitError
 	}
-	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, timeout: *timeout, stdout: stdout, stderr: stderr,
-		image: *image, imageTar: *imageTar, target: *target, imageRef: *imageRef}
+	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, sbomFormat: *sbomFormat, timeout: *timeout, stdout: stdout, stderr: stderr,
+		image: *image, imageTar: *imageTar, target: *target, imageRef: *imageRef, comment: *comment, getenv: getenv, history: *history}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	var problems []string
 	var err error
+	switch o.comment {
+	case commentOff, commentAuto, commentGitHub, commentGitLab:
+	default:
+		problems = append(problems, "--comment: must be auto, github, gitlab or off")
+	}
 	problems = append(problems, o.imageProblems(set)...)
 	if o.server, err = checkURL(*server); err != nil {
 		problems = append(problems, "--url: "+err.Error())
@@ -169,6 +192,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	default:
 		problems = append(problems, "--fail-on: must be critical, high, medium or low")
 	}
+	switch {
+	case o.sbomFormat != "cyclonedx" && o.sbomFormat != "spdx":
+		problems = append(problems, "--sbom-format: must be cyclonedx or spdx")
+	case set["sbom-format"] && o.sbomOut == "":
+		problems = append(problems, "--sbom-format: needs --sbom-out")
+	}
 	if o.timeout <= 0 {
 		problems = append(problems, "--timeout: must be positive")
 	}
@@ -177,6 +206,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 			o.tools = append(o.tools, t)
 		}
 	}
+	problems = append(problems, o.historyProblems(set)...)
 	o.token = strings.TrimSpace(getenv("WARDEN_TOKEN"))
 	switch {
 	case o.token == "":

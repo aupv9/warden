@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/aupv9/warden/backend/internal/ids"
+	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/results"
@@ -56,24 +57,40 @@ func loadScan(ctx context.Context, db DB, id uuid.UUID) (scanRow, error) {
 	return r, err
 }
 
-// SBOMKey is where a scan's SBOM lives in object storage.
+// SBOMKey is where a scan's CycloneDX SBOM lives in object storage.
 func SBOMKey(orgID, scanID uuid.UUID) string {
 	return fmt.Sprintf("sboms/%s/%s.cdx.json", orgID, scanID)
 }
 
-// storeSBOM uploads the scan's SBOM. A failure is logged and costs only the
-// SBOM (nil): the scan's results don't depend on it.
-func (e *Env) storeSBOM(ctx context.Context, org, scanID uuid.UUID, s *sbom.Stamped, log *slog.Logger) *results.SBOM {
-	if s == nil {
+// SPDXKey is where a scan's SPDX SBOM lives in object storage.
+func SPDXKey(orgID, scanID uuid.UUID) string {
+	return fmt.Sprintf("sboms/%s/%s.spdx.json", orgID, scanID)
+}
+
+// storeSBOM uploads the scan's SBOMs. A failure is logged and costs only that
+// SBOM: the scan's results don't depend on them. The SPDX file is kept only
+// with the CycloneDX one (the scan's sbom_* columns describe the pair, and
+// share one expiry).
+func (e *Env) storeSBOM(ctx context.Context, org, scanID uuid.UUID, cdx, spdx *sbom.Stamped, log *slog.Logger) *results.SBOM {
+	if cdx == nil {
 		return nil
 	}
 	key := SBOMKey(org, scanID)
-	if err := e.Store.Put(ctx, key, s.Data, s.SHA256, sbom.MediaType); err != nil {
+	if err := e.Store.Put(ctx, key, cdx.Data, cdx.SHA256, sbom.MediaType); err != nil {
 		log.Warn("SBOM not stored; the scan has none", "err", err)
 		return nil
 	}
-	return &results.SBOM{Key: key, Size: int64(len(s.Data)), SHA256: s.SHA256, Components: s.Components,
+	out := &results.SBOM{Key: key, Size: int64(len(cdx.Data)), SHA256: cdx.SHA256, Components: cdx.Components,
 		ExpiresAt: e.Now().UTC().Add(e.SBOMRetention)}
+	if spdx != nil {
+		key := SPDXKey(org, scanID)
+		if err := e.Store.Put(ctx, key, spdx.Data, spdx.SHA256, sbom.SPDXMediaType); err != nil {
+			log.Warn("SPDX SBOM not stored; the scan has only CycloneDX", "err", err)
+		} else {
+			out.SPDXKey, out.SPDXSize, out.SPDXSHA256 = key, int64(len(spdx.Data)), spdx.SHA256
+		}
+	}
+	return out
 }
 
 // RunScan executes one run_scan job. It returns an error only when River should
@@ -82,6 +99,7 @@ func (e *Env) storeSBOM(ctx context.Context, org, scanID uuid.UUID, s *sbom.Stam
 // applied in one transaction with the final status, and a scan whose source is
 // already gone fails cleanly.
 func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) error {
+	started := time.Now()
 	org, err1 := uuid.Parse(job.OrgID)
 	scanID, err2 := uuid.Parse(job.ScanID)
 	if err := errors.Join(err1, err2); err != nil {
@@ -101,16 +119,18 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	}
 	log := e.Log.With("scan_id", scanID, "org_id", org, "attempt", attempt)
 
+	done := func(st orchestrator.ScanStatus, err error) error { return scanDone(sc.Kind, st, started, err) }
+
 	switch orchestrator.ScanStatus(sc.Status) {
 	case orchestrator.Cancelled:
-		return e.finishCancelled(ctx, org, scanID, sc)
+		return done(orchestrator.Cancelled, e.finishCancelled(ctx, org, scanID, sc))
 	case orchestrator.Completed, orchestrator.Partial, orchestrator.Failed:
 		return nil
 	case orchestrator.PendingUpload:
 		return river.JobCancel(errors.New("scan was never started"))
 	}
 	if sc.SourceDeleted || sc.ObjectKey == nil || sc.SHA256 == nil {
-		return e.finishFailed(ctx, org, scanID, sc.Tools, CodeSourceUnavailable)
+		return done(orchestrator.Failed, e.finishFailed(ctx, org, scanID, sc.Tools, CodeSourceUnavailable))
 	}
 
 	// The database is the source of truth; the job only points at the scan.
@@ -130,29 +150,29 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	defer cancelFin()
 	switch {
 	case errors.Is(err, errNotRunnable) || (err == nil && out.Status == orchestrator.Cancelled):
-		return e.finishCancelled(fin, org, scanID, sc)
+		return done(orchestrator.Cancelled, e.finishCancelled(fin, org, scanID, sc))
 	case err != nil:
 		code := errorCode(err, timedOut)
 		log.Error("scan failed", "code", code, "err", err)
-		return e.finishFailed(fin, org, scanID, sc.Tools, code)
+		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, code))
 	case out.Status == orchestrator.Failed:
 		code := out.ErrorCode
 		if timedOut {
 			code = CodeTimeout
 		}
-		return e.finishFailed(fin, org, scanID, sc.Tools, code)
+		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, code))
 	}
 
 	// The SBOM columns are set with the results, so they are never half set;
 	// if the results aren't recorded, the stored object goes too.
-	stored := e.storeSBOM(fin, org, scanID, out.SBOM, log)
+	stored := e.storeSBOM(fin, org, scanID, out.SBOM, out.SPDX, log)
 	var plan results.Plan
 	err = e.Tx(fin, org, func(db DB) error {
 		var err error
 		plan, err = results.Process(fin, db, results.Input{
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
-			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
-			SBOM: stored,
+			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, Packages: out.Packages, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
+			SBOM: stored, History: history(out.History),
 		})
 		if err != nil {
 			return err
@@ -160,21 +180,48 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		return skipUnfinishedTools(fin, db, org, scanID, sc.Tools, e.Images)
 	})
 	if err != nil && stored != nil {
-		if derr := e.Store.Delete(fin, stored.Key); derr != nil {
-			log.Error("failed to delete the SBOM of an unrecorded scan", "object_key", stored.Key, "err", derr)
+		for _, key := range []string{stored.Key, stored.SPDXKey} {
+			if key == "" {
+				continue
+			}
+			if derr := e.Store.Delete(fin, key); derr != nil {
+				log.Error("failed to delete the SBOM of an unrecorded scan", "object_key", key, "err", derr)
+			}
 		}
 	}
 	if errors.Is(err, results.ErrScanNotRunning) {
-		return e.finishCancelled(fin, org, scanID, sc)
+		return done(orchestrator.Cancelled, e.finishCancelled(fin, org, scanID, sc))
 	}
 	if err != nil {
 		// The source is gone, so a retry couldn't rescan; fail the scan now.
 		log.Error("result processing failed", "err", err)
-		return e.finishFailed(fin, org, scanID, sc.Tools, CodeInternal)
+		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, CodeInternal))
 	}
+	metrics.ScanFinished(sc.Kind, string(out.Status), time.Since(started))
 	log.Info("scan finished", "status", out.Status, "new", plan.Stats.New, "fixed", plan.Stats.Fixed,
 		"reopened", plan.Stats.Reopened, "total", plan.Stats.Total, "needs_confirmation", plan.NeedsConfirmation)
+	if c := plan.Components; c != nil {
+		log.Info("component inventory replaced", "added", c.Added, "kept", c.Kept, "removed", c.Removed, "skipped", c.Skipped)
+	}
 	return nil
+}
+
+// scanDone records a scan's final status and its job's duration in the
+// metrics once the worker has written that status (err == nil). A job that
+// returns an error is retried and records when it ends.
+func scanDone(kind string, st orchestrator.ScanStatus, started time.Time, err error) error {
+	if err == nil {
+		metrics.ScanFinished(kind, string(st), time.Since(started))
+	}
+	return err
+}
+
+// history maps the orchestrator's history report onto the processor's.
+func history(h *orchestrator.History) *results.History {
+	if h == nil {
+		return nil
+	}
+	return &results.History{Commits: h.Commits, Truncated: h.Truncated}
 }
 
 func errorCode(err error, timedOut bool) string {

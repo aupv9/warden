@@ -14,6 +14,12 @@ import (
 	"unicode"
 )
 
+// HistoryPath stands for the file path in the key of a secret found in git
+// history (and is a history scan's target): one issue per rule and secret,
+// whichever files and commits it was added in. Parentheses never occur in an
+// image repository, so it can't collide with an image target.
+const HistoryPath = "(history)"
+
 // NormPath turns a SARIF artifact URI into a path relative to the upload root.
 // underMount strips the sandbox mount point (/src); rootDir strips the single
 // top-level directory most zips have (e.g. "payment-main/").

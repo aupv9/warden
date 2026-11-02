@@ -10,6 +10,7 @@ import type {
   ExceptionRequest,
   Issue,
   IssueEvent,
+  LicenseCategory,
   LicensePolicy,
   Me,
   Metrics,
@@ -22,10 +23,15 @@ import type {
   Project,
   ProjectMember,
   Scan,
+  SbomFormat,
   Severity,
   SignInSettings,
   UserRef,
   VulnData,
+  WebConfig,
+  Webhook,
+  WebhookDelivery,
+  WebhookDeliveryError,
 } from "../types";
 
 const DAY = 86_400_000;
@@ -57,6 +63,22 @@ const ENG_ROLE: OrgRole = ROLE_PARAM === "org_admin" || ROLE_PARAM === "member" 
 const KEYS_PARAM = PARAMS.get("mock_keys");
 /** `?mock_vuln=fresh`, `stale` or `missing` changes the vulnerability data card (default: EPSS is stale). */
 const VULN_PARAM = PARAMS.get("mock_vuln");
+/** v0.4 wave 2: `?mock_integrations=unavailable` answers `available: false` (no secrets.key).
+ *  An object, so tests can switch it. */
+export const mockFlags = {
+  integrationsUnavailable: PARAMS.get("mock_integrations") === "unavailable",
+  /** v0.5: `?mock_web_config=unavailable` (a 500) or `invalid` (a plain-http issuer on a real
+   *  host) shows "Can't reach the server's sign-in settings". */
+  webConfig: PARAMS.get("mock_web_config"),
+};
+
+/** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */
+export const webConfig: WebConfig = {
+  issuer: "https://id.acme.example/realms/warden",
+  client_id: "warden-web",
+  scope: "openid profile email",
+  audience: null,
+};
 
 const u = (display_name: string, email: string): UserRef => ({ id: uuid(), display_name, email });
 export const users = {
@@ -81,7 +103,16 @@ export const me: Me = {
     { id: ORG2_ID, name: "Acme Labs", role: "member" },
     { id: ORG3_ID, name: "Acme Security", role: "org_admin" },
   ],
-  limits: { upload_max_mb: 200, unzip_max_mb: 1024, unzip_max_files: 100000, scan_timeout_minutes: 30, scans_per_hour: 20, image_upload_max_mb: 2048 },
+  limits: {
+    upload_max_mb: 200,
+    unzip_max_mb: 1024,
+    unzip_max_files: 100000,
+    scan_timeout_minutes: 30,
+    scans_per_hour: 20,
+    image_upload_max_mb: 2048,
+    history_upload_max_mb: 1024,
+    history_max_commits: 50000,
+  },
   mfa_required_orgs: [ORG3_ID],
 };
 
@@ -124,8 +155,17 @@ export const projects: Project[] = [
   project("INFRA", "Terraform modules", null, "Shared infrastructure as code."),
   project("MOB", "Mobile app", "viewer", null),
   { ...project("LEG", "Legacy portal", "owner", "The old customer portal, replaced by WEB."), archived_at: ago(20 * DAY) },
+  // v0.4: Acme Labs has its own project (the caller is a developer there and a plain org member).
+  project("LAB", "Research notebooks", "developer", "Data pipelines and notebooks (Python)."),
 ];
 const [WEB, PAY, INFRA] = projects as [Project, Project, Project, Project];
+const LAB = projects[5]!;
+
+/** The org each project belongs to. The mock was single-org until v0.4; Acme Labs now has LAB. */
+export const projectOrg: Record<string, string> = Object.fromEntries(projects.map((p) => [p.id, p.key === "LAB" ? ORG2_ID : ORG_ID]));
+export function orgOfProject(projectId: string): string {
+  return projectOrg[projectId] ?? ORG_ID;
+}
 
 export const projectMembers: Record<string, ProjectMember[]> = {
   [WEB.id]: [
@@ -142,6 +182,10 @@ export const projectMembers: Record<string, ProjectMember[]> = {
   [INFRA.id]: [{ user: users.bao, role: "developer" }],
   [projects[3]!.id]: [{ user: users.linh, role: "viewer" }],
   [projects[4]!.id]: [{ user: users.linh, role: "owner" }],
+  [LAB.id]: [
+    { user: users.huy, role: "owner" },
+    { user: users.linh, role: "developer" },
+  ],
 };
 
 export const orgMembers: OrgMember[] = [
@@ -195,6 +239,9 @@ export function rebuildSignIn(orgId: string, policy: SignInSettings["policy"]): 
   return next;
 }
 
+/** v0.4 scans store CycloneDX and SPDX; scans from before the upgrade only CycloneDX. */
+const BOTH_SBOMS: SbomFormat[] = ["cyclonedx-json", "spdx-json"];
+
 /** A plainly fake SHA-256 for mock SBOMs: hex from the seeded generator, never a real file's. */
 export function fakeSha256(seed: number): string {
   const rand = seeded(seed);
@@ -232,11 +279,16 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
     target: "",
     image_ref: null,
     sbom: null,
+    history: null,
     ...partial,
   };
   // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
   if (partial.sbom === undefined && s.status === "completed" && s.tools.includes("trivy")) {
-    s.sbom = { components: 120 + (Math.round(createdAgo / H) % 97), size: 260_000 + (Math.round(createdAgo / H) % 400) * 97 };
+    s.sbom = {
+      components: 120 + (Math.round(createdAgo / H) % 97),
+      size: 260_000 + (Math.round(createdAgo / H) % 400) * 97,
+      formats: createdAgo < 4 * DAY ? BOTH_SBOMS : ["cyclonedx-json"],
+    };
   }
   return s;
 }
@@ -294,7 +346,7 @@ export const scans: Scan[] = [
       created_by: users.linh,
       stats: { new: 5, fixed: 1, reopened: 0, total: 5 },
       tool_runs: [{ tool: "trivy", tool_version: "0.75.0", status: "succeeded", findings_count: 5, duration_ms: 96_000, error: null }],
-      sbom: { components: 412, size: 1_284_311 },
+      sbom: { components: 412, size: 1_284_311, formats: BOTH_SBOMS },
     },
     3 * H,
   ),
@@ -313,9 +365,45 @@ export const scans: Scan[] = [
     },
     3 * DAY,
   ),
+  // v0.4: Acme Labs' project (scans[11]).
+  scan(LAB, { file_name: "notebooks-main.zip", tools: ["gitleaks", "trivy"], created_by: users.huy, stats: { new: 0, fixed: 2, reopened: 0, total: 3 } }, 5 * H),
+  // v0.4 wave 2: history scans (a git bundle from `warden scan --history`, Gitleaks only, target
+  // "(history)"), from the nightly CI job (scans[12], scans[13]).
+  scan(
+    WEB,
+    {
+      kind: "history",
+      target: "(history)",
+      file_name: "storefront.bundle",
+      file_size: 96 * 1024 * 1024,
+      tools: ["gitleaks"],
+      created_by: users.linh,
+      via_token: { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" },
+      stats: { new: 2, fixed: 0, reopened: 0, total: 2 },
+      tool_runs: [{ tool: "gitleaks", tool_version: "8.28.0", status: "succeeded", findings_count: 4, duration_ms: 212_000, error: null }],
+      history: { commits: 2481, truncated: false },
+    },
+    10 * H,
+  ),
+  scan(
+    WEB,
+    {
+      kind: "history",
+      target: "(history)",
+      file_name: "storefront.bundle",
+      file_size: 2 * 1024 * 1024,
+      tools: ["gitleaks"],
+      via_token: { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" },
+      status: "failed",
+      error_code: "BUNDLE_INCOMPLETE",
+      tool_runs: [],
+      finished_at: ago(2 * DAY - 9_000),
+    },
+    2 * DAY,
+  ),
 ];
 
-const issueN: Record<string, number> = { WEB: 40, PAY: 6, INFRA: 3 };
+const issueN: Record<string, number> = { WEB: 40, PAY: 6, INFRA: 3, LAB: 7 };
 
 interface IssueSeed {
   p: Project;
@@ -339,6 +427,12 @@ interface IssueSeed {
   kev?: { added: string; ransomware: boolean };
   /** v0.3: [EPSS score, percentile]. */
   epss?: [number, number];
+  /** v0.4: license-policy issues. */
+  licenseCategory?: LicenseCategory;
+  /** v0.4: when the issue was found (default 7 days ago, with the first scan). */
+  foundAgo?: number;
+  /** v0.4 wave 2: secrets in git history: the oldest commit that added it. */
+  commit?: Issue["commit"];
 }
 
 function issue(s: IssueSeed): Issue {
@@ -382,11 +476,16 @@ function issue(s: IssueSeed): Issue {
     kev_ransomware: s.kev?.ransomware ?? false,
     epss: s.epss?.[0] ?? null,
     epss_percentile: s.epss?.[1] ?? null,
+    license_category: s.licenseCategory ?? null,
+    commit: s.commit ?? null,
   };
 }
 
 // The masked value is built at runtime from a fixed prefix plus asterisks, like redact.Mask.
 const masked = ["AK", "IA"].join("") + "****";
+const maskedSlack = ["xo", "xb"].join("") + "****";
+/** A made-up commit id: hex from the seeded generator (40 characters, like git's SHA-1). */
+const fakeCommit = (seed: number) => fakeSha256(seed).slice(0, 40);
 
 export const issues: Issue[] = [
   issue({
@@ -557,6 +656,7 @@ export const issues: Issue[] = [
     rule_id: "license:GPL-3.0-only",
     file_path: "package-lock.json",
     pkg: ["@acme/legacy-charts", "2.1.0", null],
+    licenseCategory: "restricted",
     dueIn: 75 * DAY,
     description: "The package is licensed under GPL-3.0-only. The org's license policy asks for a review of restricted licenses.",
     remediation: "Replace the package, or ask a security lead to add GPL-3.0-only to the license policy's Allow list if your use is fine.",
@@ -570,6 +670,7 @@ export const issues: Issue[] = [
     rule_id: "license:AGPL-3.0-only",
     file_path: "package-lock.json",
     pkg: ["@acme/pdf-render", "0.9.4", null],
+    licenseCategory: "forbidden",
     dueIn: 12 * DAY,
     description: "The package is licensed under AGPL-3.0-only. The org's license policy blocks forbidden licenses.",
     remediation: "Remove the package or replace it with one under an allowed license.",
@@ -584,11 +685,77 @@ export const issues: Issue[] = [
     file_path: "debian 12.1 (os)",
     pkg: ["busybox", "1:1.35.0-4", null],
     target: "ghcr.io/acme/api",
+    licenseCategory: "restricted",
     dueIn: 80 * DAY,
     description: "An OS package in the image is licensed under GPL-2.0-only. The org's license policy asks for a review of restricted licenses.",
     remediation: "Use a base image without busybox, or allow GPL-2.0-only for OS packages if you ship the image unmodified.",
   }),
+  // ---- v0.4: malicious packages (OSV MAL- advisories). Package names and ids are made up. ----
+  issue({
+    p: PAY,
+    title: "acme-ui-icons 3.1.4 is a malicious package (MAL-2026-1873)",
+    severity: "critical",
+    status: "open",
+    tool: "trivy",
+    rule_id: "malicious:MAL-2026-1873",
+    file_path: "web/package-lock.json",
+    pkg: ["acme-ui-icons", "3.1.4", null],
+    dueIn: 6 * DAY,
+    description:
+      "Malicious code in acme-ui-icons 3.1.4 (npm). The release was published from a hijacked maintainer account; its install script sends environment variables to a remote host.",
+    remediation: "",
+  }),
+  issue({
+    p: LAB,
+    title: "acme-dataloader 0.4.2 is a malicious package (MAL-2026-2290)",
+    severity: "critical",
+    status: "open",
+    tool: "trivy",
+    rule_id: "malicious:MAL-2026-2290",
+    file_path: "poetry.lock",
+    pkg: ["acme-dataloader", "0.4.2", null],
+    dueIn: 2 * DAY + 20 * H,
+    description: "Malicious code in acme-dataloader (PyPI). Every version is a typosquat of an internal package; importing it reads cloud credentials from the home directory.",
+    remediation: "",
+  }),
+  // ---- v0.4 wave 2: secrets in git history (target "(history)"); the snippets are masked. ----
+  issue({
+    p: WEB,
+    title: "AWS access key in git history",
+    severity: "critical",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "aws-access-token",
+    file_path: "scripts/deploy.sh",
+    start_line: 7,
+    snippet: `export AWS_ACCESS_KEY_ID=${masked}`,
+    target: "(history)",
+    commit: { sha: fakeCommit(7101), committed_at: ago(412 * DAY), count: 3 },
+    dueIn: 5 * DAY,
+    cwe: ["CWE-798"],
+    description: "An AWS access key ID was found in a commit. The file no longer has it, but every clone of the repository still does.",
+    remediation: "",
+  }),
+  issue({
+    p: WEB,
+    title: "Slack bot token in git history",
+    severity: "high",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "slack-bot-token",
+    file_path: "tools/notify/config.yml",
+    start_line: 3,
+    snippet: `token: ${maskedSlack}`,
+    target: "(history)",
+    commit: { sha: fakeCommit(7102), committed_at: ago(96 * DAY), count: 1 },
+    dueIn: 26 * DAY,
+    cwe: ["CWE-798"],
+    description: "A Slack bot token was found in a commit.",
+    remediation: "",
+  }),
 ];
+// The advisories give no fix text: the UI says what to do (remove, rotate credentials).
+for (const i of issues) if (i.remediation === "") i.remediation = null;
 
 export const events: Record<string, IssueEvent[]> = {};
 export const comments: Record<string, Comment[]> = {};
@@ -601,6 +768,36 @@ for (const i of issues) {
     { id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: ago(7 * DAY) },
   ];
   comments[i.id] = [];
+}
+// v0.4: the Acme Labs issue came from an advisory loaded after the last scan (retro-match).
+{
+  const lab = issues.find((i) => i.rule_id === "malicious:MAL-2026-2290")!;
+  events[lab.id] = [
+    {
+      id: uuid(),
+      type: "created",
+      actor: null,
+      from_value: null,
+      to_value: "open",
+      note: "Found by malicious-package advisory MAL-2026-2290 (no scan)",
+      created_at: ago(4 * H),
+    },
+  ];
+  lab.first_seen_scan = { id: scans[11]!.id, created_at: scans[11]!.created_at };
+  lab.last_seen_scan = { id: scans[11]!.id, created_at: scans[11]!.created_at };
+  lab.occurrences = 1;
+  const pay = issues.find((i) => i.rule_id === "malicious:MAL-2026-1873")!;
+  events[pay.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: ago(DAY) }];
+  pay.first_seen_scan = { id: scans[6]!.id, created_at: scans[6]!.created_at };
+  pay.last_seen_scan = pay.first_seen_scan;
+  pay.occurrences = 1;
+  // v0.4 wave 2: the history issues came from the nightly history scan.
+  for (const h of issues.filter((i) => i.target === "(history)")) {
+    h.first_seen_scan = { id: scans[12]!.id, created_at: scans[12]!.created_at };
+    h.last_seen_scan = h.first_seen_scan;
+    h.occurrences = 1;
+    events[h.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: scans[12]!.finished_at! }];
+  }
 }
 comments[issues[0]!.id] = [
   { id: uuid(), author: users.minh, body: "Key is rotated in IAM. Removing the file from the repo in the next release.", created_at: ago(DAY), edited_at: null },
@@ -682,22 +879,198 @@ export const licensePolicies: Record<string, LicensePolicy> = {
   },
 };
 
+/** v0.4: one OSV malicious-package feed per ecosystem: [ecosystem, advisories, unsupported ranges]. */
+const OSV_FEEDS: [string, number, number][] = [
+  ["npm", 214_802, 37],
+  ["PyPI", 13_455, 4],
+  ["Go", 61, 0],
+  ["Maven", 212, 1],
+  ["crates.io", 143, 0],
+  ["RubyGems", 1_027, 2],
+  ["NuGet", 618, 0],
+  ["Packagist", 18, 0],
+];
+
 export function vulnData(): VulnData {
   if (VULN_PARAM === "missing") {
     return {
-      sources: (["trivy_db", "kev", "epss"] as const).map((name) => ({ name, updated_at: null, loaded_at: null, records: null, stale: true })),
+      sources: [...(["trivy_db", "kev", "epss"] as const), ...OSV_FEEDS.map(([eco]) => `osv_mal:${eco}`)].map((name) => ({
+        name,
+        updated_at: null,
+        loaded_at: null,
+        records: null,
+        stale: true,
+        unsupported: null,
+      })),
     };
   }
   const stale = VULN_PARAM === "stale";
   const fresh = VULN_PARAM === "fresh";
   return {
     sources: [
-      { name: "trivy_db", updated_at: ago(stale ? 12 * DAY : 7 * H), loaded_at: null, records: null, stale },
-      { name: "kev", updated_at: ago(stale ? 15 * DAY : 20 * H), loaded_at: ago(stale ? 15 * DAY : 50 * 60_000), records: 1484, stale },
-      { name: "epss", updated_at: ago(fresh ? 9 * H : 9 * DAY), loaded_at: ago(fresh ? 40 * 60_000 : 9 * DAY - H), records: 296_331, stale: !fresh },
+      { name: "trivy_db", updated_at: ago(stale ? 12 * DAY : 7 * H), loaded_at: null, records: null, stale, unsupported: null },
+      { name: "kev", updated_at: ago(stale ? 15 * DAY : 20 * H), loaded_at: ago(stale ? 15 * DAY : 50 * 60_000), records: 1484, stale, unsupported: null },
+      { name: "epss", updated_at: ago(fresh ? 9 * H : 9 * DAY), loaded_at: ago(fresh ? 40 * 60_000 : 9 * DAY - H), records: 296_331, stale: !fresh, unsupported: null },
+      ...OSV_FEEDS.map(([eco, records, unsupported]) => ({
+        name: `osv_mal:${eco}`,
+        updated_at: ago(stale ? 11 * DAY : 6 * H),
+        loaded_at: ago(stale ? 11 * DAY : 5 * H),
+        records,
+        stale,
+        unsupported,
+      })),
     ],
   };
 }
+
+// ---- v0.4: the component inventory (each (project, target)'s latest scan where Trivy ran) ----
+
+export interface InventoryRow {
+  project_id: string;
+  target: string;
+  scan_id: string;
+  ecosystem: string;
+  name: string;
+  version: string;
+  purl: string | null;
+  licenses: string[];
+  path: string;
+  first_seen: string;
+}
+
+const PURL_TYPE: Record<string, string> = { npm: "npm", PyPI: "pypi", Go: "golang", Maven: "maven", deb: "deb" };
+
+function purlOf(eco: string, name: string, version: string): string | null {
+  const type = PURL_TYPE[eco];
+  if (!type) return null;
+  const n = eco === "Maven" ? name.replace(":", "/") : eco === "npm" ? name.replace(/^@/, "%40") : eco === "PyPI" ? name.toLowerCase() : name;
+  const ns = eco === "deb" ? "debian/" : "";
+  return `pkg:${type}/${ns}${n}@${encodeURIComponent(version)}${eco === "deb" ? "?distro=debian-12.1" : ""}`;
+}
+
+/** "name@version license[,license]" lines, so the fixture stays readable. */
+function rows(p: Project, scanRef: Scan, target: string, eco: string, path: string, spec: string, firstSeenAgo = 30 * DAY): InventoryRow[] {
+  return spec
+    .trim()
+    .split("\n")
+    .map((line, n) => {
+      const [nv, lic = ""] = line.trim().split(/\s+/);
+      const at = nv!.lastIndexOf("@");
+      const name = nv!.slice(0, at);
+      const version = nv!.slice(at + 1);
+      return {
+        project_id: p.id,
+        target,
+        scan_id: scanRef.id,
+        ecosystem: eco,
+        name,
+        version,
+        purl: purlOf(eco, name, version),
+        licenses: lic && lic !== "-" ? lic.split(",") : [],
+        path,
+        first_seen: ago(firstSeenAgo - n * 3 * H),
+      };
+    });
+}
+
+export const inventory: InventoryRow[] = [
+  ...rows(WEB, scans[0]!, "", "npm", "package-lock.json", `
+    react@19.3.0 MIT
+    react-dom@19.3.0 MIT
+    react-router@8.4.0 MIT
+    @tanstack/react-query@5.104.1 MIT
+    @acme/legacy-charts@2.1.0 GPL-3.0-only
+    zod@3.25.76 MIT
+    lodash@4.17.21 MIT
+    axios@1.12.2 MIT
+    date-fns@4.1.0 MIT
+    clsx@2.1.1 MIT
+    d3-scale@4.0.2 ISC
+    d3-array@3.2.4 ISC
+    internmap@2.0.3 ISC
+    scheduler@0.27.0 MIT
+    cookie@1.0.2 MIT
+    set-cookie-parser@2.7.1 MIT
+    follow-redirects@1.15.11 MIT
+    form-data@4.0.4 MIT
+    proxy-from-env@1.1.0 MIT
+    mime-types@2.1.35 MIT
+    mime-db@1.52.0 MIT
+    asynckit@0.4.0 MIT
+    combined-stream@1.0.8 MIT
+    delayed-stream@1.0.0 MIT`),
+  // go.mod has no license data (DESIGN.md, license policy).
+  ...rows(WEB, scans[0]!, "", "Go", "go.mod", `
+    golang.org/x/net@v0.23.0
+    golang.org/x/crypto@v0.37.0
+    golang.org/x/sys@v0.32.0
+    golang.org/x/text@v0.24.0
+    github.com/jackc/pgx/v5@v5.7.1
+    github.com/go-chi/chi/v5@v5.2.1
+    github.com/golang-jwt/jwt/v5@v5.2.2
+    github.com/google/uuid@v1.6.0
+    github.com/prometheus/client_golang@v1.22.0
+    go.opentelemetry.io/otel@v1.35.0`),
+  ...rows(WEB, scans[9]!, "ghcr.io/acme/api", "deb", "debian 12.1 (os)", `
+    libc6@2.36-9 LGPL-2.1-or-later,GPL-2.0-or-later
+    libssl3@3.0.9-1 Apache-2.0
+    openssl@3.0.9-1 Apache-2.0
+    busybox@1:1.35.0-4 GPL-2.0-only
+    zlib1g@1:1.2.13.dfsg-1 Zlib
+    tzdata@2024a-0+deb12u1 -
+    ca-certificates@20230311 MPL-2.0
+    libgcc-s1@12.2.0-14 GPL-3.0-or-later
+    libstdc++6@12.2.0-14 GPL-3.0-or-later
+    base-files@12.4+deb12u1 GPL-2.0-or-later
+    bash@5.2.15-2+b2 GPL-3.0-or-later
+    coreutils@9.1-1 GPL-3.0-or-later
+    libzstd1@1.5.4+dfsg2-5 BSD-3-Clause
+    liblzma5@5.4.1-0.2 -`, 12 * DAY),
+  ...rows(WEB, scans[9]!, "ghcr.io/acme/api", "Maven", "app/lib/log4j-core-2.14.1.jar", `
+    org.apache.logging.log4j:log4j-core@2.14.1 Apache-2.0`, 12 * DAY),
+  ...rows(WEB, scans[9]!, "ghcr.io/acme/api", "Maven", "app/lib/log4j-api-2.14.1.jar", `
+    org.apache.logging.log4j:log4j-api@2.14.1 Apache-2.0`, 12 * DAY),
+  ...rows(WEB, scans[9]!, "ghcr.io/acme/api", "Maven", "app/lib/jackson-databind-2.15.2.jar", `
+    com.fasterxml.jackson.core:jackson-databind@2.15.2 Apache-2.0`, 12 * DAY),
+  ...rows(PAY, scans[6]!, "", "npm", "web/package-lock.json", `
+    lodash@4.17.15 MIT
+    @acme/pdf-render@0.9.4 AGPL-3.0-only
+    zod@3.25.76 MIT
+    axios@1.12.2 MIT
+    follow-redirects@1.15.11 MIT
+    form-data@4.0.4 MIT`, 20 * DAY),
+  // The hijacked release arrived with yesterday's lockfile update.
+  ...rows(PAY, scans[6]!, "", "npm", "web/package-lock.json", `
+    acme-ui-icons@3.1.4 MIT`, DAY),
+  ...rows(PAY, scans[6]!, "", "Go", "go.mod", `
+    golang.org/x/net@v0.17.0
+    github.com/jackc/pgx/v5@v5.7.1
+    github.com/google/uuid@v1.6.0
+    github.com/stripe/stripe-go/v76@v76.25.0`, 25 * DAY),
+  // Archived: kept, but never listed.
+  ...rows(projects[4]!, scans[8]!, "", "npm", "package-lock.json", `
+    jquery@1.12.4 MIT
+    lodash@4.17.4 MIT`, 60 * DAY),
+  ...rows(LAB, scans[11]!, "", "PyPI", "poetry.lock", `
+    numpy@2.3.2 BSD-3-Clause
+    pandas@2.3.1 BSD-3-Clause
+    requests@2.32.4 Apache-2.0
+    urllib3@2.5.0 MIT
+    certifi@2025.8.3 MPL-2.0
+    acme-dataloader@0.4.2 MIT
+    PyYAML@6.0.2 MIT
+    Jinja2@3.1.6 BSD-3-Clause
+    MarkupSafe@3.0.2 BSD-3-Clause
+    python-dateutil@2.9.0.post0 Apache-2.0,BSD-3-Clause
+    six@1.17.0 MIT
+    pytz@2025.2 MIT`, 15 * DAY),
+];
+
+/** OSV malicious-package advisories the mock "loaded" (made-up ids and names). */
+export const maliciousPackages: { id: string; ecosystem: string; name: string; versions: string[] | "all" }[] = [
+  { id: "MAL-2026-1873", ecosystem: "npm", name: "acme-ui-icons", versions: ["3.1.4"] },
+  { id: "MAL-2026-2290", ecosystem: "PyPI", name: "acme-dataloader", versions: "all" },
+];
 
 // ---- v0.2 fixtures ----
 
@@ -791,6 +1164,26 @@ export const notifications: Notification[] = [
   notification("exception.decided", `${issues[7]!.key}: your exception request was approved`, `/orgs/${ORG_ID}/exceptions?tab=approved&id=${exceptions[2]!.id}`, users.huy, 3 * DAY, true),
   notification("sla.due_soon", "2 of your issues are due within 3 days", `/orgs/${ORG_ID}/issues?assignee=me`, null, 3 * DAY + 2 * H, true),
   notification("issue.assigned", "LAB-7 assigned to you", `/orgs/${ORG2_ID}/issues`, users.huy, 5 * DAY, true, ORG2_ID),
+  // v0.4
+  notification(
+    "component.malicious",
+    "Malicious package in PAY: acme-ui-icons 3.1.4 (MAL-2026-1873)",
+    issueLink(issues.find((i) => i.rule_id === "malicious:MAL-2026-1873")!),
+    null,
+    DAY - 30 * 60_000,
+    false,
+  ),
+  // v0.4 wave 2: Warden turned the ticket relay off (sent to org admins and security leads).
+  notification("webhook.disabled", "Webhook “Ticket relay” turned off after 12 failed deliveries", `/orgs/${ORG_ID}/integrations`, null, 2 * H - 60_000, true),
+  notification(
+    "component.malicious",
+    "Malicious package in LAB: acme-dataloader 0.4.2 (MAL-2026-2290)",
+    `/orgs/${ORG2_ID}/issues/${issues.find((i) => i.rule_id === "malicious:MAL-2026-2290")!.id}`,
+    null,
+    4 * H,
+    false,
+    ORG2_ID,
+  ),
 ];
 if (BULK) {
   for (let i = 0; i < 300; i++) {
@@ -798,6 +1191,92 @@ if (BULK) {
     notifications.push(notification(t, `WEB-${100 + i} assigned to you`, issueLink(issues[i % issues.length]!), users.minh, (6 + i) * DAY, i % 4 !== 0));
   }
 }
+
+// ---- v0.4 wave 2: webhooks and Slack (Acme Engineering) ----
+
+export const webhooks: Record<string, Webhook[]> = {
+  [ORG_ID]: [
+    {
+      id: uuid(),
+      kind: "slack",
+      name: "#security-alerts",
+      url_hint: "https://hooks.slack.com",
+      events: ["scan.finished", "issue.reopened", "component.malicious"],
+      project_ids: [],
+      min_severity: "critical",
+      enabled: true,
+      disabled_reason: null,
+      consecutive_failures: 0,
+      last_delivery: { at: ago(5 * 60_000), state: "delivered", status_code: 200 },
+      created_by: users.linh,
+      created_at: ago(20 * DAY),
+      updated_at: ago(20 * DAY),
+    },
+    {
+      id: uuid(),
+      kind: "generic",
+      name: "Ticket relay",
+      url_hint: "https://relay.acme.example",
+      events: ["scan.finished", "issue.assigned", "issue.reopened", "exception.requested", "exception.decided", "component.malicious"],
+      project_ids: [WEB.id, PAY.id],
+      min_severity: null,
+      enabled: false,
+      disabled_reason: "failures",
+      consecutive_failures: 12,
+      last_delivery: { at: ago(2 * H), state: "failed", status_code: 500 },
+      created_by: users.huy,
+      created_at: ago(35 * DAY),
+      updated_at: ago(2 * H),
+    },
+  ],
+  [ORG2_ID]: [],
+};
+
+function delivery(d: Partial<WebhookDelivery> & Pick<WebhookDelivery, "type" | "state">, createdAgo: number): WebhookDelivery {
+  const created = ago(createdAgo);
+  return {
+    id: uuid(),
+    attempts: 1,
+    status_code: d.state === "delivered" ? 200 : null,
+    error: null,
+    created_at: created,
+    last_attempt_at: d.state === "pending" && !d.attempts ? null : created,
+    next_attempt_at: null,
+    delivered_at: d.state === "delivered" ? created : null,
+    ...d,
+  };
+}
+
+const [SLACK_HOOK, RELAY_HOOK] = webhooks[ORG_ID]! as [Webhook, Webhook];
+const failed = (error: WebhookDeliveryError, createdAgo: number, status_code: number | null = null) =>
+  delivery({ type: "issue.reopened", state: "failed", attempts: 7, error, status_code }, createdAgo);
+
+/** Delivery logs, newest first. The relay's mixes every state and error; Slack's is long enough
+ *  to page ("Load older"). */
+export const deliveries: Record<string, WebhookDelivery[]> = {
+  [SLACK_HOOK.id]: [
+    delivery({ type: "scan.finished", state: "delivered" }, 5 * 60_000),
+    delivery({ type: "component.malicious", state: "delivered" }, DAY - 30 * 60_000),
+    delivery({ type: "webhook.test", state: "failed", error: "http_status", status_code: 404 }, 20 * DAY - H),
+    ...Array.from({ length: 56 }, (_, n) =>
+      delivery({ type: n % 3 === 0 ? "issue.reopened" : "scan.finished", state: "delivered" }, DAY + (n + 1) * 7 * H),
+    ),
+  ],
+  [RELAY_HOOK.id]: [
+    delivery({ type: "issue.assigned", state: "failed", attempts: 0, error: "disabled" }, 50 * 60_000),
+    failed("http_status", 2 * H, 500),
+    delivery({ type: "exception.requested", state: "pending", attempts: 3, error: "timeout", next_attempt_at: ahead(25 * 60_000) }, 2 * H + 10 * 60_000),
+    failed("timeout", 5 * H),
+    failed("connect", 9 * H),
+    failed("dns", DAY),
+    failed("tls", DAY + 4 * H),
+    failed("redirect", 2 * DAY, 302),
+    failed("blocked_address", 3 * DAY),
+    failed("key_unavailable", 4 * DAY),
+    delivery({ type: "webhook.test", state: "delivered", status_code: 204 }, 6 * DAY),
+    delivery({ type: "scan.finished", state: "delivered" }, 7 * DAY),
+  ],
+};
 
 /** Email preference per type; missing = the default (on, except scan.finished). */
 export const notificationPrefs: Partial<Record<NotificationType, boolean>> = { "sla.due_soon": false };
