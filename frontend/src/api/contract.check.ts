@@ -66,6 +66,10 @@ export type C54 = Fits<T.WebhookList, Ops["listWebhooks"]["responses"][200]["con
 export type C55 = Fits<T.Page<T.WebhookDelivery>, Ops["listWebhookDeliveries"]["responses"][200]["content"]["application/json"]["data"]>;
 export type C56 = Fits<T.WebhookDelivery, Ops["testWebhook"]["responses"][202]["content"]["application/json"]["data"]>;
 export type C57 = Fits<T.WebhookSecret, Ops["rotateWebhookSecret"]["responses"][200]["content"]["application/json"]["data"]>;
+// v0.5 wave 1
+export type C58 = Fits<T.WebConfig, S["WebConfig"]>;
+export type C59 = Fits<S["WebConfig"], T.WebConfig>;
+export type C60 = Fits<T.WebConfig, Ops["getWebConfig"]["responses"][200]["content"]["application/json"]["data"]>;
 // Every sort and issue-list filter value the UI sends is one the server accepts.
 type IssueListQuery = NonNullable<import("./schema").operations["listIssues"]["parameters"]["query"]>;
 export type Q1 = Fits<NonNullable<IssueListQuery["sort"]>, T.IssueSort>;
