@@ -1071,3 +1071,36 @@ describe("v0.4 wave 2 screens: secrets in git history, integrations, CI setup", 
     expect(hist.json.data!.items![0]).not.toHaveProperty("commit");
   });
 });
+
+describe("v0.5: sign-in settings from the server", () => {
+  it("mock mode answers GET /web-config through the mock API, and the UI accepts it", async () => {
+    const { loadWebConfig, WebConfigError } = await import("../auth/webConfig");
+    // Mock mode loads the settings as from a real server (no IdP is contacted: mock mode never
+    // signs in).
+    await expect(loadWebConfig()).resolves.toEqual(db.webConfig);
+    // ?mock_web_config=unavailable|invalid shows the error page.
+    for (const mode of ["unavailable", "invalid"]) {
+      db.mockFlags.webConfig = mode;
+      try {
+        await expect(loadWebConfig()).rejects.toBeInstanceOf(WebConfigError);
+      } finally {
+        db.mockFlags.webConfig = null;
+      }
+    }
+  });
+
+  it("the splash, then the error page", async () => {
+    const { AuthBoot } = await import("../auth/AuthGate");
+    const { createBoot } = await import("../auth/boot");
+    const boot = createBoot(() => Promise.reject(new Error("unreachable")));
+    const app = () => <p>APP-RENDERED</p>;
+    expect(text(renderToString(<AuthBoot boot={boot}>{app}</AuthBoot>))).toContain("Loading Warden");
+    boot.start();
+    await new Promise((r) => setTimeout(r, 0));
+    const t = text(renderToString(<AuthBoot boot={boot}>{app}</AuthBoot>));
+    expect(t).toContain("Can't reach the server's sign-in settings");
+    expect(t).toContain("Try again");
+    expect(t).not.toContain("APP-RENDERED");
+    expect(t).not.toContain("unreachable");
+  });
+});

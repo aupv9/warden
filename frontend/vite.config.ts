@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    proxy: { "/api": "http://localhost:8010" },
+    // The API listens on 127.0.0.1 only; "localhost" may resolve to ::1 first.
+    proxy: { "/api": "http://127.0.0.1:8010" },
   },
   build: {
     // No source maps in the shipped bundle.

@@ -28,6 +28,7 @@ import type {
   SignInSettings,
   UserRef,
   VulnData,
+  WebConfig,
   Webhook,
   WebhookDelivery,
   WebhookDeliveryError,
@@ -64,7 +65,20 @@ const KEYS_PARAM = PARAMS.get("mock_keys");
 const VULN_PARAM = PARAMS.get("mock_vuln");
 /** v0.4 wave 2: `?mock_integrations=unavailable` answers `available: false` (no secrets.key).
  *  An object, so tests can switch it. */
-export const mockFlags = { integrationsUnavailable: PARAMS.get("mock_integrations") === "unavailable" };
+export const mockFlags = {
+  integrationsUnavailable: PARAMS.get("mock_integrations") === "unavailable",
+  /** v0.5: `?mock_web_config=unavailable` (a 500) or `invalid` (a plain-http issuer on a real
+   *  host) shows "Can't reach the server's sign-in settings". */
+  webConfig: PARAMS.get("mock_web_config"),
+};
+
+/** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */
+export const webConfig: WebConfig = {
+  issuer: "https://id.acme.example/realms/warden",
+  client_id: "warden-web",
+  scope: "openid profile email",
+  audience: null,
+};
 
 const u = (display_name: string, email: string): UserRef => ({ id: uuid(), display_name, email });
 export const users = {
