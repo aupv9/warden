@@ -500,6 +500,16 @@ function validateRules(p: Project, items: AssignRule[]): void {
 
 const O = "/orgs/([^/]+)";
 const routes: [string, RegExp, Handler][] = [
+  // ---- v0.5: the UI's OIDC settings (public) ----
+  [
+    "GET",
+    /^\/web-config$/,
+    () => {
+      if (db.mockFlags.webConfig === "unavailable") throw new Fail(500, "INTERNAL");
+      if (db.mockFlags.webConfig === "invalid") return { ...db.webConfig, issuer: "http://id.acme.example/realms/warden" };
+      return db.webConfig;
+    },
+  ],
   ["GET", /^\/me$/, () => db.me],
   // ---- v0.2 notifications (own data only) ----
   [

@@ -9,31 +9,17 @@ import "./styles/app.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { isMockMode } from "./api/client";
-import { completeSignIn, isAuthCallback } from "./auth/oidc";
+import { appBoot } from "./auth/boot";
 import { initTheme } from "./lib/theme";
 
 // Before the first render, so an explicit Light/Dark choice doesn't flash the other theme.
 initTheme();
 
-async function boot() {
-  let authFailed = false;
-  if (!isMockMode && isAuthCallback(window.location.search)) {
-    let next = "/";
-    try {
-      next = await completeSignIn();
-    } catch {
-      // Any failure (state mismatch, IdP error, expired code) shows one generic message.
-      authFailed = true;
-    }
-    // Drop ?code=&state= from the address bar and history.
-    window.history.replaceState({}, "", next);
-  }
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <App authFailed={authFailed} />
-    </StrictMode>,
-  );
-}
+// Fetch the sign-in settings (and finish a sign-in redirect) while React renders the splash.
+appBoot.start();
 
-void boot();
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
