@@ -12,3 +12,6 @@ reports/
 .DS_Store
 .idea/
 .vscode/
+
+# frontend/dist copied for `go build -tags webui` (Dockerfile, make build-webui)
+backend/internal/webui/dist/
