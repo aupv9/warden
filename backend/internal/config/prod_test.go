@@ -142,13 +142,28 @@ func TestDSNPassword(t *testing.T) {
 	}
 }
 
-// Load applies the guardrails: the development defaults are not a production
-// configuration.
-func TestLoadRefusesDevDefaultsInProd(t *testing.T) {
+// LoadServer applies the guardrails: the development defaults are not a
+// production configuration for the API or the worker.
+func TestLoadServerRefusesDevDefaultsInProd(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("WARDEN_APP__ENV", "prod")
-	_, err := Load()
+	_, err := LoadServer()
 	if err == nil || !strings.Contains(err.Error(), "oidc.issuer") || strings.Contains(err.Error(), "scan.images") {
+		t.Fatal(err)
+	}
+}
+
+// warden-migrate and warden-admin (Load) don't use the identity provider or
+// the public URLs, so only placeholder secrets stop them.
+func TestLoadChecksOnlySecretsInProd(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("WARDEN_APP__ENV", "prod")
+	t.Setenv("WARDEN_MIGRATE__DSN", "postgres://warden_owner:s3cret-enough@db:5432/warden")
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WARDEN_MIGRATE__DSN", "postgres://warden_owner:CHANGE_ME@db:5432/warden")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "migrate.dsn") {
 		t.Fatal(err)
 	}
 }

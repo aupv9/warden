@@ -22,10 +22,18 @@ var dsnPassword = regexp.MustCompile(`(?:^|\s)password\s*=\s*(?:'((?:[^'\\]|\\.)
 // checkProd refuses settings that are fine on a laptop but not in production
 // (app.env=prod): a sandbox without gVisor, plain-http links and endpoints
 // that carry tokens or uploads, and secrets still holding a template
-// placeholder (scanner images are the worker's check: MissingImages). Every error
+// placeholder (scanner images are the worker's check: MissingImages). It is
+// what warden-api and warden-worker get (LoadServer); every other binary gets
+// only the secret check (Load), since warden-migrate and warden-admin use
+// neither the identity provider nor the public URLs. Every error
 // names the setting, never its value: these are often secrets. All problems
 // are reported at once so an operator fixes them in one round.
 func (c *Config) checkProd() error {
+	return errors.Join(c.checkProdServer(), c.checkProdSecrets())
+}
+
+// checkProdServer: the sandbox runtime and the URLs a running server uses.
+func (c *Config) checkProdServer() error {
 	if c.App.Env != EnvProd {
 		return nil
 	}
@@ -48,6 +56,16 @@ func (c *Config) checkProd() error {
 	if c.Storage.Endpoint != "" && !internalOrHTTPS(c.Storage.Endpoint) {
 		fail("storage.endpoint must be an https URL, or http to a host name without a dot (an internal network name)")
 	}
+	return errors.Join(errs...)
+}
+
+// checkProdSecrets: no secret that is set may still hold a placeholder.
+func (c *Config) checkProdSecrets() error {
+	if c.App.Env != EnvProd {
+		return nil
+	}
+	var errs []error
+	fail := func(msg string) { errs = append(errs, errors.New("config: app.env=prod: "+msg)) }
 
 	secrets := []struct {
 		name, value string
