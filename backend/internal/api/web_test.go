@@ -28,7 +28,7 @@ func testUI(t *testing.T) Option {
 		"api/v1/me":        {Data: []byte("shadow")},
 		"admin/loglevel":   {Data: []byte("shadow")},
 		"metrics/anything": {Data: []byte("shadow")},
-	}, uiCSP)
+	}, func() string { return uiCSP })
 	if err != nil {
 		t.Fatal(err)
 	}

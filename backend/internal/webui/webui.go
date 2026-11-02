@@ -55,18 +55,20 @@ const (
 type handler struct {
 	files fs.FS
 	index []byte
-	csp   string
+	csp   func() string
 }
 
 // New serves dist, which must hold index.html: a file that exists is served
 // as itself, a missing file under assets/ is a 404, and any other path gets
-// index.html (client-side routing). csp is set on every response, because
-// a dedicated worker script runs under the policy it was served with.
-func New(dist fs.FS, csp string) (http.Handler, error) {
+// index.html (client-side routing). csp gives the Content-Security-Policy
+// for each response (it follows the provider's discovery document); it is set
+// on every response, because a dedicated worker script runs under the policy
+// it was served with.
+func New(dist fs.FS, csp func() string) (http.Handler, error) {
 	if dist == nil {
 		return nil, errors.New("webui: no UI bundled")
 	}
-	if csp == "" {
+	if csp == nil || csp() == "" {
 		return nil, errors.New("webui: a Content-Security-Policy is required")
 	}
 	index, err := fs.ReadFile(dist, "index.html")
@@ -78,7 +80,7 @@ func New(dist fs.FS, csp string) (http.Handler, error) {
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr := w.Header()
-	hdr.Set("Content-Security-Policy", h.csp)
+	hdr.Set("Content-Security-Policy", h.csp())
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		hdr.Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -187,46 +189,74 @@ func origin(raw string) (string, error) {
 	return scheme + "://" + host, nil
 }
 
-// CSP is the web UI's Content-Security-Policy. Scripts and styles come only
-// from Warden itself: the build has no inline <script>, <style> or style
-// attribute (bundle_test.go checks the embedded build), and React sets style
-// props through the CSSOM, which style-src doesn't govern. Fonts and images
-// may also be data: URIs because Vite inlines files under 4 KiB into the CSS
-// (some @fontsource subsets); a data: font can't run code, and only our own
-// CSS can reference one. connect-src adds the identity provider (discovery,
-// token and userinfo requests are fetches) and the object store (presigned
-// uploads are PUTs from the browser); form-action allows the provider too, in
-// case a sign-in or sign-out step is a form post. Nothing may frame the UI,
-// and frame-src falls back to default-src 'self', so silent renewal must use
-// refresh tokens, not a hidden iframe at the provider.
-func CSP(issuer string, storage ...string) (string, error) {
-	iss, err := origin(issuer)
+// Policy is what the web UI's CSP allows besides Warden itself. Every value
+// comes from server configuration or the provider's discovery document, and
+// only its origin is used: a CSP source with a path matches that exact path
+// only, so the issuer URL itself would not cover its discovery document.
+type Policy struct {
+	Issuer  string // oidc.issuer (required)
+	Storage string // where presigned URLs point (storage.public_endpoint, else endpoint)
+	// The provider's endpoints from discovery (auth.BrowserEndpoints), empty
+	// until it has been read; one that isn't a plain http(s) URL is left out.
+	Authorization, Token, UserInfo, EndSession string
+}
+
+// CSP is the web UI's Content-Security-Policy. Scripts, styles and fonts come
+// only from Warden itself: the build has no inline <script>, <style> or style
+// attribute and inlines no font (bundle_test.go checks the embedded build),
+// and React sets style props through the CSSOM, which style-src doesn't
+// govern. Images may be data: URIs (Vite inlines small ones).
+//
+//   - connect-src: the issuer (discovery), the token, userinfo and end-session
+//     endpoints (fetches by oidc-client-ts), and the object store (presigned
+//     uploads are PUTs from the browser).
+//   - frame-src: the issuer and authorization endpoint, for oidc-client-ts's
+//     silent renewal in a hidden iframe when there is no refresh token; 'self'
+//     for the page it redirects back to.
+//   - form-action: the authorization and end-session endpoints, in case a
+//     sign-in or sign-out step is a form post.
+//
+// Nothing may frame the UI (frame-ancestors 'none').
+func (p Policy) CSP() (string, error) {
+	iss, err := origin(p.Issuer)
 	if err != nil {
 		return "", err
 	}
-	connect := []string{"'self'", iss}
-	for _, s := range storage {
-		if s == "" {
-			continue
-		}
-		o, err := origin(s)
-		if err != nil {
+	var store string
+	if p.Storage != "" {
+		if store, err = origin(p.Storage); err != nil {
 			return "", err
 		}
-		if !slices.Contains(connect, o) {
-			connect = append(connect, o)
-		}
 	}
+	discovered := func(raw string) string {
+		if o, err := origin(raw); err == nil {
+			return o
+		}
+		return ""
+	}
+	auth, token, userinfo, endSession := discovered(p.Authorization), discovered(p.Token), discovered(p.UserInfo), discovered(p.EndSession)
 	return strings.Join([]string{
 		"default-src 'self'",
 		"script-src 'self'",
 		"style-src 'self'",
 		"img-src 'self' data:",
-		"font-src 'self' data:",
-		"connect-src " + strings.Join(connect, " "),
+		"font-src 'self'",
+		"connect-src " + sources(iss, token, userinfo, endSession, store),
+		"frame-src " + sources(iss, auth),
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
-		"form-action 'self' " + iss,
+		"form-action " + sources(iss, auth, endSession),
 		"object-src 'none'",
 	}, "; "), nil
+}
+
+// sources is 'self' plus each distinct non-empty origin, in order.
+func sources(origins ...string) string {
+	out := []string{"'self'"}
+	for _, o := range origins {
+		if o != "" && !slices.Contains(out, o) {
+			out = append(out, o)
+		}
+	}
+	return strings.Join(out, " ")
 }
