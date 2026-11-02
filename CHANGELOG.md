@@ -8,40 +8,6 @@ All notable changes to Warden are listed here. The format follows
 
 ### Added
 
-- CI integration: project API tokens (`wdn_…`, one project, scopes `scan:write` /
-  `issues:read`, 1–365 day expiry, stored as a SHA-256 hash, shown once, revocable, rate
-  limited), a scan gate endpoint, and the `warden scan` CLI that uploads a git checkout,
-  waits for the scan and exits non-zero on blocking issues. README has GitHub Actions and
-  GitLab CI examples that install a checksum- and provenance-verified CLI release.
-- Two-factor sign-in required for org admins and security leads (configurable with
-  `WARDEN_OIDC__REQUIRE_MFA_ROLES`); `warden-admin org set-role` as a break-glass.
-- Notifications: in-app (bell) and email for assignments, reopened issues, exception requests
-  and decisions, finished scans and a daily SLA digest; per-user preferences. Emails never
-  contain snippets, descriptions or secrets.
-- Org SLA policy, project auto-assign rules (path glob, scanner, severity) and archiving.
-- Overview page with metrics: open issues by severity over time, new vs fixed, time to fix,
-  SLA compliance; counts on every saved view.
-- Route-level code splitting in the web UI (entry chunk 586 kB → 70 kB).
-- Sign-in settings for org admins and security leads: a read-only view of how Warden trusts
-  the identity provider (issuer, audience, algorithms, signing-key status, second-factor
-  claims, optional console link from `WARDEN_OIDC__CONSOLE_URL`), and an org sign-in policy
-  that can only tighten the server's rules: require a second factor for more roles, and limit
-  new members to allowed email domains. An admin can't require a second factor for their own
-  role without having one (`409 MFA_NOT_ENABLED`).
-- `warden-admin org add-member` and `warden-admin user relink` (`--sub`, or `--next-sign-in`
-  within a window of up to 7 days) for moving accounts to another identity provider. Accounts
-  are still never linked by email automatically.
-- Container image scans: upload a `docker save` tarball (or `warden scan --image REF`); it is
-  validated without being unpacked and scanned by Trivy only. Issues are tracked per image
-  repository, so image and source scans never auto-fix each other's issues.
-- A CycloneDX SBOM for every scan that runs Trivy, downloadable from the scan (5-minute
-  link) or with `warden scan --sbom-out`; kept for `WARDEN_SCAN__SBOM_RETENTION` (1 year).
-- Org license policy (off by default): per Trivy license category allow / review (Medium) /
-  block (High), plus Deny and Allow lists of SPDX ids.
-- CISA KEV and FIRST EPSS from the mirror (`make mirror`), loaded hourly by the worker:
-  KEV and EPSS on issues, filters and a sort in the issue list, "Exploited (KEV)" and
-  "Licenses" views, `fail_on_kev` on the gate (`warden scan --fail-on-kev`), and a
-  "Vulnerability data" card that shows how fresh the feeds are.
 - Org-wide component inventory: every package of each project's current scan per target,
   searchable by name, ecosystem and version ("which projects use xz 5.6.0?") with where each
   one is used, plus a Components tab per project and `GET …/projects/{id}/targets`.
@@ -98,9 +64,6 @@ All notable changes to Warden are listed here. The format follows
 
 ### Changed
 
-- CI blocks un-baselined High self-scan findings on every pull request, not only on tags.
-- Trivy writes one JSON report; the SARIF and the SBOM are converted from it. Vulnerability
-  fingerprints are unchanged.
 - The web UI no longer takes `VITE_OIDC_*` at build time (and no longer falls back to a
   localhost Keycloak); set `WARDEN_WEB__OIDC_*` on the API instead. Fonts are no longer inlined
   as `data:` URLs.
@@ -111,13 +74,75 @@ All notable changes to Warden are listed here. The format follows
 
 ### Fixed
 
+- The arm64 release image contained amd64 binaries (`ARG TARGETARCH=amd64` overrode
+  BuildKit's value).
+
+## [0.3.0-alpha.1] - 2026-10-28
+
+The first published release of everything merged since 0.1.0-alpha.1, including the v0.2
+work (CI integration, notifications, two-factor sign-in, SLA policy and metrics), which was
+never tagged on its own.
+
+### Added
+
+- CI integration: project API tokens (`wdn_…`, one project, scopes `scan:write` /
+  `issues:read`, 1–365 day expiry, stored as a SHA-256 hash, shown once, revocable, rate
+  limited), a scan gate endpoint, and the `warden scan` CLI that uploads a git checkout,
+  waits for the scan and exits non-zero on blocking issues. README has GitHub Actions and
+  GitLab CI examples that install a checksum- and provenance-verified CLI release.
+- Two-factor sign-in required for org admins and security leads (configurable with
+  `WARDEN_OIDC__REQUIRE_MFA_ROLES`); `warden-admin org set-role` as a break-glass.
+- Notifications: in-app (bell) and email for assignments, reopened issues, exception requests
+  and decisions, finished scans and a daily SLA digest; per-user preferences. Emails never
+  contain snippets, descriptions or secrets.
+- Org SLA policy, project auto-assign rules (path glob, scanner, severity) and archiving.
+- Overview page with metrics: open issues by severity over time, new vs fixed, time to fix,
+  SLA compliance; counts on every saved view.
+- Route-level code splitting in the web UI (entry chunk 586 kB → 70 kB).
+- Sign-in settings for org admins and security leads: a read-only view of how Warden trusts
+  the identity provider (issuer, audience, algorithms, signing-key status, second-factor
+  claims, optional console link from `WARDEN_OIDC__CONSOLE_URL`), and an org sign-in policy
+  that can only tighten the server's rules: require a second factor for more roles, and limit
+  new members to allowed email domains. An admin can't require a second factor for their own
+  role without having one (`409 MFA_NOT_ENABLED`).
+- `warden-admin org add-member` and `warden-admin user relink` (`--sub`, or `--next-sign-in`
+  within a window of up to 7 days) for moving accounts to another identity provider. Accounts
+  are still never linked by email automatically.
+- Container image scans: upload a `docker save` tarball (or `warden scan --image REF`); it is
+  validated without being unpacked and scanned by Trivy only. Issues are tracked per image
+  repository, so image and source scans never auto-fix each other's issues.
+- A CycloneDX SBOM for every scan that runs Trivy, downloadable from the scan (5-minute
+  link) or with `warden scan --sbom-out`; kept for `WARDEN_SCAN__SBOM_RETENTION` (1 year).
+- Org license policy (off by default): per Trivy license category allow / review (Medium) /
+  block (High), plus Deny and Allow lists of SPDX ids.
+- CISA KEV and FIRST EPSS from the mirror (`make mirror`), loaded hourly by the worker:
+  KEV and EPSS on issues, filters and a sort in the issue list, "Exploited (KEV)" and
+  "Licenses" views, `fail_on_kev` on the gate (`warden scan --fail-on-kev`), and a
+  "Vulnerability data" card that shows how fresh the feeds are.
+- Web UI redesign: a quiet light theme (Inter, indigo accent, severity marks), issue triage
+  with saved views, filter chips, issues grouped by severity and a split view (list beside
+  the open issue), keyboard shortcuts (J/K, Enter, Esc, A, X, /) and a ⌘K command palette.
+- Dark theme: follows the OS by default, with a System / Light / Dark switch in the sidebar.
+
+### Changed
+
+- CI blocks un-baselined High self-scan findings on every pull request, not only on tags.
+- Trivy writes one JSON report; the SARIF and the SBOM are converted from it. Vulnerability
+  fingerprints are unchanged.
+
+### Fixed
+
 - `WARDEN_SCAN__UNZIP_MAX_MB` and `WARDEN_SCAN__UNZIP_MAX_FILES` were ignored (the worker
   always used 1 GB and 100,000 files), and source archives were capped at 200 MB whatever
   `WARDEN_SCAN__UPLOAD_MAX_MB` said.
 - The auto-close guard applies only when a scan would fix 5 or more issues, so a small
   project fixing its only finding gets it closed.
-- The arm64 release image contained amd64 binaries (`ARG TARGETARCH=amd64` overrode
-  BuildKit's value).
+
+## [0.1.0-alpha.1] - 2026-10-26
+
+Tagged, but the release workflow failed, so no binaries or image were published for it.
+
+### Added
 
 - REST API for the first usable release (OpenAPI 3.1 at `/api/v1/openapi.json`):
   - sign-in provisions the user; orgs are created by an operator with
@@ -138,10 +163,6 @@ All notable changes to Warden are listed here. The format follows
 - Web UI for all core screens: projects, upload and scans (in-browser SHA-256 with
   progress), issue list and detail, exceptions, members and roles, audit log; loading,
   empty and error states; phone layout.
-- Web UI redesign: a quiet light theme (Inter, indigo accent, severity marks), issue triage
-  with saved views, filter chips, issues grouped by severity and a split view (list beside
-  the open issue), keyboard shortcuts (J/K, Enter, Esc, A, X, /) and a ⌘K command palette.
-- Dark theme: follows the OS by default, with a System / Light / Dark switch in the sidebar.
 - The frontend's API types are checked against the backend's OpenAPI document in CI.
 - UI/UX design for the first usable release ([`frontend/DESIGN.md`](frontend/DESIGN.md)):
   - core flows (scan, triage, fix, exception, access)
@@ -150,3 +171,7 @@ All notable changes to Warden are listed here. The format follows
   - security rules for the UI
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
+
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.3.0-alpha.1...HEAD
+[0.3.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.1.0-alpha.1...v0.3.0-alpha.1
+[0.1.0-alpha.1]: https://github.com/aupv9/warden/releases/tag/v0.1.0-alpha.1
