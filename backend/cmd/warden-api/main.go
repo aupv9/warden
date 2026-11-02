@@ -40,7 +40,7 @@ import (
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "GET /healthz on the configured port and exit 0 if healthy")
 	flag.Parse()
-	cfg, err := config.Load()
+	cfg, err := config.LoadServer()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

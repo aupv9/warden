@@ -309,7 +309,20 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: webhook.allow_hosts: %q must be a host name or IP address, without scheme or port", h)
 		}
 	}
-	if err := c.checkProd(); err != nil {
+	if err := c.checkProdSecrets(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// LoadServer is Load for warden-api and warden-worker, which also get the
+// production checks of what a running server uses (see checkProd).
+func LoadServer() (*Config, error) {
+	c, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	if err := c.checkProdServer(); err != nil {
 		return nil, err
 	}
 	return c, nil
