@@ -23,6 +23,7 @@ import type {
   OrgRole,
   Project,
   ProjectMember,
+  RegistryCredential,
   RuleTest,
   Scan,
   ScanRule,
@@ -83,6 +84,9 @@ export const mockFlags = {
   auditBroken: PARAMS.get("mock_audit") === "broken",
   /** v0.6: `?mock_rules=empty` starts Acme Engineering without scan rules (the empty state). */
   rulesEmpty: PARAMS.get("mock_rules") === "empty",
+  /** v0.7 wave 2: `?mock_registries=empty` starts without registry credentials;
+   *  `?mock_registries=unavailable` answers SECRETS_KEY_MISSING when credentials are saved. */
+  registries: PARAMS.get("mock_registries"),
 };
 
 /** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */
@@ -294,6 +298,7 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
     sbom: null,
     history: null,
     org_rules: [],
+    pulled: false,
     ...partial,
   };
   // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
@@ -465,6 +470,8 @@ interface IssueSeed {
   commit?: Issue["commit"];
   /** v0.6: an issue from one of the org's own rules. */
   orgRule?: Issue["org_rule"];
+  /** v0.7 wave 2: a secret found in an image's layers. */
+  imageLayer?: Issue["image_layer"];
 }
 
 function issue(s: IssueSeed): Issue {
@@ -511,6 +518,7 @@ function issue(s: IssueSeed): Issue {
     license_category: s.licenseCategory ?? null,
     commit: s.commit ?? null,
     org_rule: s.orgRule ?? null,
+    image_layer: s.imageLayer ?? null,
   };
 }
 
@@ -1607,3 +1615,157 @@ issues.push(
 );
 export const ORG_RULE_ISSUE = issues[issues.length - 2]!;
 export const DELETED_RULE_ISSUE = issues[issues.length - 1]!;
+
+// ---- v0.7 wave 2: registry credentials, pulled images, secrets in image layers ----
+
+/** Acme Engineering's credentials: one that works (ghcr.io), one the registry refuses, one never
+ *  used. The mock keeps no password at all: the API never returns one. Acme Labs has none. */
+export const registries: Record<string, RegistryCredential[]> = {
+  [ORG_ID]:
+    mockFlags.registries === "empty"
+      ? []
+      : [
+          {
+            id: uuid(),
+            host: "ghcr.io",
+            username: "acme-warden-bot",
+            created_by: users.linh,
+            created_at: ago(40 * DAY),
+            updated_at: ago(12 * DAY),
+            last_used_at: ago(150 * 60_000),
+            last_error: null,
+          },
+          {
+            id: uuid(),
+            host: "registry.acme.example:5000",
+            username: "warden",
+            created_by: users.minh,
+            created_at: ago(9 * DAY),
+            updated_at: ago(9 * DAY),
+            last_used_at: ago(2 * DAY),
+            last_error: "unauthorized",
+          },
+          {
+            id: uuid(),
+            host: "harbor.acme.example",
+            username: "robot$warden",
+            created_by: null,
+            created_at: ago(3 * DAY),
+            updated_at: ago(3 * DAY),
+            last_used_at: null,
+            last_error: null,
+          },
+        ],
+  [ORG2_ID]: [],
+};
+
+/** A made-up image digest: `sha256:` and hex from the seeded generator. */
+export const fakeDigest = (seed: number) => `sha256:${fakeSha256(seed)}`;
+
+/** WEB's image, pulled by the worker (Trivy and Gitleaks), between the latest source scan and the
+ *  uploaded image. Its Gitleaks findings are the two image-layer issues below. */
+export const PULLED_SCAN = scan(
+  WEB,
+  {
+    kind: "image",
+    pulled: true,
+    target: "ghcr.io/acme/api",
+    image_ref: `ghcr.io/acme/api@${fakeDigest(8801)}`,
+    file_name: "api.tar",
+    file_size: 191 * 1024 * 1024,
+    tools: ["trivy", "gitleaks"],
+    created_by: users.linh,
+    stats: { new: 2, fixed: 0, reopened: 0, total: 7 },
+    tool_runs: [
+      { tool: "trivy", tool_version: "0.75.0", status: "succeeded", findings_count: 5, duration_ms: 88_000, error: null },
+      { tool: "gitleaks", tool_version: "8.28.0", status: "succeeded", findings_count: 2, duration_ms: 23_000, error: null },
+    ],
+    sbom: { components: 412, size: 1_284_311, formats: BOTH_SBOMS },
+  },
+  150 * 60_000,
+);
+scans.push(PULLED_SCAN);
+
+/** One failed pull per PULL_* code, on PAY's image (its target, so the image filters don't
+ *  change), all older than PAY's latest scan. */
+export const PULL_FAILURES = (
+  [
+    ["PULL_UNAUTHORIZED", "ghcr.io/acme/payments"],
+    ["PULL_NOT_FOUND", "ghcr.io/acme/payments"],
+    ["PULL_TOO_LARGE", "ghcr.io/acme/payments"],
+    ["PULL_BLOCKED", "ghcr.io/acme/payments"],
+    ["PULL_PLATFORM", "ghcr.io/acme/payments"],
+    ["PULL_FAILED", "ghcr.io/acme/payments"],
+  ] as const
+).map(([code, repo], n) => {
+  const created = 50 * H + n * H;
+  const s = scan(
+    PAY,
+    {
+      kind: "image",
+      pulled: true,
+      target: repo,
+      image_ref: `${repo}@${fakeDigest(8810 + n)}`,
+      file_name: "payments.tar",
+      file_size: 0,
+      tools: ["trivy", "gitleaks"],
+      created_by: users.minh,
+      status: "failed",
+      error_code: code,
+      tool_runs: [],
+      sbom: null,
+      finished_at: ago(created - 20_000),
+    },
+    created,
+  );
+  scans.push(s);
+  return s;
+});
+
+issues.push(
+  issue({
+    p: WEB,
+    title: "AWS access key in image layer",
+    severity: "high",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "aws-access-token",
+    file_path: "app/.env",
+    start_line: 3,
+    snippet: `AWS_ACCESS_KEY_ID=${masked}`,
+    target: "ghcr.io/acme/api",
+    imageLayer: { digest: fakeDigest(8821), index: 4, count: 2 },
+    dueIn: 12 * DAY,
+    cwe: ["CWE-798"],
+    description:
+      "An AWS access key ID is in a layer of the image. A later layer deletes the file, but the layer that added it still ships with the image.",
+    remediation: "",
+  }),
+  issue({
+    p: WEB,
+    title: "Slack bot token in image layer",
+    severity: "high",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "slack-bot-token",
+    file_path: "etc/notify/config.yml",
+    start_line: 2,
+    snippet: `token: ${maskedSlack}`,
+    target: "ghcr.io/acme/api",
+    imageLayer: { digest: fakeDigest(8822), index: 0, count: 1 },
+    dueIn: 26 * DAY,
+    cwe: ["CWE-798"],
+    description: "A Slack bot token is in the base layer of the image.",
+    remediation: "",
+  }),
+);
+export const IMAGE_LAYER_ISSUE = issues[issues.length - 2]!;
+export const BASE_LAYER_ISSUE = issues[issues.length - 1]!;
+for (const i of [IMAGE_LAYER_ISSUE, BASE_LAYER_ISSUE]) {
+  i.remediation = null;
+  i.occurrences = 1;
+  i.first_seen_scan = { id: PULLED_SCAN.id, created_at: PULLED_SCAN.created_at };
+  i.last_seen_scan = { id: PULLED_SCAN.id, created_at: PULLED_SCAN.created_at };
+  events[i.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: PULLED_SCAN.finished_at! }];
+  comments[i.id] = [];
+}

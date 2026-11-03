@@ -226,6 +226,9 @@ export interface Scan {
   /** v0.6: the org rules this scan ran (empty when none). Issues from a rule not listed here are
    *  never auto-fixed by this scan. */
   org_rules: ScanRuleRef[];
+  /** v0.7 wave 2: the worker pulled the image from its registry (POST …/scans/pull) instead of an
+   *  upload. `image_ref` is then the digest-pinned reference it pulled. */
+  pulled: boolean;
 }
 
 /** v0.4 wave 2 adds `history`: a `git bundle` from `warden scan --history` (CLI only), Gitleaks
@@ -337,6 +340,18 @@ export interface Issue extends IssueSummary {
   /** v0.6: set when the issue comes from one of the org's own rules (rule_id `org.<key>`).
    *  `name` and `scan_rule_id` are null once the rule was deleted. */
   org_rule: IssueOrgRule | null;
+  /** v0.7 wave 2: a secret Gitleaks found in an image's layers: the lowest layer that holds it,
+   *  set even when a later layer deletes the file (it is still in the image). */
+  image_layer: IssueImageLayer | null;
+}
+
+export interface IssueImageLayer {
+  /** `sha256:<64 hex>`; shown as text with a copy button, never a link. */
+  digest: string;
+  /** 0 = the base layer. */
+  index: number;
+  /** How many layers hold this secret. */
+  count: number;
 }
 
 export interface IssueOrgRule {
@@ -1009,6 +1024,50 @@ export interface ScanRuleRef {
   /** v0.7: the rule that ran, by id: it survives a delete and re-add of the same key. Null on
    *  scans recorded before v0.7. */
   scan_rule_id: UUID | null;
+}
+
+// ---- v0.7 wave 2: registry credentials and pulled images ----
+
+/** Why the last pull or test with a credential failed. */
+export type RegistryError = "unauthorized" | "unreachable" | "blocked";
+export const REGISTRY_ERRORS: RegistryError[] = ["unauthorized", "unreachable", "blocked"];
+
+/** Credentials Warden pulls images with, for one registry host (manage_registries). The password
+ *  or token is write-only: the API never returns it. */
+export interface RegistryCredential {
+  id: UUID;
+  /** Lower case host (and port), e.g. ghcr.io or registry.example.com:5000. */
+  host: string;
+  username: string;
+  created_by: UserRef | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+  last_used_at: Timestamp | null;
+  last_error: RegistryError | null;
+}
+
+export interface CreateRegistryCredentialBody {
+  host: string;
+  username: string;
+  password: string;
+}
+
+export interface UpdateRegistryCredentialBody {
+  username?: string;
+  password?: string;
+}
+
+/** POST …/registries/{id}/test. */
+export interface RegistryTestResult {
+  ok: boolean;
+  error: RegistryError | null;
+}
+
+/** POST …/projects/{p}/scans/pull: an image pinned by digest; Warden never pulls by tag. */
+export interface PullScanBody {
+  image_ref: string;
+  /** trivy and/or gitleaks; the server's default is both. */
+  tools?: Tool[];
 }
 
 // ---- Errors ----

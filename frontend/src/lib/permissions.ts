@@ -20,7 +20,8 @@ export type Perm =
   | "view_dashboard"
   | "view_audit_log"
   | "manage_integrations"
-  | "manage_rules";
+  | "manage_rules"
+  | "manage_registries";
 
 export const MATRIX: Record<Perm, Role[]> = {
   manage_users: ["org_admin"],
@@ -38,6 +39,8 @@ export const MATRIX: Record<Perm, Role[]> = {
   manage_integrations: ["org_admin", "security_lead"],
   // v0.6: the org's own Opengrep and Gitleaks rules, which decide what every scan looks for.
   manage_rules: ["org_admin", "security_lead"],
+  // v0.7 wave 2: the credentials Warden pulls images with (they open the org's private registries).
+  manage_registries: ["org_admin", "security_lead"],
 };
 
 /** rbac: developers may update only issues assigned to them. */
@@ -58,6 +61,7 @@ export const PERM_LABELS: Record<Perm, string> = {
   view_audit_log: "View audit log",
   manage_integrations: "Manage integrations",
   manage_rules: "Manage scan rules",
+  manage_registries: "Manage registry credentials",
 };
 
 export const MATRIX_ROLES: Role[] = ["org_admin", "security_lead", "owner", "developer", "viewer"];
