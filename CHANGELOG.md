@@ -19,6 +19,17 @@ All notable changes to Warden are listed here. The format follows
   mounted per Pod, mirror claims and CronJob without Docker, optional ServiceMonitor, a strict
   values schema; CI jobs `helm` (lint, kubeconform, security properties) and `kube` (kind with
   gVisor).
+
+### Fixed
+
+- An Opengrep result whose rule id was only Warden's rules-directory prefix (`data.rules.`)
+  became a finding with no rule id and no title (found by `FuzzParse` during the
+  v0.5.0-alpha.2 release, whose run stopped there; nothing was published for that tag).
+
+## [0.6.0-alpha.1] - 2026-11-03
+
+### Added
+
 - An organization's own scan rules (`/orgs/{org_id}/scan-rules`, *Settings → Scan rules*):
   Opengrep and Gitleaks rules parsed into a subset that can only add findings and rendered again
   before a scanner sees them (`internal/rules`, fuzzed), per org or per project, versioned
@@ -250,7 +261,8 @@ Tagged, but the release workflow failed, so no binaries or image were published 
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
 
-[Unreleased]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.2...HEAD
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.1...HEAD
+[0.6.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.2...v0.6.0-alpha.1
 [0.5.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
 [0.5.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.2...v0.5.0-alpha.1
 [0.4.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.1...v0.4.0-alpha.2
