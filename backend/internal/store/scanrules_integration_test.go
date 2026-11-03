@@ -87,9 +87,11 @@ func TestScanRulesAgainstSchema(t *testing.T) {
 
 	// Scans carry the rules they ran (written by the worker); issues name their rule.
 	ownerExec(t, a.id, `UPDATE scan SET org_rules = $2 WHERE id = $1`, a.scan,
-		`[{"rule_id": "org.no-eval", "tool": "opengrep", "version": 3, "sha256": "`+up.SHA256+`"}]`)
+		`[{"rule_id": "org.no-eval", "tool": "opengrep", "version": 3, "sha256": "`+up.SHA256+`", "scan_rule_id": "`+rule.ID.String()+`"},
+		  {"rule_id": "org.before-v07", "tool": "gitleaks", "version": 1, "sha256": "s"}]`)
 	sc, err := w.svc.Scan(ctx, dev, a.scan)
-	if err != nil || len(sc.OrgRules) != 1 || sc.OrgRules[0].Version != 3 || sc.OrgRules[0].SHA256 != up.SHA256 {
+	if err != nil || len(sc.OrgRules) != 2 || sc.OrgRules[0].Version != 3 || sc.OrgRules[0].SHA256 != up.SHA256 ||
+		sc.OrgRules[0].ScanRuleID == nil || *sc.OrgRules[0].ScanRuleID != rule.ID || sc.OrgRules[1].ScanRuleID != nil {
 		t.Fatal(sc, err)
 	}
 	if b, _ := json.Marshal(must(w.svc.Scan(ctx, w.actor("SRBdev", b.id), b.scan))); !strings.Contains(string(b), `"org_rules":[]`) {

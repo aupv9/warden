@@ -56,7 +56,8 @@ func TestOrgRulesEndToEnd(t *testing.T) {
 	var raw []byte
 	it.one(fmt.Sprintf(`SELECT org_rules FROM scan WHERE id = '%s'`, scan), &raw)
 	var refs []results.OrgRuleRef
-	if err := json.Unmarshal(raw, &refs); err != nil || len(refs) != 1 || refs[0].RuleID != "org.no-eval" || refs[0].Version != 2 {
+	if err := json.Unmarshal(raw, &refs); err != nil || len(refs) != 1 || refs[0].RuleID != "org.no-eval" || refs[0].Version != 2 ||
+		refs[0].ScanRuleID != ruleID {
 		t.Fatalf("%s %v", raw, err)
 	}
 	issue := func(rule string) (status, sev string) {
@@ -96,7 +97,7 @@ func TestOrgRulesEndToEnd(t *testing.T) {
 
 	// Live again (a new rule of the same key), but the scanner didn't load
 	// it: still open, nothing recorded.
-	it.orgRule("opengrep", "no-eval", "low", fmt.Sprintf("ARRAY['%s']::uuid[]", it.project))
+	readded := it.orgRule("opengrep", "no-eval", "low", fmt.Sprintf("ARRAY['%s']::uuid[]", it.project))
 	scan = it.sourceScan("opengrep")
 	if s, _ := issue("org.no-eval"); s != "open" {
 		t.Fatal("a rule the scanner didn't load fixed its issue:", s)
@@ -114,7 +115,8 @@ func TestOrgRulesEndToEnd(t *testing.T) {
 		t.Fatal("the rule ran and found nothing, yet its issue is", s)
 	}
 	it.one(fmt.Sprintf(`SELECT org_rules FROM scan WHERE id = '%s'`, scan), &raw)
-	if err := json.Unmarshal(raw, &refs); err != nil || len(refs) != 1 {
+	// The scan names the re-added rule's row, not the deleted one of the same key.
+	if err := json.Unmarshal(raw, &refs); err != nil || len(refs) != 1 || refs[0].ScanRuleID != readded || readded == ruleID {
 		t.Fatal(string(raw))
 	}
 }

@@ -82,13 +82,16 @@ type Input struct {
 	OrgRules []OrgRuleRef
 }
 
-// OrgRuleRef is one org rule a scan ran: its id ("org.<key>"), tool, and the
-// version and body hash that ran (scan.org_rules, API ScanRuleRef).
+// OrgRuleRef is one org rule a scan ran: its id ("org.<key>"), tool, the
+// version and body hash that ran, and the scan_rule row it came from, which
+// tells apart two rules of one key after a delete and re-add (scan.org_rules,
+// API ScanRuleRef; rows written before v0.7 have no scan_rule_id).
 type OrgRuleRef struct {
-	RuleID  string `json:"rule_id"`
-	Tool    string `json:"tool"`
-	Version int    `json:"version"`
-	SHA256  string `json:"sha256"`
+	RuleID     string    `json:"rule_id"`
+	Tool       string    `json:"tool"`
+	Version    int       `json:"version"`
+	SHA256     string    `json:"sha256"`
+	ScanRuleID uuid.UUID `json:"scan_rule_id"`
 }
 
 // orgRulesRun are in's org rules of tools that succeeded.
