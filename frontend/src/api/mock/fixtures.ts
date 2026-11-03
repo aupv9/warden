@@ -2,6 +2,7 @@
 // Shaped exactly like the API contract. Names, numbers and files are examples. Snippets are
 // already masked, as the API sends them; nothing here is a real or real-looking secret.
 import { NOTIFICATION_TYPES } from "../types";
+import { parseRule } from "./rules";
 import type {
   ApiToken,
   AssignRule,
@@ -22,7 +23,11 @@ import type {
   OrgRole,
   Project,
   ProjectMember,
+  RuleTest,
   Scan,
+  ScanRule,
+  ScanRuleTool,
+  ScanRuleVersion,
   SbomFormat,
   Severity,
   SignInSettings,
@@ -75,6 +80,8 @@ export const mockFlags = {
   export: PARAMS.get("mock_export"),
   /** v0.5 wave 2: `?mock_audit=broken` makes "Verify chain" find a changed entry. */
   auditBroken: PARAMS.get("mock_audit") === "broken",
+  /** v0.6: `?mock_rules=empty` starts Acme Engineering without scan rules (the empty state). */
+  rulesEmpty: PARAMS.get("mock_rules") === "empty",
 };
 
 /** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */
@@ -285,6 +292,7 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
     image_ref: null,
     sbom: null,
     history: null,
+    org_rules: [],
     ...partial,
   };
   // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
@@ -454,6 +462,8 @@ interface IssueSeed {
   foundAgo?: number;
   /** v0.4 wave 2: secrets in git history: the oldest commit that added it. */
   commit?: Issue["commit"];
+  /** v0.6: an issue from one of the org's own rules. */
+  orgRule?: Issue["org_rule"];
 }
 
 function issue(s: IssueSeed): Issue {
@@ -499,6 +509,7 @@ function issue(s: IssueSeed): Issue {
     epss_percentile: s.epss?.[1] ?? null,
     license_category: s.licenseCategory ?? null,
     commit: s.commit ?? null,
+    org_rule: s.orgRule ?? null,
   };
 }
 
@@ -1360,3 +1371,230 @@ export function metrics(days: MetricsDays, projectId: string | null): Metrics {
     fixed_by_day,
   };
 }
+
+// ---- v0.6 wave 1: the org's own scan rules (Acme Engineering) ----
+// Defined last, so the ids above stay as they were. Bodies are stored in the mock's canonical
+// form (mock/rules.ts); nothing here is secret-shaped (the Gitleaks regex is a format, not a value).
+
+const NO_EVAL_V1 = [
+  "rules:",
+  "  - id: no-eval-of-request-data",
+  "    message: Don't pass request data to eval.",
+  "    severity: WARNING",
+  "    languages: [javascript]",
+  "    pattern: eval($REQ.body)",
+].join("\n");
+const NO_EVAL_V2 = NO_EVAL_V1.replace("severity: WARNING", "severity: ERROR");
+const NO_EVAL_V3 = [
+  "rules:",
+  "  - id: no-eval-of-request-data",
+  "    message: Don't pass request data to eval; parse it, or look the value up in a table.",
+  "    severity: ERROR",
+  "    languages: [javascript, typescript]",
+  "    pattern: eval($REQ.body)",
+].join("\n");
+const YAML_LOAD = [
+  "rules:",
+  "  - id: unsafe-yaml-load",
+  "    message: yaml.load without SafeLoader can build arbitrary Python objects. Use yaml.safe_load.",
+  "    severity: WARNING",
+  "    languages: [python]",
+  "    pattern: yaml.load(...)",
+].join("\n");
+const MD5 = [
+  "rules:",
+  "  - id: legacy-md5-in-payments",
+  "    message: MD5 is not allowed for payment signatures; use the HMAC helper in pay/sign.",
+  "    severity: INFO",
+  "    languages: [go]",
+  "    pattern: md5.Sum(...)",
+].join("\n");
+const ACME_TOKEN = [
+  "[[rules]]",
+  'id = "acme-internal-token"',
+  'description = "Acme internal API token"',
+  "regex = '''acme_tok_[a-z0-9]{32}'''",
+  'keywords = ["acme_tok_"]',
+].join("\n");
+
+/** Rule bodies for trying the editor: one valid and one invalid per scanner (the invalid ones
+ *  have an allowlist or a path exclusion, a second rule or a bad id, and a lookahead). */
+export const sampleRuleBodies = {
+  opengrepValid: NO_EVAL_V3,
+  opengrepInvalid: [
+    "rules:",
+    "  - id: no-debug-routes",
+    "    message: Debug routes must not ship.",
+    "    severity: ERROR",
+    "    languages: [go]",
+    "    pattern-regex: /debug/(?!health)",
+    "    paths:",
+    "      exclude: [internal/]",
+    "  - id: second-rule",
+    "    message: x",
+  ].join("\n"),
+  gitleaksValid: ACME_TOKEN,
+  gitleaksInvalid: ["[[rules]]", 'id = "Acme Token"', "regex = '''acme_(?=tok)'''", "[rules.allowlist]", "paths = ['''test/''']"].join("\n"),
+};
+
+function canon(tool: ScanRuleTool, body: string): string {
+  const r = parseRule(tool, body);
+  if (!r.canonical) throw new Error(`mock rule fixture doesn't parse: ${JSON.stringify(r.problems)}`);
+  return r.canonical;
+}
+
+/** A plainly fake SHA-256 of a body (mock only: a 32-bit hash spread over 64 hex digits). */
+export function mockBodySha(body: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < body.length; i++) h = Math.imul(h ^ body.charCodeAt(i), 16777619) >>> 0;
+  return fakeSha256(h);
+}
+
+type RuleSeed = {
+  tool: ScanRuleTool;
+  name: string;
+  versions: { body: string; enabled: boolean; projects: string[] | null; by: UserRef; ago: number; name?: string }[];
+};
+
+function rule(seed: RuleSeed): { rule: ScanRule; versions: ScanRuleVersion[] } {
+  const versions: ScanRuleVersion[] = seed.versions.map((v, i) => {
+    const body = canon(seed.tool, v.body);
+    return { version: i + 1, body, sha256: mockBodySha(body), name: v.name ?? seed.name, enabled: v.enabled, project_ids: v.projects, created_by: v.by, created_at: ago(v.ago) };
+  });
+  const last = versions[versions.length - 1]!;
+  const parsed = parseRule(seed.tool, last.body);
+  return {
+    rule: {
+      id: uuid(),
+      tool: seed.tool,
+      key: parsed.key!,
+      rule_id: `org.${parsed.key}`,
+      name: last.name,
+      body: last.body,
+      sha256: last.sha256,
+      version: last.version,
+      enabled: last.enabled,
+      severity: parsed.severity!,
+      project_ids: last.project_ids,
+      created_by: versions[0]!.created_by,
+      updated_by: last.created_by,
+      created_at: versions[0]!.created_at,
+      updated_at: last.created_at,
+    },
+    versions: [...versions].reverse(),
+  };
+}
+
+const seededRules = [
+  rule({
+    tool: "opengrep",
+    name: "No eval of request data",
+    versions: [
+      { body: NO_EVAL_V1, enabled: true, projects: [WEB.id], by: users.linh, ago: 40 * DAY, name: "No eval" },
+      { body: NO_EVAL_V2, enabled: true, projects: null, by: users.huy, ago: 21 * DAY },
+      { body: NO_EVAL_V2, enabled: false, projects: null, by: users.huy, ago: 9 * DAY },
+      { body: NO_EVAL_V3, enabled: true, projects: null, by: users.linh, ago: 3 * DAY },
+    ],
+  }),
+  rule({
+    tool: "opengrep",
+    name: "Unsafe YAML load",
+    versions: [{ body: YAML_LOAD, enabled: true, projects: [WEB.id, PAY.id], by: users.huy, ago: 12 * DAY }],
+  }),
+  rule({
+    tool: "opengrep",
+    name: "MD5 in payment signatures",
+    versions: [
+      { body: MD5, enabled: true, projects: [PAY.id], by: users.linh, ago: 60 * DAY },
+      { body: MD5, enabled: false, projects: [PAY.id], by: users.linh, ago: 6 * DAY },
+    ],
+  }),
+  rule({
+    tool: "gitleaks",
+    name: "Acme internal API token",
+    versions: [{ body: ACME_TOKEN, enabled: true, projects: null, by: users.linh, ago: 30 * DAY }],
+  }),
+];
+
+export const scanRules: Record<string, ScanRule[]> = {
+  [ORG_ID]: mockFlags.rulesEmpty ? [] : seededRules.map((r) => r.rule),
+  [ORG2_ID]: [],
+};
+export const scanRuleVersions: Record<string, ScanRuleVersion[]> = Object.fromEntries(seededRules.map((r) => [r.rule.id, r.versions]));
+const [NO_EVAL, YAML_RULE, , ACME_RULE] = seededRules.map((r) => r.rule) as [ScanRule, ScanRule, ScanRule, ScanRule];
+export const RULE_NO_EVAL = NO_EVAL;
+export const RULE_YAML = YAML_RULE;
+
+/** "Unsafe YAML load" changes under whoever opens it first (Huy edits it a moment later), so
+ *  saving it shows the VERSION_CONFLICT banner once; reloading picks up Huy's version. */
+export const raceOnce = new Set<string>([YAML_RULE.id]);
+
+/** Snippet tests by id: the mock keeps the outcome, never the snippet (like the server, which
+ *  deletes it when the run ends). Two finished ones to open directly: 2 lines found, and a
+ *  timeout. */
+export type MockRuleTest = RuleTest & { _t?: number; _outcome?: Pick<RuleTest, "error" | "findings">; _by: string };
+export const ruleTests: Record<string, MockRuleTest> = {};
+const seedTest = (t: Omit<MockRuleTest, "id" | "_by">): MockRuleTest => {
+  const full: MockRuleTest = { ...t, id: uuid(), _by: me.id };
+  ruleTests[full.id] = full;
+  return full;
+};
+const EVAL_MESSAGE = "Don't pass request data to eval; parse it, or look the value up in a table.";
+export const TEST_TWO_LINES = seedTest({
+  state: "done",
+  findings: [
+    { line: 3, end_line: null, message: EVAL_MESSAGE },
+    { line: 7, end_line: 8, message: EVAL_MESSAGE },
+  ],
+  error: null,
+  created_at: ago(10 * 60_000),
+  finished_at: ago(10 * 60_000 - 4000),
+});
+export const TEST_FAILED = seedTest({ state: "failed", findings: [], error: "timeout", created_at: ago(8 * 60_000), finished_at: ago(5 * 60_000) });
+
+// The latest WEB scan ran three rules (one at an older version than now); a PAY scan ran a rule
+// that was deleted since.
+scans[0]!.org_rules = [
+  { rule_id: NO_EVAL.rule_id, tool: "opengrep", version: 2, sha256: scanRuleVersions[NO_EVAL.id]![2]!.sha256 },
+  { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256 },
+  { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256 },
+];
+export const PAY_RULES_SCAN = scans.find((s) => s.project_id === PAY.id && s.kind === "source" && s.status === "completed");
+if (PAY_RULES_SCAN) PAY_RULES_SCAN.org_rules = [{ rule_id: "org.no-pickle-loads", tool: "opengrep", version: 2, sha256: fakeSha256(9101) }];
+
+issues.push(
+  issue({
+    p: WEB,
+    title: "Request data passed to eval",
+    severity: "high",
+    status: "open",
+    tool: "opengrep",
+    rule_id: NO_EVAL.rule_id,
+    file_path: "web/src/admin/console.js",
+    start_line: 42,
+    snippet: "const out = eval(req.body.expr);",
+    dueIn: 20 * DAY,
+    cwe: ["CWE-95"],
+    description: EVAL_MESSAGE,
+    remediation: "Parse the expression with a small evaluator, or map the allowed values to functions.",
+    orgRule: { rule_id: NO_EVAL.rule_id, name: NO_EVAL.name, scan_rule_id: NO_EVAL.id },
+  }),
+  issue({
+    p: PAY,
+    title: "pickle.loads on uploaded data",
+    severity: "medium",
+    status: "open",
+    tool: "opengrep",
+    rule_id: "org.no-pickle-loads",
+    file_path: "pay/import/batch.py",
+    start_line: 17,
+    snippet: "rows = pickle.loads(upload.read())",
+    dueIn: 60 * DAY,
+    cwe: ["CWE-502"],
+    description: "pickle.loads runs code from the data it reads.",
+    remediation: "Read the upload as JSON or CSV instead.",
+    orgRule: { rule_id: "org.no-pickle-loads", name: null, scan_rule_id: null },
+  }),
+);
+export const ORG_RULE_ISSUE = issues[issues.length - 2]!;
+export const DELETED_RULE_ISSUE = issues[issues.length - 1]!;

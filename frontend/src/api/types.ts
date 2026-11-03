@@ -223,6 +223,9 @@ export interface Scan {
   /** v0.4 wave 2: history scans that finished: how many commits Gitleaks read, and whether
    *  `history_max_commits` cut the history short (the newest commits are kept). */
   history: { commits: number; truncated: boolean } | null;
+  /** v0.6: the org rules this scan ran (empty when none). Issues from a rule not listed here are
+   *  never auto-fixed by this scan. */
+  org_rules: ScanRuleRef[];
 }
 
 /** v0.4 wave 2 adds `history`: a `git bundle` from `warden scan --history` (CLI only), Gitleaks
@@ -331,6 +334,15 @@ export interface Issue extends IssueSummary {
    *  secret (file_path and start_line are from it) and how many commits added it. The sha is
    *  shown as text, never linked; author, email and message are never kept. */
   commit: IssueCommit | null;
+  /** v0.6: set when the issue comes from one of the org's own rules (rule_id `org.<key>`).
+   *  `name` and `scan_rule_id` are null once the rule was deleted. */
+  org_rule: IssueOrgRule | null;
+}
+
+export interface IssueOrgRule {
+  rule_id: string;
+  name: string | null;
+  scan_rule_id: UUID | null;
 }
 
 export interface IssueCommit {
@@ -883,6 +895,119 @@ export interface WebConfig {
   audience: string | null;
 }
 
+// ---- v0.6: the org's own scan rules ----
+
+/** Org rules exist for Opengrep (SAST) and Gitleaks (secrets) only. */
+export type ScanRuleTool = "opengrep" | "gitleaks";
+export const SCAN_RULE_TOOLS: ScanRuleTool[] = ["opengrep", "gitleaks"];
+
+/** One reason a rule body is refused; `line` is 1-based in the submitted body, when known. */
+export interface RuleProblem {
+  line: number | null;
+  column: number | null;
+  message: string;
+}
+
+/** One rule of the org. `body` is the canonical form Warden rendered from the parsed rule, not
+ *  the text as submitted; findings carry `rule_id` (org.<key>). */
+export interface ScanRule {
+  id: UUID;
+  tool: ScanRuleTool;
+  key: string;
+  rule_id: string;
+  name: string;
+  body: string;
+  sha256: string;
+  version: number;
+  enabled: boolean;
+  severity: Severity;
+  /** null: every project of the org. */
+  project_ids: UUID[] | null;
+  created_by: UserRef | null;
+  updated_by: UserRef | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface CreateScanRuleBody {
+  tool: ScanRuleTool;
+  name: string;
+  body: string;
+  enabled?: boolean;
+  project_ids?: UUID[] | null;
+}
+
+export interface UpdateScanRuleBody {
+  /** The version that was read (optimistic lock: 409 VERSION_CONFLICT otherwise). */
+  version: number;
+  name?: string;
+  body?: string;
+  enabled?: boolean;
+  project_ids?: UUID[] | null;
+}
+
+export interface ScanRuleVersion {
+  version: number;
+  body: string;
+  sha256: string;
+  name: string;
+  enabled: boolean;
+  project_ids: UUID[] | null;
+  created_by: UserRef | null;
+  created_at: Timestamp;
+}
+
+export interface RuleValidation {
+  ok: boolean;
+  key: string | null;
+  severity: Severity | null;
+  /** The canonical form Warden would store. */
+  body: string | null;
+  problems: RuleProblem[];
+}
+
+export interface ValidateRuleBody {
+  tool: ScanRuleTool;
+  body: string;
+}
+
+/** POST …/scan-rules/tests. The snippet runs in the scanner sandbox and is deleted when the run
+ *  ends; the UI keeps it in the test dialog's state only (hooks/scanRules.ts). */
+export interface RuleTestRequest {
+  tool: ScanRuleTool;
+  body: string;
+  /** Decides the language for Opengrep. */
+  filename: string;
+  snippet: string;
+}
+
+export type RuleTestState = "queued" | "running" | "done" | "failed";
+export type RuleTestError = "timeout" | "scanner_failed" | "rule_invalid";
+
+export interface RuleTestFinding {
+  line: number;
+  end_line: number | null;
+  /** The rule's message (Opengrep) or description (Gitleaks); never matched text. */
+  message: string;
+}
+
+export interface RuleTest {
+  id: UUID;
+  state: RuleTestState;
+  findings: RuleTestFinding[];
+  error: RuleTestError | null;
+  created_at: Timestamp;
+  finished_at: Timestamp | null;
+}
+
+/** An org rule a scan ran, at the version it ran. */
+export interface ScanRuleRef {
+  rule_id: string;
+  tool: ScanRuleTool;
+  version: number;
+  sha256: string;
+}
+
 // ---- Errors ----
 
 /** `error.code` values the API can answer (openapi schema Error). */
@@ -908,7 +1033,9 @@ export type ApiErrorCode =
   | "INTERNAL"
   // v0.5 wave 2: 409 from POST …/webhooks, which used to answer CONFLICT for both cases.
   | "WEBHOOK_LIMIT"
-  | "SECRETS_KEY_MISSING";
+  | "SECRETS_KEY_MISSING"
+  // v0.6: 422 from the scan-rule endpoints, with metadata.problems: RuleProblem[].
+  | "RULE_INVALID";
 
 // ---- Enumerations used by the UI ----
 
