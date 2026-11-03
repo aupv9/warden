@@ -87,7 +87,8 @@ func TestRunScanWithOrgRules(t *testing.T) {
 	fin := h.db.Calls("UPDATE scan SET status = $2, error_code = NULL")
 	var refs []results.OrgRuleRef
 	if len(fin) != 1 || json.Unmarshal(fin[0].Args[5].([]byte), &refs) != nil ||
-		!slices.Equal(refs, []results.OrgRuleRef{{RuleID: "org.no-eval", Tool: "opengrep", Version: 3, SHA256: "h1"}}) {
+		!slices.Equal(refs, []results.OrgRuleRef{{RuleID: "org.no-eval", Tool: "opengrep", Version: 3, SHA256: "h1", ScanRuleID: ruleRows[1][0].(uuid.UUID)}}) ||
+		!strings.Contains(string(fin[0].Args[5].([]byte)), `"scan_rule_id":"`+ruleRows[1][0].(uuid.UUID).String()+`"`) {
 		t.Fatalf("%v", fin)
 	}
 	h.assertCleaned()
