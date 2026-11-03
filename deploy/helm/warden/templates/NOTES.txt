@@ -2,7 +2,7 @@ Warden {{ .Chart.AppVersion }} is installed as "{{ .Release.Name }}" in namespac
 Scanner Pods run in namespace {{ .Values.sandbox.namespace }}.
 
 PREREQUISITES (the chart doesn't install them)
-  - RuntimeClass "{{ .Values.sandbox.runtimeClassName }}" whose handler is gVisor's runsc, e.g. containerd's
+  - RuntimeClass "{{ .Values.sandbox.runtimeClassName }}" whose handler is gVisor's (runsc, or gvisor on GKE Sandbox), e.g. containerd's
     runsc shim on the scan nodes (https://gvisor.dev/docs/user_guide/containerd/quick_start/).
     The worker checks the handler and refuses to start without it.
   - A CNI that enforces NetworkPolicy (Calico, Cilium, GKE Dataplane V2, …). Without one, the
