@@ -896,7 +896,9 @@ Pull the image by the digest from the release notes, not by tag.
 
 Changes that weaken one of these need an explicit discussion in the pull request:
 
-- Archives are only ever extracted by `zipcheck.Extract`. Image tarballs are checked by
+- Archives are only ever extracted by `zipcheck.Extract`; the one other tar reader is
+  `sandboxio`, which moves a scan's input into and reports out of a scanner Pod (Kubernetes
+  backend) with the same refusals. Image tarballs are checked by
   `imagecheck` and never extracted by Warden; Trivy reads them inside the sandbox.
 - A history upload is a git bundle checked by `bundlecheck` without unpacking; git reads it only
   in the Gitleaks sandbox, fetched into a fresh bare repository with no system or global config,

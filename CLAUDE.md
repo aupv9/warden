@@ -58,7 +58,7 @@ go under `[Unreleased]` in `CHANGELOG.md`.
 - Hostile-input code (`zipcheck`, `imagecheck`, `bundlecheck`, `sarif`, `trivyjson`, `sbom`, `redact`,
   `intel`, `webhook` URL checks, the CLI's PR/MR comment text, the CSV export's cells) must have tests for
   the attack, not just the happy path, and a fuzz target that asserts a property (not only "no panic");
-  `make fuzz` / CI job `fuzz`. Commit a crasher from `testdata/fuzz/` with its fix. Only `zipcheck` extracts archives; `imagecheck` validates `docker save` tarballs and
+  `make fuzz` / CI job `fuzz`. Commit a crasher from `testdata/fuzz/` with its fix. Only `zipcheck` extracts archives (and `sandboxio`, the Kubernetes sandbox's tar streams, under the same rules); `imagecheck` validates `docker save` tarballs and
   `bundlecheck` git bundles without unpacking them (Trivy / git read them in the sandbox).
 - New scanner flags or images: verify against real scanner output with
   `go -C backend run ./cmd/selfscan -root .. -zip <sample.zip>`, and check that no raw secret

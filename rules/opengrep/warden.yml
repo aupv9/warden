@@ -15,9 +15,12 @@ rules:
     # zipcheck (uploads), imagecheck (docker save tarballs, never extracted) and
     # intel (the EPSS feed, decompressed under a byte cap, and the OSV all.zip
     # feeds, read in place: only MAL-*.json entries are opened, every size and
-    # count capped, nothing extracted).
+    # count capped, nothing extracted) and sandboxio (the kubernetes sandbox's
+    # tar streams into and out of a scanner Pod: regular files only, names
+    # cleaned like uploads, os.Root with O_EXCL|O_NOFOLLOW, every size and count
+    # capped; fuzzed both ways).
     paths:
-      exclude: ["backend/internal/scan/zipcheck/", "backend/internal/scan/imagecheck/", "backend/internal/intel/", "*_test.go"]
+      exclude: ["backend/internal/scan/zipcheck/", "backend/internal/scan/imagecheck/", "backend/internal/intel/", "backend/internal/scan/sandbox/sandboxio/", "*_test.go"]
     metadata:
       cwe: ["CWE-22: Path Traversal", "CWE-409: Improper Handling of Highly Compressed Data"]
       security-severity: "9.1"
