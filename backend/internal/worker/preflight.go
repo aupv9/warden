@@ -69,13 +69,15 @@ func (e *Env) Preflight(ctx context.Context, docker sandbox.Runner, strict bool)
 
 // activeScans are the scans that may own a container or scratch directory
 // right now: queued (a worker may be about to start it: RunScan clears the
-// scratch directory before marking it running) or running.
+// scratch directory before marking it running) or running. Rule tests
+// (ruletest.go) name theirs after the test, so active tests count too.
 func (e *Env) activeScans(ctx context.Context) (map[string]bool, error) {
 	active := map[string]bool{}
 	var mu sync.Mutex
 	err := e.forEachOrg(ctx, "preflight_cleanup", func(org uuid.UUID) error {
 		return e.Tx(ctx, org, func(db DB) error {
-			rows, err := db.Query(ctx, `SELECT id FROM scan WHERE status IN ('queued', 'running')`)
+			rows, err := db.Query(ctx, `SELECT id FROM scan WHERE status IN ('queued', 'running')
+				UNION ALL SELECT id FROM scan_rule_test WHERE state IN ('queued', 'running')`)
 			if err != nil {
 				return err
 			}
