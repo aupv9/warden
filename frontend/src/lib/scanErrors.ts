@@ -89,6 +89,39 @@ export function scanErrorMessages(code: string, limits: Limits = DEFAULT_LIMITS)
         short: "history too large",
         full: "The repository's history is larger than Warden accepts (or has too many branches and tags). Ask your operator about the limit.",
       };
+    // v0.7 wave 2: the worker couldn't pull the image (POST …/scans/pull). Nothing was scanned.
+    // The server's details (registry answers, addresses) are never shown: these words say what
+    // happened and what to do.
+    case "PULL_UNAUTHORIZED":
+      return {
+        short: "registry refused access",
+        full: "The registry refused to give Warden this image. If the image is private, an org admin or security lead must add credentials for its host under Settings › Registries, or fix the ones there (Test shows whether they work). Then scan again.",
+      };
+    case "PULL_NOT_FOUND":
+      return {
+        short: "image not found",
+        full: "The registry has no image with this digest. Check the repository and the sha256 digest (docker buildx imagetools inspect IMAGE prints it), then scan again.",
+      };
+    case "PULL_TOO_LARGE":
+      return {
+        short: "image too large to pull",
+        full: "The image is larger than this server pulls. Scan a smaller image, such as the final stage of a multi-stage build, or ask your operator about the limit.",
+      };
+    case "PULL_BLOCKED":
+      return {
+        short: "registry address blocked",
+        full: "Warden doesn't pull from this registry: its host resolves to a private or internal address, or it redirected there. Use the registry's public host, or ask your operator.",
+      };
+    case "PULL_PLATFORM":
+      return {
+        short: "no image for this platform",
+        full: "The digest names images for other platforms only, not the one this server scans (linux/amd64 unless your operator changed it). Pin the digest of that platform's image, or of a list that includes it.",
+      };
+    case "PULL_FAILED":
+      return {
+        short: "pull failed",
+        full: "Warden couldn't pull the image: the registry didn't answer, or sent something Warden can't read. Check that the registry is up, then scan again. If it keeps happening, tell your operator.",
+      };
     case "CHECKSUM_MISMATCH":
       return {
         short: "file changed in upload",
@@ -113,6 +146,13 @@ export function scanErrorMessages(code: string, limits: Limits = DEFAULT_LIMITS)
     default:
       return { short: "failed", full: `The scan failed (${code}). Tell your operator; the worker log has the details.` };
   }
+}
+
+/** v0.7 wave 2: the image couldn't be pulled (a pulled scan's failure before any scanner ran).
+ *  Shown as Failed, with "Pull failed" on the scan card: nothing was refused, the image never
+ *  arrived. */
+export function isPullFailure(scan: { status: ScanStatus; error_code: string | null }): boolean {
+  return scan.status === "failed" && !!scan.error_code?.startsWith("PULL_");
 }
 
 /** A failed scan whose archive (.zip, an image .tar in v0.3, a git bundle in v0.4 wave 2) was
