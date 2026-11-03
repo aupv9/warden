@@ -185,6 +185,68 @@ jobs:
       - name: Chart checks
         run: ./deploy/helm/test/run.sh
 
+  # The chart installed on a cluster (deploy/helm/test/cluster-smoke.sh): kind
+  # with NetworkPolicy enforced by kube-network-policies (scripts/kind-gvisor.sh
+  # cluster; no gVisor, the worker isn't started). The migrate hook, the api
+  # under Pod Security restricted, every NetworkPolicy including the worker's
+  # way to the API server as the chart looks it up, the PSA check of an
+  # existing sandbox namespace, the worker's RBAC, and one mirror CronJob run
+  # (Trivy DB from its init container, then sync-mirror.sh: public feeds, as
+  # in the selfscan and kube jobs).
+  helm-cluster:
+    runs-on: ubuntu-24.04
+    needs: [helm]
+    timeout-minutes: 45
+    env:
+      # As in the helm job.
+      HELM_VERSION: v3.22.1
+      HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+      KIND_RUNTIME: runc
+      MIRROR_HOSTPATH: /var/lib/warden-smoke-mirror
+      KEEP: "1" # leave the cluster as it failed, for the step below
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Install helm (pinned, checksummed)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"; mkdir -p "$bin"; cd "$RUNNER_TEMP"
+          curl -fsSL -o helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz --strip-components=1 -C "$bin" linux-amd64/helm
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: kind cluster, local registry, kube-network-policies
+        run: |
+          ./scripts/kind-gvisor.sh cluster
+          echo "KUBECONFIG=$GITHUB_WORKSPACE/.cache/kind/kubeconfig" >> "$GITHUB_ENV"
+      - name: Warden and mirror images into the registry, by digest
+        run: |
+          set -euo pipefail
+          push() { # name dockerfile: prints name@digest as the node pulls it
+            local ref="localhost:5001/$1:ci"
+            docker build -q -f "$2" -t "$ref" . >/dev/null
+            docker push -q "$ref" >/dev/null
+            docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -m1 "^localhost:5001/$1@sha256:"
+          }
+          warden="$(push warden backend/Dockerfile)"
+          mirror="$(push warden-mirror deploy/helm/mirror/Dockerfile)"
+          {
+            echo "IMAGE_REPO=${warden%@*}"
+            echo "IMAGE_DIGEST=${warden#*@}"
+            echo "MIRROR_IMAGE=$mirror"
+          } >> "$GITHUB_ENV"
+      - name: Mirror directory on the node (owned by the chart's uid)
+        run: docker exec warden-kube-control-plane install -d -o 65532 -g 65532 -m 755 "$MIRROR_HOSTPATH"
+      - name: Cluster smoke
+        run: ./deploy/helm/test/cluster-smoke.sh
+      - name: Cluster state (on failure)
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -60 || true
+          kubectl -n kube-system logs ds/kube-network-policies --tail=50 || true
+
   # Warden scans itself with the production sandbox (gVisor). Any Critical or
   # un-baselined High blocks every run, so a finding surfaces on its pull request
   # instead of at release time (v0.1.0-alpha.1 was stopped at the tag by one).

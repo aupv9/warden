@@ -119,8 +119,12 @@ networkPolicy:
     database:
       to: [{ ipBlock: { cidr: 10.30.0.5/32 } }]
       ports: [{ port: 5432, protocol: TCP }]
+    # S3 over its public endpoint (the default excludes private addresses).
     storage:
-      to: []
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
       ports: [{ port: 443, protocol: TCP }]
     oidc:
       to: []
@@ -128,8 +132,10 @@ networkPolicy:
     smtp:
       to: []
       ports: [{ port: 587, protocol: TCP }]
+    # The API server's endpoints (kubectl get endpointslice -n default kubernetes).
+    # Omit cidrs to have helm install/upgrade read them from the cluster.
     kubeAPI:
-      to: [{ ipBlock: { cidr: 172.16.0.2/32 } }]
+      cidrs: [172.16.0.2/32]
       ports: [{ port: 443, protocol: TCP }]
     webhooks:
       to:

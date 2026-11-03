@@ -12,6 +12,29 @@ def component: .metadata.labels["app.kubernetes.io/component"];
 def is_worker: .kind == "Deployment" and component == "worker";
 def env($k): [.[] | select(is_worker) | podspec.containers[0].env[]? | select(.name == $k) | .value][0];
 
+# CIDRs: IPv4 exactly; IPv6 by its first 16 bits, enough for the private
+# ranges below (/7, /10) and anything that could contain them.
+def hex: ascii_downcase | explode | map(if . >= 97 then . - 87 else . - 48 end) | reduce .[] as $d (0; . * 16 + $d);
+def cidr: split("/") as $p | ($p[0] | contains(":")) as $v6 |
+  { v6: $v6, bits: (($p[1] // (if $v6 then "128" else "32" end)) | tonumber),
+    key: (if $v6 then ($p[0] | if startswith(":") then 0 else (split(":")[0] | hex) end)
+          else ($p[0] | split(".") | map(tonumber) | .[0] * 16777216 + .[1] * 65536 + .[2] * 256 + .[3]) end) };
+# $outer contains $inner (both from cidr).
+def covers($outer; $inner):
+  ($outer.v6 == $inner.v6) and ($outer.bits <= $inner.bits) and
+  ((if $outer.v6 then 16 else 32 end) as $w | ([$outer.bits, $w] | min) as $b | pow(2; $w - $b) as $d |
+    (($outer.key / $d) | floor) == (($inner.key / $d) | floor));
+def private_ranges: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8", "fc00::/7", "fe80::/10"];
+# What a NetworkPolicy peer lets through of the private ranges, one per line.
+def leaks:
+  if .ipBlock != null then
+    (.ipBlock.cidr | cidr) as $c | [(.ipBlock.except // [])[] | cidr] as $ex |
+    private_ranges[] | . as $r | cidr as $rc | select(covers($c; $rc) and (any($ex[]; covers(.; $rc)) | not)) | $r
+  elif (.namespaceSelector == {}) and ((.podSelector // {}) == {}) then "every Pod in the cluster"
+  else empty end;
+def https_port: (.port | type) == "string" or .port == 443 or .port == 6443
+  or ((.endPort != null) and ((.port <= 443 and .endPort >= 443) or (.port <= 6443 and .endPort >= 6443)));
+
 . as $all
 | ($all | env("WARDEN_SCAN__KUBE__NAMESPACE")) as $sandbox
 | ($all | env("WARDEN_SCAN__KUBE__RUNTIME_CLASS")) as $rc
@@ -98,6 +121,15 @@ def env($k): [.[] | select(is_worker) | podspec.containers[0].env[]? | select(.n
       | "\(id): the chart runs a workload in the sandbox namespace"),
     (if ([$all[] | select(.kind == "ResourceQuota" and .metadata.namespace == $sandbox)] | length) != 1 then "sandbox namespace: no ResourceQuota" else empty end),
     (if ([$all[] | select(.kind == "LimitRange" and .metadata.namespace == $sandbox)] | length) != 1 then "sandbox namespace: no LimitRange" else empty end),
+
+    # The worker calls user-given webhook URLs: none of its egress rules may
+    # reach private addresses on 443/6443 (the API server's own addresses are
+    # listed one by one), so the webhook rule's exclusions mean something.
+    ($all[] | select(.kind == "NetworkPolicy" and component == "worker") | id as $n |
+      .spec.egress[]? | select(((.ports // []) | length == 0) or any(.ports[]; https_port)) |
+      if ((.to // []) | length) == 0 then "\($n): an egress rule on 443/6443 is open to every address"
+      else (.to[] | leaks | "\($n): an egress rule on 443/6443 reaches \(.)") end
+    ),
 
     # The admin port (/metrics) is never routed from outside.
     ($all[] | select(.kind == "Ingress") | id as $n | .spec.rules[].http.paths[].backend.service |
