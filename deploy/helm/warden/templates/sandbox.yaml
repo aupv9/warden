@@ -1,0 +1,66 @@
+{{- $c := dict "ctx" . "component" "sandbox" -}}
+{{- $ns := .Values.sandbox.namespace -}}
+{{- if .Values.sandbox.createNamespace }}
+# Scanner Pods only. Pod Security Admission "restricted" refuses any Pod that
+# could run as root, escalate, keep a capability or mount a host path, even if
+# the worker were made to ask for one.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: {{ .Values.sandbox.podSecurityVersion | quote }}
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: {{ .Values.sandbox.podSecurityVersion | quote }}
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: {{ .Values.sandbox.podSecurityVersion | quote }}
+---
+{{- end }}
+# No Pod in the sandbox namespace sends or receives anything over the network.
+# Input and results travel over the exec API (kubelet to the container
+# runtime), which NetworkPolicy doesn't govern. Nothing here may be loosened:
+# hostile code is read in these Pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "warden.fullname" . }}-deny-all
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- if .Values.sandbox.resourceQuota.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "warden.fullname" . }}-sandbox
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.sandbox.resourceQuota.hard | nindent 4 }}
+{{- end }}
+{{- if .Values.sandbox.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "warden.fullname" . }}-sandbox
+  namespace: {{ $ns }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        {{- toYaml .Values.sandbox.limitRange.default | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.sandbox.limitRange.defaultRequest | nindent 8 }}
+      max:
+        {{- toYaml .Values.sandbox.limitRange.max | nindent 8 }}
+{{- end }}

@@ -1,0 +1,14 @@
+{{- include "warden.validate" . -}}
+# Non-secret settings shared by the api and the worker. Secrets never go
+# here: each Pod mounts its keys from existingSecret as files.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "warden.fullname" . }}-env
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+data:
+  {{- include "warden.commonEnv" . | nindent 2 }}
+  {{- with include "warden.extraEnv" . }}
+  {{- . | nindent 2 }}
+  {{- end }}

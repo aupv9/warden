@@ -1,0 +1,141 @@
+{{- if .Values.mirror.cronjob.enabled }}
+{{- $c := dict "ctx" . "component" "mirror" }}
+{{- $cj := .Values.mirror.cronjob }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "warden.fullname" . }}-mirror
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+data:
+  mirror-sync.sh: |
+    {{- .Files.Get "files/mirror-sync.sh" | nindent 4 }}
+  docker-shim: |
+    {{- .Files.Get "files/docker-shim" | nindent 4 }}
+---
+# Refreshes the offline scanner data daily, like the Compose `mirror` profile,
+# but with no Docker socket: the Trivy DB comes from the pinned Trivy image
+# run as an init container, the rest from scripts/sync-mirror.sh. Scanners
+# and the worker only ever mount the result read-only.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "warden.fullname" . }}-mirror
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  schedule: {{ $cj.schedule | quote }}
+  timeZone: {{ $cj.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "warden.componentLabels" $c | nindent 8 }}
+    spec:
+      backoffLimit: {{ $cj.backoffLimit }}
+      activeDeadlineSeconds: {{ $cj.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "warden.componentLabels" $c | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "warden.fullname" . }}
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            {{- include "warden.podSecurityContext" . | nindent 12 }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          initContainers:
+            # The same pinned Trivy the scanners use, pulling its DB (an OCI
+            # artifact) straight into the mirror: no Docker involved.
+            - name: trivy-db
+              image: {{ include "warden.trivyMirrorImage" . }}
+              imagePullPolicy: IfNotPresent
+              args:
+                - --cache-dir
+                - /mirror/trivy
+                - image
+                - --download-db-only
+                - --no-progress
+                {{- with $cj.trivyDBRepositories }}
+                - --db-repository
+                - {{ join "," . | quote }}
+                {{- end }}
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: TMPDIR, value: /tmp }
+              securityContext:
+                {{- include "warden.containerSecurityContext" . | nindent 16 }}
+              resources:
+                {{- toYaml $cj.resources | nindent 16 }}
+              volumeMounts:
+                - { name: mirror, mountPath: /mirror }
+                - { name: tmp, mountPath: /tmp }
+          containers:
+            - name: sync
+              image: {{ $cj.image }}
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/opt/warden-helm/mirror-sync.sh"]
+              env:
+                - { name: MIRROR, value: /mirror }
+                - { name: HOME, value: /tmp }
+                - { name: TMPDIR, value: /tmp }
+                {{- with $cj.feeds.kevUrl }}
+                - { name: WARDEN_KEV_URL, value: {{ . | quote }} }
+                {{- end }}
+                {{- with $cj.feeds.kevFallbackUrl }}
+                - { name: WARDEN_KEV_FALLBACK_URL, value: {{ . | quote }} }
+                {{- end }}
+                {{- with $cj.feeds.epssUrl }}
+                - { name: WARDEN_EPSS_URL, value: {{ . | quote }} }
+                {{- end }}
+                {{- with $cj.feeds.osvUrl }}
+                - { name: WARDEN_OSV_URL, value: {{ . | quote }} }
+                {{- end }}
+                {{- with $cj.feeds.osvEcosystems }}
+                - { name: WARDEN_OSV_ECOSYSTEMS, value: {{ . | quote }} }
+                {{- end }}
+              securityContext:
+                {{- include "warden.containerSecurityContext" . | nindent 16 }}
+              resources:
+                {{- toYaml $cj.resources | nindent 16 }}
+              volumeMounts:
+                - { name: mirror, mountPath: /mirror }
+                - { name: tmp, mountPath: /tmp }
+                - { name: scripts, mountPath: /opt/warden-helm, readOnly: true }
+          volumes:
+            - name: mirror
+              persistentVolumeClaim:
+                claimName: {{ include "warden.mirrorClaim" . }}
+            # Opengrep rules tarball and partial downloads.
+            - name: tmp
+              emptyDir:
+                sizeLimit: 1Gi
+            - name: scripts
+              configMap:
+                name: {{ include "warden.fullname" . }}-mirror
+                defaultMode: 0555
+                items:
+                  - { key: mirror-sync.sh, path: mirror-sync.sh }
+                  - { key: docker-shim, path: bin/docker }
+          {{- with $cj.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cj.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cj.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
