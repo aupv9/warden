@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -84,13 +85,16 @@ func code(err error) string {
 
 func TestAcceptsDockerSave(t *testing.T) {
 	r, err := check(t, writeTar(t, dockerSave()...))
-	if err != nil || r.Layout != "docker" || r.Layers != 1 {
+	if err != nil || r.Layout != "docker" || r.Layers != 1 || !slices.Equal(r.LayerFiles, []string{"blobs/sha256/" + layer}) {
 		t.Fatal(r, err)
 	}
-	// Classic docker save: <id>/layer.tar, no OCI layout.
+	// Classic docker save: <id>/layer.tar, no OCI layout. Layer names come
+	// back cleaned, in the manifest's order, a repeated one twice.
 	classic := writeTar(t, dir("abc/"), file("abc/layer.tar", "l"), file("abc/VERSION", "1.0"), file(cfg+".json", "{}"),
-		file("manifest.json", `[{"Config":"`+cfg+`.json","RepoTags":["alpine:3.18"],"Layers":["abc/layer.tar"]}]`), file("repositories", "{}"))
-	if r, err := check(t, classic); err != nil || r.Layers != 1 {
+		file("def/layer.tar", "m"),
+		file("manifest.json", `[{"Config":"`+cfg+`.json","RepoTags":["alpine:3.18"],"Layers":["./def/layer.tar","abc//layer.tar","def/layer.tar"]}]`), file("repositories", "{}"))
+	if r, err := check(t, classic); err != nil || r.Layers != 3 ||
+		!slices.Equal(r.LayerFiles, []string{"def/layer.tar", "abc/layer.tar", "def/layer.tar"}) {
 		t.Fatal(r, err)
 	}
 }
@@ -103,7 +107,7 @@ func TestAcceptsOCILayout(t *testing.T) {
 		}
 	}
 	r, err := check(t, writeTar(t, entries...))
-	if err != nil || r.Layout != "oci" || r.Layers != 1 {
+	if err != nil || r.Layout != "oci" || r.Layers != 1 || !slices.Equal(r.LayerFiles, []string{"blobs/sha256/" + layer}) {
 		t.Fatal(r, err)
 	}
 	// index.json straight to an image manifest.
