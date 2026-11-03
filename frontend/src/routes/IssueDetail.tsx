@@ -8,7 +8,7 @@ import { useOrg } from "../api/hooks/orgs";
 import { useProject } from "../api/hooks/projects";
 import type { ExceptionType, Issue, IssueEvent, IssueStatus, ProjectRole } from "../api/types";
 import { Avatar } from "../components/Avatar";
-import { SeverityMark, StatusMark } from "../components/Badges";
+import { OrgRuleTag, SeverityMark, StatusMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
@@ -39,6 +39,7 @@ import { maliciousAdvisory, MALICIOUS_REMEDIATION } from "../lib/malicious";
 import { HISTORY_ROTATE, historyWhere, isHistoryIssue, moreCommitsText, shortSha } from "../lib/history";
 import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
+import { orgRuleLink } from "../lib/scanRules";
 import { showToast } from "../lib/toast";
 import { usePageTitle } from "../lib/usePageTitle";
 import { AssignForm, isConflict } from "./AssignForm";
@@ -236,6 +237,7 @@ function IssueView({
           <div className="detail-sub">
             <SeverityMark severity={issue.severity} />
             <StatusMark status={issue.status} />
+            {issue.org_rule && <OrgRuleTag />}
             {issue.due_at && (
               <span className={due.overdue || issue.past_sla ? "danger-text" : "muted"}>
                 SLA: {due.text} <span className="faint-in">(due {formatDate(issue.due_at)})</span>
@@ -252,6 +254,7 @@ function IssueView({
         <div className="stack detail-main">
           <HistoryCard issue={issue} />
           <MaliciousCard issue={issue} />
+          <OrgRuleCard issue={issue} />
           <ExploitCard issue={issue} />
           <WhereCard issue={issue} />
           {issue.description && (
@@ -460,6 +463,37 @@ function MaliciousCard({ issue }: { issue: Issue }) {
         <p className="faint small">
           The advisory raised this issue as Critical. It moves to Fixed when the package is gone from the next scan; advisories never
           close an issue.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/** v0.6: the issue comes from one of the org's own rules. The rule is linked only while it
+ *  exists (and only by its id); a deleted rule is named as such. Its name is text. */
+function OrgRuleCard({ issue }: { issue: Issue }) {
+  const { orgId } = useOrgCtx();
+  const r = issue.org_rule;
+  if (!r) return null;
+  const link = orgRuleLink(orgId, r);
+  return (
+    <Card title="Org rule" titleId={`org-rule-${issue.id}`} className="org-rule-card">
+      <div className="stack" style={{ gap: 10 }}>
+        <p>
+          Found by{" "}
+          {link ? (
+            <Link to={link}>
+              <strong>{r.name}</strong>
+            </Link>
+          ) : (
+            <strong>a deleted rule</strong>
+          )}
+          , one of your org's own {TOOL_LABELS[issue.tool]} rules · <span className="mono">{r.rule_id}</span>
+        </p>
+        <p className="faint small">
+          {link
+            ? "Org admins and security leads write these rules; Warden's built-in rules ran too. Turning the rule off or changing it doesn't close this issue: it moves to Fixed when a scan that runs the rule no longer finds it."
+            : "The rule was deleted, so no scan runs it any more and none will fix this issue. It stays open until someone closes it."}
         </p>
       </div>
     </Card>
