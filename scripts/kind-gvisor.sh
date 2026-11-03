@@ -23,6 +23,10 @@
 # (scripts/sync-mirror.sh). Linux x86_64 (CI) and arm64 (e.g. Colima).
 #
 #   scripts/kind-gvisor.sh            create (or reuse) the cluster
+#   scripts/kind-gvisor.sh cluster    only the cluster, the registry and
+#                                     NetworkPolicy enforcement (no mirror,
+#                                     namespaces or images): for the chart's
+#                                     deploy/helm/test/cluster-smoke.sh
 #   scripts/kind-gvisor.sh delete     delete the cluster and the registry
 #
 # KIND_RUNTIME=runc skips gVisor and maps the RuntimeClass "gvisor" to runc
@@ -36,6 +40,8 @@ STATE="$ROOT/.cache/kind"
 OUT="${OUT:-$STATE/env}"
 MIRROR="${MIRROR:-$ROOT/.cache/mirror}"
 KIND_RUNTIME="${KIND_RUNTIME:-runsc}"
+MODE="${1:-}"
+case "$MODE" in ""|cluster|delete) ;; *) echo "usage: $0 [cluster|delete]" >&2; exit 2 ;; esac
 LOCK="$ROOT/scanners/images.lock.json"
 
 # kind v0.33.0 (2026-08-26) and its Kubernetes 1.37.0 node image.
@@ -74,13 +80,13 @@ if [ -z "$KIND" ] || [ "$("$KIND" version | awk '{print $2}')" != "$KIND_VERSION
   fi
 fi
 
-if [ "${1:-}" = delete ]; then
+if [ "$MODE" = delete ]; then
   "$KIND" delete cluster --name "$CLUSTER" || true
   docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
   exit 0
 fi
 
-[ -d "$MIRROR/trivy" ] || die "mirror missing at $MIRROR; run scripts/sync-mirror.sh first"
+[ "$MODE" = cluster ] || [ -d "$MIRROR/trivy" ] || die "mirror missing at $MIRROR; run scripts/sync-mirror.sh first"
 
 echo "==> registry $REGISTRY_NAME on 127.0.0.1:$REGISTRY_PORT"
 if [ "$(docker inspect -f '{{.State.Running}}' "$REGISTRY_NAME" 2>/dev/null || true)" != true ]; then
@@ -91,16 +97,18 @@ fi
 echo "==> kind cluster $CLUSTER ($NODE_IMAGE)"
 if ! "$KIND" get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   cfg="$(mktemp)"
+  mounts=""
+  [ "$MODE" = cluster ] || mounts="    extraMounts:
+      - hostPath: ${MIRROR}
+        containerPath: /warden-mirror
+        readOnly: true"
   cat >"$cfg" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
     image: ${NODE_IMAGE}
-    extraMounts:
-      - hostPath: ${MIRROR}
-        containerPath: /warden-mirror
-        readOnly: true
+${mounts}
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry]
@@ -226,6 +234,11 @@ spec:
         - {name: netns, hostPath: {path: /var/run/netns}}
 EOF
 k -n kube-system rollout status ds/kube-network-policies --timeout=180s >/dev/null
+
+if [ "$MODE" = cluster ]; then
+  echo "==> ready: KUBECONFIG=$KUBECONFIG_FILE, registry localhost:$REGISTRY_PORT (the node pulls from it), node $NODE"
+  exit 0
+fi
 
 echo "==> RuntimeClass, namespaces, NetworkPolicy, mirror claim"
 k apply -f - >/dev/null <<EOF
