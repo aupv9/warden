@@ -23,5 +23,9 @@ DO $$ BEGIN
     -- pruned only through this function (see 00013_notification_retention.sql).
     REVOKE DELETE, TRUNCATE ON outbox_event, notification FROM warden_app;
     GRANT EXECUTE ON FUNCTION warden_prune_notifications(timestamptz, timestamptz, int) TO warden_app;
+    -- Org scan rules are soft-deleted, and their versions are only ever
+    -- appended: what a past scan ran stays readable (00014_scan_rules.sql).
+    REVOKE DELETE, TRUNCATE ON scan_rule FROM warden_app;
+    REVOKE UPDATE, DELETE, TRUNCATE ON scan_rule_version FROM warden_app;
   END IF;
 END $$;
