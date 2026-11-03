@@ -190,7 +190,9 @@ sandbox:
   # Admission label enforce=restricted (checked at install when readable).
   createNamespace: true
   podSecurityVersion: latest
-  # Must name a RuntimeClass with handler runsc (gVisor), installed beforehand.
+  # Must name a RuntimeClass with gVisor's handler (runsc; gvisor on GKE Sandbox),
+  # installed beforehand. Pre-pull the scanner images on the scan nodes: pull
+  # time counts against each scanner Pod's deadline.
   runtimeClassName: gvisor
   # Lets the worker get that one RuntimeClass (its startup check); the only
   # cluster-scoped right the chart grants.
