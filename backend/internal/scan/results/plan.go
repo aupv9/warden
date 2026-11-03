@@ -22,6 +22,7 @@ type ExistingIssue struct {
 	ID                 uuid.UUID
 	Fingerprint        string
 	Tool               string
+	RuleID             string
 	Status             issuestate.Status
 	Severity           severity.Severity
 	SeverityOverridden bool
@@ -36,7 +37,15 @@ type PlanInput struct {
 	Findings   map[string][]sarif.Finding
 	Existing   []ExistingIssue // every issue of the project, any status
 	GuardRatio float64         // max fraction of active issues one scan may auto-fix
+	// OrgRulesRun are the org rules this scan ran, for tools that succeeded
+	// (scan.org_rules). An org rule's issue is auto-fixed only when its rule
+	// ran: a rule that was disabled, deleted, scoped to other projects or no
+	// longer valid didn't look, so its issues stay open.
+	OrgRulesRun map[RuleRun]bool
 }
+
+// RuleRun names a rule of a tool (keys are unique per tool, not across tools).
+type RuleRun struct{ Tool, RuleID string }
 
 type NewIssue struct {
 	Fingerprint string
@@ -70,6 +79,9 @@ type Plan struct {
 	// Components: how the component inventory changed; nil when it was kept
 	// (Trivy didn't succeed).
 	Components *ComponentStats
+	// OrgRules: the org rules recorded on the scan (Input.OrgRules of tools
+	// that succeeded).
+	OrgRules []OrgRuleRef
 }
 
 // SucceededTools are the tools whose results are complete for this scan. Only
@@ -166,6 +178,9 @@ func BuildPlan(in PlanInput) (Plan, error) {
 	var candidates []ExistingIssue
 	for _, e := range in.Existing {
 		if !e.active() || seen[e.Fingerprint] || !succeeded[e.Tool] {
+			continue
+		}
+		if sarif.IsOrgRule(e.Tool, e.RuleID) && !in.OrgRulesRun[RuleRun{e.Tool, e.RuleID}] {
 			continue
 		}
 		if _, err := issuestate.Check(e.Status, issuestate.Fixed, issuestate.System); err != nil {
