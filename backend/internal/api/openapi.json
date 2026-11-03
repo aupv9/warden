@@ -1230,14 +1230,15 @@
                       "string",
                       "null"
                     ],
-                    "description": "Null when the rule was deleted."
+                    "description": "The rule's name; a deleted rule's last name. Null only when no rule of this org ever had that key."
                   },
                   "scan_rule_id": {
                     "type": [
                       "string",
                       "null"
                     ],
-                    "format": "uuid"
+                    "format": "uuid",
+                    "description": "The live rule, else the most recently deleted one with that key."
                   }
                 },
                 "required": [
@@ -4110,7 +4111,8 @@
           "body": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 65536
+            "maxLength": 65536,
+            "description": "Must keep the rule's key: issues and past scans refer to org.<key> (changing it is 422 RULE_INVALID)."
           },
           "enabled": {
             "type": "boolean"
