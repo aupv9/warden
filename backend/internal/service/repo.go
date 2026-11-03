@@ -291,6 +291,7 @@ type Repo interface {
 	LicensePolicyRepo // licenses.go
 	ComponentRepo     // components.go (v0.4)
 	WebhookRepo       // webhooks.go (v0.4 wave 2)
+	ScanRuleRepo      // scanrules.go (v0.6)
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }

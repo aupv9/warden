@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aupv9/warden/backend/internal/rules"
 	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/worker"
 )
@@ -266,9 +267,9 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 			fs.id, fs.created_at, ls.id, ls.created_at,
 			(SELECT count(*) FROM occurrence o WHERE o.issue_id = i.id), i.version, i.assignee_id, i.number, p.key,
 			vi.epss_percentile, to_char(vi.kev_added, 'YYYY-MM-DD'), coalesce(vi.kev_ransomware, false),
-			i.commit_sha, i.committed_at, i.commit_count` +
-		issueFrom + ` JOIN scan fs ON fs.id = i.first_seen_scan_id JOIN scan ls ON ls.id = i.last_seen_scan_id
-		WHERE i.id = $1`
+			i.commit_sha, i.committed_at, i.commit_count, orl.id, orl.name` +
+		issueFrom + ` JOIN scan fs ON fs.id = i.first_seen_scan_id JOIN scan ls ON ls.id = i.last_seen_scan_id` +
+		orgRuleJoin + ` WHERE i.id = $1`
 	if forUpdate {
 		q += ` FOR UPDATE OF i`
 	}
@@ -279,18 +280,36 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 		commitSHA     *string
 		committedAt   *service.Time
 		commitCount   *int
+		orgRuleID     *uuid.UUID
+		orgRuleName   *string
 	)
 	dest := append(summaryDest(&iss.IssueSummary, &aID, &aEmail, &aName),
 		&iss.Description, &iss.Remediation, &iss.Snippet, &iss.EndLine, &iss.CWE, &iss.CVE,
 		&iss.FirstSeenScan.ID, &iss.FirstSeenScan.CreatedAt, &iss.LastSeenScan.ID, &iss.LastSeenScan.CreatedAt,
 		&iss.Occurrences, &iss.Version, &iss.AssigneeID, &iss.Number, &iss.ProjectKey,
-		&iss.EPSSPercentile, &iss.KEVAdded, &iss.KEVRansomware, &commitSHA, &committedAt, &commitCount)
+		&iss.EPSSPercentile, &iss.KEVAdded, &iss.KEVRansomware, &commitSHA, &committedAt, &commitCount,
+		&orgRuleID, &orgRuleName)
 	err := r.tx.QueryRow(ctx, q, issueID, now).Scan(dest...)
+	if isOrgRule(iss.Tool, iss.RuleID) {
+		iss.OrgRule = &service.IssueOrgRule{RuleID: iss.RuleID, Name: orgRuleName, ScanRuleID: orgRuleID}
+	}
 	iss.Assignee = userRef(aID, aEmail, aName)
 	if commitSHA != nil && commitCount != nil {
 		iss.Commit = &service.IssueCommit{SHA: *commitSHA, CommittedAt: committedAt, Count: *commitCount}
 	}
 	return iss, mapErr(err)
+}
+
+// orgRuleJoin finds the org rule an issue comes from (rule_id org.<key>): the
+// live rule with that key, else the most recently deleted one, so an issue of
+// a deleted rule still shows its name.
+const orgRuleJoin = ` LEFT JOIN LATERAL (SELECT sr.id, sr.name FROM scan_rule sr
+		WHERE i.rule_id LIKE 'org.%' AND sr.org_id = i.org_id AND sr.tool = i.tool AND sr.key = substr(i.rule_id, 5)
+		ORDER BY sr.deleted_at DESC NULLS FIRST LIMIT 1) orl ON true`
+
+// isOrgRule: issues of Opengrep and Gitleaks with rule_id org.<key>.
+func isOrgRule(tool, ruleID string) bool {
+	return (tool == string(rules.Opengrep) || tool == string(rules.Gitleaks)) && strings.HasPrefix(ruleID, rules.Prefix)
 }
 
 func (r *Repo) UpdateIssueState(ctx context.Context, issueID uuid.UUID, status string, assignee *uuid.UUID) error {
