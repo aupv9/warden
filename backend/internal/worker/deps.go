@@ -29,6 +29,8 @@ type liveDeps struct {
 	// orgRules are the scan's org rules (the job's): a tool with any runs
 	// them too (sandbox.WithOrgRules).
 	orgRules map[string]orchestrator.OrgRules
+	// pull is a pulled scan's reference and credentials (Pull), nil otherwise.
+	pull *pullSpec
 }
 
 var _ orchestrator.Deps = (*liveDeps)(nil)
