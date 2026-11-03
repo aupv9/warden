@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
+	"github.com/aupv9/warden/backend/internal/scan/sarif"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
 )
 
@@ -104,5 +106,50 @@ func TestMissingBaselineFileIsEmpty(t *testing.T) {
 	acc, probs, err := LoadBaseline(filepath.Join(t.TempDir(), "nope.json"), today)
 	if err != nil || len(acc) != 0 || len(probs) != 0 {
 		t.Fatal(acc, probs, err)
+	}
+}
+
+// Checkov findings are rated by the embedded table (OSS Checkov has no
+// severities); a check the table doesn't know stays medium. The severity
+// isn't part of the fingerprint, so baselines written before the table
+// still match.
+func TestGateRatesCheckovByTable(t *testing.T) {
+	doc := st.Doc([]any{
+		st.M{"ruleId": "CKV_K8S_16", "level": "error", "message": st.M{"text": "Container should not be privileged"},
+			"locations": []any{st.Loc("deploy/pod.yaml", 9, "privileged: true")}},
+		st.M{"ruleId": "CKV_XYZ_999999", "level": "error", "message": st.M{"text": "custom"},
+			"locations": []any{st.Loc("deploy/pod.yaml", 3, "kind: Pod")}},
+	})
+	b, _ := json.Marshal(doc)
+	f := filepath.Join(t.TempDir(), "checkov.sarif")
+	_ = os.WriteFile(f, b, 0o644)
+
+	report := filepath.Join(t.TempDir(), "r.json")
+	code, out := run(t, Options{Inputs: []Input{{"checkov", f}}, FailOn: severity.High, JSONOut: report})
+	if code != 1 {
+		t.Fatalf("a privileged container must block at high: code %d\n%s", code, out)
+	}
+	var rows []Row
+	rb, _ := os.ReadFile(report)
+	if err := json.Unmarshal(rb, &rows); err != nil || len(rows) != 2 {
+		t.Fatal(err, rows)
+	}
+	got := map[string]Row{}
+	for _, r := range rows {
+		got[r.Rule] = r
+	}
+	if got["CKV_K8S_16"].Severity != string(severity.Checkov("CKV_K8S_16", severity.CheckovTable())) ||
+		got["CKV_K8S_16"].Severity != "high" || got["CKV_XYZ_999999"].Severity != "medium" {
+		t.Fatalf("%+v", rows)
+	}
+
+	plain, err := sarif.Parse(st.RoundTrip(doc), "checkov", sarif.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range fingerprint.Assign(plain, sarif.Finding.Key, sarif.Finding.Line) {
+		if item.Finding.Severity != severity.Medium || got[item.Finding.RuleID].Fingerprint != item.Fingerprint {
+			t.Fatalf("fingerprint changed with the table: %+v vs %+v", item, got[item.Finding.RuleID])
+		}
 	}
 }
