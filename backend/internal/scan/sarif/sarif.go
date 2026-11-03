@@ -126,6 +126,9 @@ type Finding struct {
 	LicenseCategory string `json:"license_category,omitempty"`
 	// Commit is set on Gitleaks findings of history scans (Options.History).
 	Commit *Commit `json:"commit,omitempty"`
+	// ImageLayer is set on Gitleaks findings of image scans
+	// (Options.ImageLayers).
+	ImageLayer *ImageLayer `json:"image_layer,omitempty"`
 	// RuleDescription is the rule's own text from the SARIF rule metadata
 	// (full description, else a non-generic short one), never the result's
 	// message, which Opengrep fills with matched code ($X). Rule tests show it.
@@ -231,6 +234,77 @@ func older(a, b Finding) bool {
 	return a.Line() < b.Line()
 }
 
+// ImageLayer is the layer of an image a secret was found in. After
+// CollapseImageLayers it is the lowest layer that holds the secret, and Count
+// how many layers do.
+type ImageLayer struct {
+	Digest string `json:"digest"`
+	Index  int    `json:"index"`
+	Count  int    `json:"count"`
+}
+
+// LayerIndexProp is the result property in which warden-layers
+// (internal/scan/layerscan) gives a Gitleaks result's layer index: a
+// number, which warden-redact leaves alone.
+const LayerIndexProp = "warden.layerIndex"
+
+// ImageSecretPath stands for the file in the key of a secret found in an
+// image's layers ("<target>::(layers)"): like fingerprint.HistoryPath, the
+// file (or the layer) it is in doesn't make it another secret to rotate, so
+// a rebuilt image that still holds it keeps its issue.
+const ImageSecretPath = "(layers)"
+
+// CollapseImageLayers turns an image scan's Gitleaks findings into one per
+// Key (rule and secret, in that image), however many layers and files hold
+// the secret: a file a later layer deletes or overwrites is still in the
+// image. The one kept is the lowest layer's (then path and line), with
+// ImageLayer.Count the number of distinct layers. Findings without a layer
+// pass through.
+func CollapseImageLayers(fs []Finding) []Finding {
+	type group struct {
+		lowest Finding
+		layers map[int]bool
+	}
+	groups := map[fingerprint.Key]*group{}
+	var order []fingerprint.Key
+	var out []Finding
+	for _, f := range fs {
+		if f.ImageLayer == nil {
+			out = append(out, f)
+			continue
+		}
+		k := f.Key()
+		g, ok := groups[k]
+		if !ok {
+			g = &group{lowest: f, layers: map[int]bool{}}
+			groups[k] = g
+			order = append(order, k)
+		} else if lower(f, g.lowest) {
+			g.lowest = f
+		}
+		g.layers[f.ImageLayer.Index] = true
+	}
+	for _, k := range order {
+		g := groups[k]
+		f := g.lowest
+		l := *f.ImageLayer
+		l.Count = len(g.layers)
+		f.ImageLayer = &l
+		out = append(out, f)
+	}
+	return out
+}
+
+func lower(a, b Finding) bool {
+	if a.ImageLayer.Index != b.ImageLayer.Index {
+		return a.ImageLayer.Index < b.ImageLayer.Index
+	}
+	if a.FilePath != b.FilePath {
+		return a.FilePath < b.FilePath
+	}
+	return a.Line() < b.Line()
+}
+
 // Line returns the start line, or 0 when unknown (used for fingerprint ordering).
 func (f Finding) Line() int {
 	if f.StartLine == nil {
@@ -241,11 +315,17 @@ func (f Finding) Line() int {
 
 // Key is the finding's identity. A secret in git history is keyed by rule and
 // secret only (fingerprint.HistoryPath): the file it was added in doesn't
-// make it another secret to rotate.
+// make it another secret to rotate. Nor does the file or layer of a secret
+// in an image: it is keyed by the image's target, rule and secret
+// (ImageSecretPath), never by a layer digest a rebuild changes.
 func (f Finding) Key() fingerprint.Key {
 	path := f.FilePath
-	if f.Commit != nil {
+	switch {
+	case f.Commit != nil:
 		path = fingerprint.HistoryPath
+	case f.ImageLayer != nil:
+		target, _, _ := strings.Cut(f.FilePath, "::")
+		path = target + "::" + ImageSecretPath
 	}
 	return fingerprint.Key{Tool: f.Tool, RuleID: f.RuleID, FilePath: path, ContentKey: f.ContentKey}
 }
@@ -376,6 +456,12 @@ type Options struct {
 	// become "<target>::<path in the image>", and OSLabel names the OS packages.
 	ImageTarget string
 	OSLabel     string
+	// ImageLayers are the digests of an image's layers by index, which
+	// warden-layers reported (sandbox.ArtifactLayers), for Gitleaks in an
+	// image scan (ImageTarget set): every result must name one of these
+	// layers (LayerIndexProp), and its path becomes "<target>::/<path in
+	// the image>".
+	ImageLayers []string
 	// History is set for history scans: Gitleaks ran in git mode, so paths
 	// are relative to the repository (no /src mount, no zip root dir to strip)
 	// and every result names its commit.
@@ -543,13 +629,22 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		}
 		f.ContentKey = key
 		f.Severity = severity.Gitleaks(ruleID)
-		if opts.History {
+		switch {
+		case opts.History:
 			// A repository may well have a top-level src/: keep it.
 			f.FilePath = fingerprint.NormPath(uri, "", false)
 			var err error
 			if f.Commit, err = parseCommit(result); err != nil {
 				return nil, err
 			}
+		case opts.ImageTarget != "":
+			i := nonNegInt(at(result, "properties", LayerIndexProp))
+			p := fingerprint.NormPath(uri, "", false)
+			if i == nil || *i >= len(opts.ImageLayers) || p == "" {
+				return nil, sarifErr("gitleaks image result without a valid layer and path")
+			}
+			f.FilePath = opts.ImageTarget + "::/" + p
+			f.ImageLayer = &ImageLayer{Digest: opts.ImageLayers[*i], Index: *i, Count: 1}
 		}
 	case "trivy":
 		fields := map[string]string{}
