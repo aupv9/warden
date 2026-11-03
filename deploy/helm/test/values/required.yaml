@@ -1,0 +1,20 @@
+# The settings the chart can't default; everything else is the chart's
+# default. Test-only values: the digests are placeholders that are never
+# pulled (helm template, kubeconform and the security check only).
+existingSecret: warden-secrets
+image:
+  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+scannerImages:
+  gitleaks: registry.example.com/warden/gitleaks@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  opengrep: registry.example.com/warden/opengrep@sha256:3333333333333333333333333333333333333333333333333333333333333333
+domain: warden.example.com
+oidc:
+  issuer: https://sso.example.com/realms/warden
+storage:
+  endpoint: https://s3.eu-west-1.amazonaws.com
+smtp:
+  host: smtp.example.com
+  from: warden@example.com
+mirror:
+  cronjob:
+    image: registry.example.com/warden/mirror@sha256:4444444444444444444444444444444444444444444444444444444444444444
