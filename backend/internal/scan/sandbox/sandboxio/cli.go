@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,9 +32,10 @@ const (
 //
 //	receive -dir D -max-bytes N -max-entries N [-seal F]   tar on stdin into D; then create F
 //	send -dir D -file NAME=CAP ...                          those files of D as tar on stdout
-//	wait -marker F                                          return once F exists (the input is complete)
+//	wait -marker F [-connect HOST:PORT ... -within D]      return once F exists (the input is complete)
+//	                                                        and, with -connect, nothing connects any more
 //	hold                                                    block until SIGTERM (keeps the Pod alive)
-//	probe -connect HOST:PORT ... [-report F]                the canary: can this Pod reach anything?
+//	probe -connect HOST:PORT ... [-within D] [-report F]   the canary: can this Pod reach anything?
 //
 // Main returns the exit code. Stdout carries only the tar stream (send) or
 // the probe's report; messages go to stderr.
@@ -66,10 +68,22 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	case "wait":
 		marker := fs.String("marker", "", "file to wait for")
 		poll := fs.Duration("poll", 100*time.Millisecond, "poll interval")
+		var targets multi
+		fs.Var(&targets, "connect", "then, until none of these HOST:PORT connects (repeatable)")
+		within := fs.Duration("within", time.Minute, "with -connect: how long the network may take to be cut off")
+		timeout := fs.Duration("timeout", 2*time.Second, "per connection attempt")
 		if fs.Parse(args[1:]) != nil || *marker == "" || fs.NArg() != 0 {
 			return ExitUsage
 		}
 		err = wait(ctx, *marker, *poll)
+		if err == nil && len(targets) > 0 {
+			// The scanner starts when this container exits: only once the
+			// Pod demonstrably has no network. A NetworkPolicy can take
+			// effect only after a Pod started (seen on k3s).
+			if r := ProbeUntilBlocked(ctx, expand(targets), *timeout, *within); len(r.Reached) > 0 {
+				err = fmt.Errorf("the pod still reaches %s: the network is not cut off", strings.Join(r.Reached, ", "))
+			}
+		}
 	case "hold":
 		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 {
 			return ExitUsage
@@ -81,10 +95,11 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 		fs.Var(&targets, "connect", "HOST:PORT to try (repeatable); $VAR:$VAR reads the environment")
 		report := fs.String("report", "", "also write the JSON report here (the termination message)")
 		timeout := fs.Duration("timeout", 3*time.Second, "per connection attempt")
+		within := fs.Duration("within", 0, "retry until nothing connects, for at most this long")
 		if fs.Parse(args[1:]) != nil || len(targets) == 0 || fs.NArg() != 0 {
 			return ExitUsage
 		}
-		r := Probe(ctx, expand(targets), *timeout)
+		r := ProbeUntilBlocked(ctx, expand(targets), *timeout, *within)
 		b, _ := json.Marshal(r)
 		fmt.Fprintln(stdout, string(b))
 		if *report != "" {
@@ -198,11 +213,40 @@ func expand(targets []string) []string {
 
 // ProbeReport is the canary's finding.
 type ProbeReport struct {
-	// Tried are the targets, Reached those a TCP connection was made to.
+	// Tried are the targets, Reached those a TCP connection was made to in
+	// the last round.
 	Tried   []string `json:"tried"`
 	Reached []string `json:"reached"`
+	// Early are the targets reached in an earlier round, before the
+	// network was cut off (a NetworkPolicy applied after the Pod started).
+	Early []string `json:"early,omitempty"`
 	// GVisor: the canary found itself under gVisor (see underGVisor).
 	GVisor bool `json:"gvisor"`
+}
+
+// ProbeUntilBlocked probes in rounds until a round reaches nothing, for at
+// most within (one round when within is 0). Reached is the last round's:
+// the result is "isolated" only once the network demonstrably is.
+func ProbeUntilBlocked(ctx context.Context, targets []string, timeout, within time.Duration) ProbeReport {
+	deadline := time.Now().Add(within)
+	early := map[string]bool{}
+	for {
+		r := Probe(ctx, targets, timeout)
+		if len(r.Reached) == 0 || !time.Now().Add(time.Second).Before(deadline) || ctx.Err() != nil {
+			for t := range early {
+				r.Early = append(r.Early, t)
+			}
+			slices.Sort(r.Early)
+			return r
+		}
+		for _, t := range r.Reached {
+			early[t] = true
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // Probe tries a TCP connection to each target. Only a completed handshake

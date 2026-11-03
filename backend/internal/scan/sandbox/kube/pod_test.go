@@ -24,7 +24,8 @@ const (
 	testIO    = "ghcr.io/aupv9/warden:0.6.0@sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-var testConfig = Config{Namespace: "warden-sandbox", RuntimeClass: "gvisor", MirrorPVC: "warden-mirror", IOImage: testIO}
+var testConfig = Config{Namespace: "warden-sandbox", RuntimeClass: "gvisor", MirrorPVC: "warden-mirror", IOImage: testIO,
+	IsolationTargets: append(slices.Clone(ProbeTargets), "10.96.0.10:53")}
 
 func gitleaksWithRules(t *testing.T) sandbox.ToolSpec {
 	t.Helper()
@@ -206,6 +207,11 @@ func TestScannerPodSecurity(t *testing.T) {
 					t.Errorf("io-in mounts %s", p)
 				}
 			}
+			// The scanner starts only after io-in saw the network cut off.
+			want := ioBinary + " wait -marker /ctl/ready -within 1m0s -connect 1.1.1.1:443 -connect $KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT -connect 10.96.0.10:53"
+			if got := strings.Join(pod.Spec.InitContainers[0].Command, " "); got != want {
+				t.Errorf("io-in command %q", got)
+			}
 			// Gitleaks' log never becomes the Pod's termination message.
 			if spec.NeedsHMACKey && sc.TerminationMessagePolicy != corev1.TerminationMessageReadFile {
 				t.Error("gitleaks termination message from logs")
@@ -227,7 +233,7 @@ func TestScannerPodSecurity(t *testing.T) {
 }
 
 func TestCanaryPodSecurity(t *testing.T) {
-	pod := canaryPod(testConfig, "warden-canary-0011aabb", []string{"10.96.0.10:53"})
+	pod := canaryPod(testConfig, "warden-canary-0011aabb", testConfig.IsolationTargets)
 	assertHardened(t, pod)
 	if len(pod.Spec.Volumes) != 0 || pod.Labels[LabelScan] != "" || pod.Labels[LabelRole] != "canary" {
 		t.Errorf("canary %+v", pod.ObjectMeta)
@@ -264,10 +270,13 @@ func TestScannerPodRefusals(t *testing.T) {
 
 func TestScannerPodDevelopmentDefaults(t *testing.T) {
 	cfg := testConfig
-	cfg.RuntimeClass, cfg.MirrorPVC = "", ""
+	cfg.RuntimeClass, cfg.MirrorPVC, cfg.IsolationTargets = "", "", nil
 	pod, err := scannerPod(sandbox.Tools["trivy"], sandbox.RunConfig{ScanID: testScan, Image: testImage}, cfg, testInput())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := pod.Spec.InitContainers[0].Command; len(got) != 4 {
+		t.Errorf("isolation gate without targets: %v", got)
 	}
 	if pod.Spec.RuntimeClassName != nil {
 		t.Error("runtime class set")

@@ -248,5 +248,13 @@ func describePending(p *corev1.Pod) string {
 			return fmt.Sprintf("not scheduled: %s", clip(c.Reason+" "+c.Message))
 		}
 	}
+	for _, c := range p.Status.Conditions {
+		// The runtime couldn't create the Pod's sandbox (e.g. runsc failing);
+		// the reason is only in the namespace's events, which the worker's
+		// Role doesn't read.
+		if c.Type == corev1.PodReadyToStartContainers && c.Status == corev1.ConditionFalse {
+			return "the runtime did not start the pod's sandbox; see the events of pod " + p.Name
+		}
+	}
 	return ""
 }

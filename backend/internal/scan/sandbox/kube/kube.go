@@ -48,6 +48,11 @@ type Config struct {
 	// is refused before a Pod is made.
 	MaxInputBytes   int64
 	MaxInputEntries int
+	// IsolationTargets: a scanner starts only once its Pod can't connect to
+	// any of these (sandboxio wait -connect); New sets Targets(). Empty only
+	// in development, after the preflight found the namespace open and
+	// warned.
+	IsolationTargets []string
 }
 
 // Backend implements the worker's Sandbox with Pods.
@@ -87,7 +92,9 @@ func New(cfg Config, kubeconfig string, log *slog.Logger) (*Backend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes client: %w", err)
 	}
-	return &Backend{Client: cs, Exec: RemoteExecer{Config: rc, Client: cs}, Config: cfg, Log: log, InCluster: kubeconfig == ""}, nil
+	b := &Backend{Client: cs, Exec: RemoteExecer{Config: rc, Client: cs}, Config: cfg, Log: log, InCluster: kubeconfig == ""}
+	b.IsolationTargets = b.Targets()
+	return b, nil
 }
 
 // workerGrace: the worker's own deadline is the tool's timeout plus this. The
