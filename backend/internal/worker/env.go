@@ -20,6 +20,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
 	"github.com/aupv9/warden/backend/internal/notify"
+	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/scan/archpath"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/redact"
@@ -92,6 +93,8 @@ type Settings struct {
 	SBOMRetention time.Duration
 	// Webhooks configure webhook delivery (webhooks.go).
 	Webhooks WebhookSettings
+	// Registry configures image pulls (registry.go).
+	Registry RegistrySettings
 	// NotifyRetention: how long in-app notifications are kept (prune_notifications).
 	NotifyRetention notify.Retention
 }
@@ -164,8 +167,18 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 		return nil, err
 	}
 	if keys == nil {
-		log.Info("no secrets.key: webhooks are unavailable and existing ones aren't sent")
+		log.Info("no secrets.key: webhooks and registry credentials are unavailable; existing webhooks aren't sent")
 	}
+	if len(cfg.Registry.AllowHosts) > 0 {
+		log.Warn("registry.allow_hosts may be pulled from over http and at private addresses; for development only",
+			"hosts", []string(cfg.Registry.AllowHosts))
+	}
+	platform, err := registry.ParsePlatform(s.PullPlatform)
+	if err != nil {
+		return nil, fmt.Errorf("scan.pull_platform: %w", err)
+	}
+	pulls := RegistrySettings{Keys: keys, Platform: platform,
+		Client: registry.NewClient(registry.Options{AllowHosts: cfg.Registry.AllowHosts})}
 	if len(cfg.Webhook.AllowHosts) > 0 {
 		log.Warn("webhook.allow_hosts may be reached over http and at private addresses; for development only",
 			"hosts", []string(cfg.Webhook.AllowHosts))
@@ -180,6 +193,7 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 			SourceRetention: s.SourceRetention, AbandonUploadAfter: abandonUploadAfter, StuckAfter: stuckAfter,
 			PublicBaseURL: base, DigestHour: m.DigestHour, Limits: ScanLimits(s), SBOMRetention: s.SBOMRetention,
 			Webhooks:        hooks,
+			Registry:        pulls,
 			NotifyRetention: notify.Retention{Read: cfg.Notify.ReadRetention, Unread: cfg.Notify.UnreadRetention},
 		},
 	}, nil
@@ -192,7 +206,9 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 // per level of its path).
 func newKube(s config.ScanSection, log *slog.Logger) (*kube.Backend, error) {
 	k := s.Kube
-	maxMB := max(s.UnzipMaxMB, s.ImageUploadMaxMB, s.HistoryUploadMaxMB)
+	// A pulled image's tarball is at most PullMaxMB plus registry.TarOverhead
+	// (well under the 2 MiB of slack).
+	maxMB := max(s.UnzipMaxMB, s.ImageUploadMaxMB, s.HistoryUploadMaxMB, s.PullMaxMB)
 	b, err := kube.New(kube.Config{
 		Namespace: k.Namespace, RuntimeClass: k.RuntimeClass, MirrorPVC: k.MirrorPVC, IOImage: k.IOImage,
 		MaxInputBytes:   int64(maxMB)<<20 + 2<<20,
@@ -219,7 +235,8 @@ func ScanLimits(s config.ScanSection) orchestrator.Limits {
 	return orchestrator.Limits{Zip: zipcheck.Limits{
 		MaxZipBytes: int64(s.UploadMaxMB) << 20, MaxTotalBytes: int64(s.UnzipMaxMB) << 20, MaxEntries: s.UnzipMaxFiles,
 	}, ImageMaxBytes: int64(s.ImageUploadMaxMB) << 20,
-		HistoryMaxBytes: int64(s.HistoryUploadMaxMB) << 20, HistoryMaxCommits: s.HistoryMaxCommits}
+		HistoryMaxBytes: int64(s.HistoryUploadMaxMB) << 20, HistoryMaxCommits: s.HistoryMaxCommits,
+		PullMaxBytes: int64(s.PullMaxMB) << 20}
 }
 
 // OrgKey derives the organization's secret-fingerprint key from the master key:

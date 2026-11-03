@@ -21,6 +21,7 @@ import (
 
 	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
 	"github.com/aupv9/warden/backend/internal/domain/severity"
+	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/scan/bundlecheck"
 	"github.com/aupv9/warden/backend/internal/scan/imagecheck"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
@@ -59,6 +60,10 @@ type Job struct {
 	Target string `json:"target,omitempty"`
 	// ProjectKey names the SBOM's root component (set by the worker from the database).
 	ProjectKey string `json:"-"`
+	// Pulled: an image scan with no upload (POST …/scans/pull); the image is
+	// fetched through Deps' Puller instead of downloaded, and there is no
+	// object to delete. Set by the worker from the scan row.
+	Pulled bool `json:"-"`
 	// OrgRules are the org's own rules per tool (set by the worker from the
 	// database, never from the job's JSON). Only tools in Tools that take org
 	// rules (sandbox.OrgRulesFile) get them.
@@ -132,6 +137,16 @@ type Limits struct {
 	// (scan.history_max_commits, the newest).
 	HistoryMaxBytes   int64
 	HistoryMaxCommits int
+	// PullMaxBytes caps what a pulled image's registry may send
+	// (scan.pull_max_mb); its tarball is checked against that plus the tar's
+	// own overhead.
+	PullMaxBytes int64
+}
+
+// Puller fetches a pulled scan's image (Job.Pulled) as a docker save tarball
+// at dest. The worker's Deps implement it; its errors are *registry.Error.
+type Puller interface {
+	Pull(ctx context.Context, dest string) error
 }
 
 // Deps is everything the orchestrator needs from storage, the database and Docker.
@@ -194,8 +209,12 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 	var err error
 	switch kind {
 	case KindImage:
+		maxBytes := deps.Limits().ImageMaxBytes
+		if job.Pulled {
+			maxBytes = deps.Limits().PullMaxBytes + registry.TarOverhead
+		}
 		src, err = prepareFile(ctx, job, deps, scanDir, srcDir, "image.tar", func(p string) error {
-			_, err := imagecheck.Check(p, imagecheck.Limits{MaxBytes: deps.Limits().ImageMaxBytes})
+			_, err := imagecheck.Check(p, imagecheck.Limits{MaxBytes: maxBytes})
 			return err
 		})
 	case KindHistory:
@@ -304,6 +323,11 @@ func rejection(job Job, err error) (string, bool) {
 		slog.Info("scan rejected", "scan_id", job.ScanID, "code", br.Code, "detail", br.Detail)
 		return br.Code, true
 	}
+	var pr *registry.Error
+	if errors.As(err, &pr) {
+		slog.Info("pull failed", "scan_id", job.ScanID, "code", pr.Code, "detail", pr.Detail)
+		return pr.Code, true
+	}
 	return "", false
 }
 
@@ -403,16 +427,28 @@ func prepareSource(ctx context.Context, job Job, deps Deps, scanDir, srcDir stri
 }
 
 // prepareFile downloads an upload that is scanned as one file (an image
-// tarball, a git bundle), verifies its checksum and checks it (imagecheck,
-// bundlecheck: it is never extracted), then puts it at src/<name>, read-only,
-// for the sandbox to mount. No scanner runs unless check passed.
+// tarball, a git bundle) and verifies its checksum, or pulls the image of a
+// pulled scan (every blob verified by its digest instead), checks it
+// (imagecheck, bundlecheck: it is never extracted), then puts it at
+// src/<name>, read-only, for the sandbox to mount. No scanner runs unless
+// check passed.
 func prepareFile(ctx context.Context, job Job, deps Deps, scanDir, srcDir, name string, check func(string) error) (*prepared, error) {
 	path := filepath.Join(scanDir, name)
-	if err := deps.Download(ctx, job.ObjectKey, path); err != nil {
-		return nil, err
-	}
-	if err := zipcheck.VerifyChecksum(path, job.SHA256); err != nil {
-		return nil, err
+	if job.Pulled {
+		p, ok := deps.(Puller)
+		if !ok || job.kind() != KindImage {
+			return nil, errors.New("pulled scan without a puller")
+		}
+		if err := p.Pull(ctx, path); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := deps.Download(ctx, job.ObjectKey, path); err != nil {
+			return nil, err
+		}
+		if err := zipcheck.VerifyChecksum(path, job.SHA256); err != nil {
+			return nil, err
+		}
 	}
 	if err := check(path); err != nil {
 		return nil, err
@@ -631,6 +667,9 @@ func runTools(ctx context.Context, job Job, deps Deps, scanDir string) ([]sandbo
 
 func cleanup(job Job, deps Deps, scanDir string) error {
 	err := zipcheck.RemoveAll(scanDir)
+	if job.Pulled {
+		return err // nothing was uploaded
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if derr := deps.DeleteObject(ctx, job.ObjectKey); derr != nil {

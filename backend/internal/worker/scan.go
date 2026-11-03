@@ -15,6 +15,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/ids"
 	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/notify"
+	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/scan/sbom"
@@ -107,6 +108,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	}
 	var sc scanRow
 	var orgRules scanOrgRules
+	var pr *pullRow
 	log := e.Log.With("scan_id", scanID, "org_id", org, "attempt", attempt)
 	err := e.Tx(ctx, org, func(db DB) error {
 		var err error
@@ -114,7 +116,12 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 			return err
 		}
 		if sc.Status == string(orchestrator.Queued) || sc.Status == string(orchestrator.Running) {
-			orgRules, err = loadOrgRules(ctx, db, org, sc.ProjectID, sc.Tools, log)
+			if orgRules, err = loadOrgRules(ctx, db, org, sc.ProjectID, sc.Tools, log); err != nil {
+				return err
+			}
+			if sc.Kind == orchestrator.KindImage {
+				pr, err = loadPull(ctx, db, org, scanID)
+			}
 		}
 		return err
 	})
@@ -135,12 +142,22 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	case orchestrator.PendingUpload:
 		return river.JobCancel(errors.New("scan was never started"))
 	}
-	if sc.SourceDeleted || sc.ObjectKey == nil || sc.SHA256 == nil {
+	// A pulled image has no upload: the worker fetches it from its registry.
+	var pull *pullSpec
+	if pr != nil {
+		if pull, err = pr.open(e.Registry.Keys, org); err != nil {
+			logPullSetup(log, err)
+			return done(orchestrator.Failed, e.finishFailed(ctx, org, scanID, sc.Tools, registry.CodeFailed))
+		}
+		job.ObjectKey, job.SHA256, job.Pulled = "", "", true
+	} else if sc.SourceDeleted || sc.ObjectKey == nil || sc.SHA256 == nil {
 		return done(orchestrator.Failed, e.finishFailed(ctx, org, scanID, sc.Tools, CodeSourceUnavailable))
+	} else {
+		job.ObjectKey, job.SHA256, job.Pulled = *sc.ObjectKey, *sc.SHA256, false
 	}
 
 	// The database is the source of truth; the job only points at the scan.
-	job.ProjectID, job.ObjectKey, job.SHA256, job.Tools, job.Attempt = sc.ProjectID.String(), *sc.ObjectKey, *sc.SHA256, sc.Tools, attempt
+	job.ProjectID, job.Tools, job.Attempt = sc.ProjectID.String(), sc.Tools, attempt
 	job.ProjectKey, job.Kind, job.Target = sc.ProjectKey, sc.Kind, sc.Target
 	var ruleRefs []results.OrgRuleRef
 	job.OrgRules, ruleRefs = orgRules.render(log)
@@ -151,7 +168,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 
 	execCtx, cancel := context.WithTimeout(ctx, e.ScanTimeout)
 	out, err := orchestrator.Execute(execCtx, job, &liveDeps{env: e, org: org, scan: scanID, attempt: attempt, kind: sc.Kind,
-		orgRules: job.OrgRules})
+		orgRules: job.OrgRules, pull: pull})
 	timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
