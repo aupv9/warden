@@ -16,7 +16,9 @@ All notable changes to Warden are listed here. The format follows
   their issues. `Issue.org_rule`, an Org rule tag and card. Rule check (`validate`) and *Test on a
   snippet* (job `test_rules`, the draft rule alone in the sandbox, snippet deleted afterwards).
   Error code `RULE_INVALID`; permission `manage_rules` (org admins, security leads); migration
-  00014.
+  00014. Org rules can't carry a secret out of the sandbox: Opengrep messages can't use
+  metavariables, an org Opengrep finding takes its title from the rule and keeps no source
+  snippet, and secrets org Gitleaks rules find are masked whole.
 
 ## [0.5.0-alpha.2] - 2026-11-02
 

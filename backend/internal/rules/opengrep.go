@@ -166,6 +166,13 @@ func parseOgRule(p *problems, n *yaml.Node) (r opengrepRule, ok bool) {
 			if strings.TrimSpace(s) == "" {
 				p.add(v.Line, v.Column, "message is empty")
 			}
+			// Opengrep fills $X (and $1, $...X) in the message with the code it
+			// matched, so a message could carry the very secret a rule finds
+			// into issue titles, emails and webhooks. Gitleaks is the only
+			// scanner whose output is redacted; org rules get no interpolation.
+			if strings.Contains(s, "$") {
+				p.add(v.Line, v.Column, "message can't contain $: Opengrep would fill metavariables with the matched code")
+			}
 			r.Message = s
 		}
 	}

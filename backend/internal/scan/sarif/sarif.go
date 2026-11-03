@@ -505,6 +505,16 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 	if description == "" {
 		description = message
 	}
+	if IsOrgRule(tool, ruleID) {
+		// An org rule's text is its author's, and Opengrep interpolates the
+		// matched code into the result message; nothing outside Gitleaks's
+		// sandbox redacts it. Title and description come from the rule alone.
+		title, description = ruleID, ruleText
+		if first, _, _ := strings.Cut(strings.TrimSpace(ruleText), "\n"); first != "" {
+			title = first
+		}
+		snippet = ""
+	}
 
 	f := &Finding{
 		Tool:        tool,
@@ -567,7 +577,10 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 			if lines := readLines(opts.SourceRoot, inSrc, *start, *end, 0); lines != "" {
 				flagged = lines
 			}
-			if f.Snippet == "" {
+			// No source snippet for an org rule's finding: a rule written to
+			// match credentials would store them in the issue unredacted.
+			// The content key below is a hash of the flagged lines.
+			if f.Snippet == "" && !IsOrgRule(tool, ruleID) {
 				f.Snippet = readLines(opts.SourceRoot, inSrc, *start, *end, SnippetContext)
 			}
 		}

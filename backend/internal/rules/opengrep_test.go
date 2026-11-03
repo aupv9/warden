@@ -137,6 +137,9 @@ func TestOpengrepCanonicalForm(t *testing.T) {
 var ogRefused = []struct {
 	name, body, want string
 }{
+	// A message Opengrep would fill with the matched code (it could carry a secret).
+	{"metavariable in message", "rules:\n  - id: a\n    message: Hardcoded credential $V\n    severity: ERROR\n    languages: [python]\n    pattern: $K = \"$V\"\n", "message can't contain $"},
+	{"ellipsis metavariable in message", "rules:\n  - id: a\n    message: call $...ARGS\n    severity: ERROR\n    languages: [python]\n    pattern: f(...)\n", "message can't contain $"},
 	// YAML features.
 	{"billion laughs", "a: &a [x, x, x, x, x, x, x, x, x]\nb: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a]\nc: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b]\nd: [*c, *c, *c, *c, *c, *c, *c, *c, *c]\nrules: []\n", "anchors"},
 	{"anchor", ogRule("a", "    pattern: &p eval($X)\n"), "anchors are not allowed"},
