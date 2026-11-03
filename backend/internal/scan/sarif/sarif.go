@@ -61,7 +61,9 @@ func normalizeRuleID(tool, id string) string {
 	}
 	switch {
 	case strings.HasPrefix(id, opengrepRulePref):
-		if s := strings.TrimPrefix(id, opengrepRulePref); !strings.HasPrefix(s, OrgRulePrefix) {
+		// An id that is only the prefix keeps it: an empty rule id would make
+		// a finding with neither id nor title (found by FuzzParse).
+		if s := strings.TrimPrefix(id, opengrepRulePref); s != "" && !strings.HasPrefix(s, OrgRulePrefix) {
 			return s
 		}
 	case strings.HasPrefix(id, opengrepOrgPref+OrgRulePrefix):
