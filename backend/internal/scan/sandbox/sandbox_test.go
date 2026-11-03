@@ -207,3 +207,105 @@ func TestTailWriterKeepsLastBytes(t *testing.T) {
 		t.Fatal(string(w.buf))
 	}
 }
+
+func mountsRules(a []string) bool {
+	return slices.ContainsFunc(a, func(s string) bool { return strings.Contains(s, ":/rules/") })
+}
+
+// Org rules run in addition to Warden's: Opengrep gets a second --config,
+// warden-gitleaks the org-rules mode (history too). Each tool sees only its
+// own rules file, read-only; the shared specs are never modified.
+func TestWithOrgRules(t *testing.T) {
+	before := slices.Clone(Tools["opengrep"].Command)
+	og, err := WithOrgRules(Tools["opengrep"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(og.Command, []string{"opengrep", "scan", "--config", "/data/rules", "--config", "/rules/opengrep.yml",
+		"--disable-nosem", "--sarif", "--output", "/out/result.sarif", "/src"}) {
+		t.Fatal(og.Command)
+	}
+	if !slices.Equal(Tools["opengrep"].Command, before) {
+		t.Fatal("Tools modified")
+	}
+	a := argv(t, og, "/scan")
+	if !slices.Contains(a, "/scan/rules/opengrep.yml:/rules/opengrep.yml:ro") ||
+		slices.ContainsFunc(a, func(s string) bool { return strings.Contains(s, "gitleaks.toml") }) {
+		t.Fatal(a)
+	}
+
+	gl, err := WithOrgRules(Tools["gitleaks"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = argv(t, gl, "/scan")
+	if got := a[slices.Index(a, "--entrypoint")+1:]; !slices.Equal(got, []string{"warden-gitleaks", digest, "org-rules"}) {
+		t.Fatal(got)
+	}
+	if !slices.Contains(a, "/scan/rules/gitleaks.toml:/rules/gitleaks.toml:ro") || !slices.Contains(a, "/scan/secrets/hmac:/run/warden/hmac:ro") {
+		t.Fatal(a)
+	}
+	h, err := WithOrgRules(HistoryTool(HistoryLimits{MaxBytes: 1 << 20, MaxCommits: 9}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(h.Command, []string{"warden-gitleaks", "org-rules", "history", "9"}) {
+		t.Fatal(h.Command)
+	}
+
+	for _, name := range []string{"trivy", "checkov"} {
+		if _, err := WithOrgRules(Tools[name]); err == nil {
+			t.Errorf("%s took org rules", name)
+		}
+	}
+	// Without org rules nothing is mounted at /rules.
+	for name, spec := range Tools {
+		if mountsRules(argv(t, spec, "/scan")) {
+			t.Errorf("%s: rules mounted without org rules", name)
+		}
+	}
+	// A rules file of another tool is refused.
+	bad := Tools["opengrep"]
+	bad.OrgRules = "gitleaks.toml"
+	if _, err := DockerArgv(bad, RunConfig{ScanID: "s", ScanDir: "/x", Image: digest, Runtime: "runsc", MirrorDir: "/m"}); err == nil {
+		t.Fatal("foreign rules file mounted")
+	}
+}
+
+// A rule test runs the draft alone: no Warden rules, Gitleaks still redacted,
+// a short timeout, the usual isolation.
+func TestRuleTestTool(t *testing.T) {
+	og, err := RuleTestTool("opengrep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := argv(t, og, "/scan")
+	if got := a[slices.Index(a, "--entrypoint")+1:]; !slices.Equal(got, []string{"opengrep", digest, "scan", "--config", "/rules/opengrep.yml",
+		"--disable-nosem", "--sarif", "--output", "/out/result.sarif", "/src"}) {
+		t.Fatal(got)
+	}
+	gl, err := RuleTestTool("gitleaks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = argv(t, gl, "/scan")
+	if got := a[slices.Index(a, "--entrypoint")+1:]; !slices.Equal(got, []string{"warden-gitleaks", digest, "rules-only"}) {
+		t.Fatal(got)
+	}
+	for _, spec := range []ToolSpec{og, gl} {
+		a := argv(t, spec, "/scan")
+		f := OrgRulesFile(spec.Name)
+		for _, want := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "--runtime=runsc", "/scan/src:/src:ro",
+			"/scan/rules/" + f + ":/rules/" + f + ":ro"} {
+			if !slices.Contains(a, want) {
+				t.Errorf("%s: missing %s", spec.Name, want)
+			}
+		}
+		if spec.Timeout != 2*time.Minute || spec.NeedsHMACKey != (spec.Name == "gitleaks") {
+			t.Errorf("%+v", spec)
+		}
+	}
+	if _, err := RuleTestTool("trivy"); err == nil {
+		t.Fatal("trivy rule test")
+	}
+}

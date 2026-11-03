@@ -343,6 +343,104 @@ func TestOpengrepRulePrefixAndGenericTitleNormalized(t *testing.T) {
 	}
 }
 
+// Org rules: Opengrep's "rules.org.<key>" (the /rules mount) becomes
+// "org.<key>", and the finding takes the rule's stored severity whatever level
+// the SARIF claims. The rule's text comes from its metadata, never from the
+// result message (which Opengrep fills with matched code).
+func TestOrgRuleIDAndSeverity(t *testing.T) {
+	rid := "rules.org.no-eval"
+	doc := st.Doc(
+		[]any{st.M{"ruleId": rid, "level": "note", "message": st.M{"text": "Do not call eval here: secret_value"},
+			"locations": []any{st.Loc("a.py", 2)}}},
+		st.M{"id": rid, "shortDescription": st.M{"text": "Opengrep Finding: " + rid},
+			"fullDescription":      st.M{"text": "Do not call $F here."},
+			"defaultConfiguration": st.M{"level": "note"}, "properties": st.M{"security-severity": "9.8"}},
+	)
+	opts := sarif.Options{OrgRules: map[string]severity.Severity{"org.no-eval": severity.Low}}
+	f := one(t, parse(t, doc, "opengrep", opts))
+	if f.RuleID != "org.no-eval" || f.Severity != severity.Low || f.RuleDescription != "Do not call $F here." {
+		t.Fatalf("%+v", f)
+	}
+	if !sarif.IsOrgRule("opengrep", f.RuleID) || !sarif.IsOrgRule("gitleaks", "org.x") ||
+		sarif.IsOrgRule("trivy", "org.x") || sarif.IsOrgRule("opengrep", "python.org.x") {
+		t.Fatal("IsOrgRule")
+	}
+
+	gl := st.GitleaksDoc()
+	gl["runs"].([]any)[0].(st.M)["results"].([]any)[0].(st.M)["ruleId"] = "org.acme-token"
+	gl["runs"].([]any)[0].(st.M)["tool"].(st.M)["driver"].(st.M)["rules"] = []any{
+		st.M{"id": "org.acme-token", "shortDescription": st.M{"text": "Acme API token"}}}
+	red, err := redact.Doc(st.RoundTrip(gl), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := one(t, parse(t, red, "gitleaks", sarif.Options{OrgRules: map[string]severity.Severity{"org.acme-token": severity.Medium}}))
+	if g.RuleID != "org.acme-token" || g.Severity != severity.Medium || g.RuleDescription != "Acme API token" ||
+		strings.Contains(g.RuleDescription+g.Title+g.Description+g.Snippet, st.FakeSecret) {
+		t.Fatalf("%+v", g)
+	}
+}
+
+// Attacks on the org namespace: a Warden rule whose id would strip to
+// "org.…" keeps its full id (it can't stand in for an org rule's
+// fingerprint), and an org rule id the scan didn't run is refused, not
+// trusted with a severity.
+func TestOrgRuleNamespace(t *testing.T) {
+	builtin := "data.rules.org.no-eval"
+	doc := st.Doc([]any{st.M{"ruleId": builtin, "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("a.py", 1)}}})
+	f := one(t, parse(t, doc, "opengrep", sarif.Options{OrgRules: map[string]severity.Severity{"org.no-eval": severity.Low}}))
+	if f.RuleID != builtin || f.Severity != severity.High {
+		t.Fatalf("%+v", f)
+	}
+	for _, c := range []struct {
+		tool, id string
+		opts     sarif.Options
+	}{
+		{"opengrep", "rules.org.other", sarif.Options{OrgRules: map[string]severity.Severity{"org.no-eval": severity.Low}}},
+		{"opengrep", "rules.org.no-eval", sarif.Options{}},
+		{"opengrep", "org.no-eval", sarif.Options{}},
+		{"opengrep", "rules.org.bad-sev", sarif.Options{OrgRules: map[string]severity.Severity{"org.bad-sev": "urgent"}}},
+		{"checkov", "CKV_1", sarif.Options{}}, // control: not an org rule
+	} {
+		doc := st.Doc([]any{st.M{"ruleId": c.id, "message": st.M{"text": "m"}, "locations": []any{st.Loc("a.py", 1)}}})
+		_, err := sarif.Parse(st.RoundTrip(doc), c.tool, c.opts)
+		if want := c.tool != "checkov"; errors.Is(err, sarif.ErrSARIF) != want {
+			t.Errorf("%s %s: %v", c.tool, c.id, err)
+		}
+	}
+	gl := st.GitleaksDoc()
+	gl["runs"].([]any)[0].(st.M)["results"].([]any)[0].(st.M)["ruleId"] = "org.unknown"
+	red, err := redact.Doc(st.RoundTrip(gl), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sarif.Parse(red, "gitleaks", sarif.Options{}); !errors.Is(err, sarif.ErrSARIF) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Only org rules the tool listed count as loaded; Warden's rules, other
+// tools' namespaces and junk entries don't.
+func TestLoadedOrgRules(t *testing.T) {
+	doc := st.RoundTrip(st.Doc([]any{},
+		st.M{"id": "rules.org.good"}, st.M{"id": "data.rules.org.sneaky"}, st.M{"id": "data.rules.python.x"},
+		st.M{"id": 7}, "junk", st.M{"id": "rules.org." + strings.Repeat("a", 300)}))
+	got := sarif.LoadedOrgRules(doc, "opengrep")
+	if len(got) != 1 || !got["org.good"] {
+		t.Fatal(got)
+	}
+	gl := st.RoundTrip(st.Doc([]any{}, st.M{"id": "org.acme"}, st.M{"id": "aws-access-token"}))
+	if got := sarif.LoadedOrgRules(gl, "gitleaks"); len(got) != 1 || !got["org.acme"] {
+		t.Fatal(got)
+	}
+	if got := sarif.LoadedOrgRules(gl, "trivy"); len(got) != 0 {
+		t.Fatal(got)
+	}
+	if got := sarif.LoadedOrgRules(st.M{"runs": "x"}, "opengrep"); len(got) != 0 {
+		t.Fatal(got)
+	}
+}
+
 func writeFile(t *testing.T, data string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "x.sarif")

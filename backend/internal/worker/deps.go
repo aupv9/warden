@@ -26,6 +26,9 @@ type liveDeps struct {
 	scan    uuid.UUID
 	attempt int
 	kind    string // scan.kind: image scans use sandbox.ImageTools, history scans sandbox.HistoryTool
+	// orgRules are the scan's org rules (the job's): a tool with any runs
+	// them too (sandbox.WithOrgRules).
+	orgRules map[string]orchestrator.OrgRules
 }
 
 var _ orchestrator.Deps = (*liveDeps)(nil)
@@ -144,6 +147,13 @@ func (d *liveDeps) RunTool(ctx context.Context, tool, scanID, scanDir string) sa
 	case orchestrator.KindHistory:
 		l := d.env.Limits
 		spec = sandbox.HistoryTool(sandbox.HistoryLimits{MaxBytes: l.HistoryMaxBytes, MaxCommits: l.HistoryMaxCommits, ScanTimeout: d.env.ScanTimeout})
+	}
+	spec, err := specFor(spec, d.orgRules)
+	if err != nil {
+		// The worker only renders rules for tools that take them.
+		d.env.Log.Error("org rules for a tool that takes none", "scan_id", scanID, "tool", tool, "err", err)
+		metrics.ToolRun(tool, string(sandbox.Failed))
+		return sandbox.ToolRun{Tool: tool, Status: sandbox.Failed, Error: err.Error()}
 	}
 	r := d.env.Sandbox.Run(ctx, spec, sandbox.RunConfig{
 		ScanID: scanID, ScanDir: scanDir, Image: image, Runtime: d.env.Runtime, MirrorDir: d.env.MirrorDir,
