@@ -76,7 +76,8 @@ export const mockFlags = {
    *  host) shows "Can't reach the server's sign-in settings". */
   webConfig: PARAMS.get("mock_web_config"),
   /** v0.5 wave 2: `?mock_export=truncated` marks the CSV as cut at 50,000 rows;
-   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. */
+   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. v0.7: `cut`
+   *  ends it without the end line, `miscount` with a row count that doesn't match. */
   export: PARAMS.get("mock_export"),
   /** v0.5 wave 2: `?mock_audit=broken` makes "Verify chain" find a changed entry. */
   auditBroken: PARAMS.get("mock_audit") === "broken",
@@ -1553,14 +1554,22 @@ export const TEST_TWO_LINES = seedTest({
 export const TEST_FAILED = seedTest({ state: "failed", findings: [], error: "timeout", created_at: ago(8 * 60_000), finished_at: ago(5 * 60_000) });
 
 // The latest WEB scan ran three rules (one at an older version than now); a PAY scan ran a rule
-// that was deleted since.
+// that was deleted since (its id is no current rule's). v0.7: an older WEB scan was recorded
+// before v0.7, so its refs have no scan_rule_id and the panel finds them by scanner and rule id.
 scans[0]!.org_rules = [
-  { rule_id: NO_EVAL.rule_id, tool: "opengrep", version: 2, sha256: scanRuleVersions[NO_EVAL.id]![2]!.sha256 },
-  { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256 },
-  { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256 },
+  { rule_id: NO_EVAL.rule_id, tool: "opengrep", version: 2, sha256: scanRuleVersions[NO_EVAL.id]![2]!.sha256, scan_rule_id: NO_EVAL.id },
+  { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256, scan_rule_id: YAML_RULE.id },
+  { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256, scan_rule_id: ACME_RULE.id },
 ];
 export const PAY_RULES_SCAN = scans.find((s) => s.project_id === PAY.id && s.kind === "source" && s.status === "completed");
-if (PAY_RULES_SCAN) PAY_RULES_SCAN.org_rules = [{ rule_id: "org.no-pickle-loads", tool: "opengrep", version: 2, sha256: fakeSha256(9101) }];
+if (PAY_RULES_SCAN) PAY_RULES_SCAN.org_rules = [{ rule_id: "org.no-pickle-loads", tool: "opengrep", version: 2, sha256: fakeSha256(9101), scan_rule_id: uuid() }];
+export const PRE_V07_RULES_SCAN = scans.find((s) => s.project_id === WEB.id && s.file_name === "storefront-2.2.zip");
+if (PRE_V07_RULES_SCAN) {
+  PRE_V07_RULES_SCAN.org_rules = [
+    { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256, scan_rule_id: null },
+    { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256, scan_rule_id: null },
+  ];
+}
 
 issues.push(
   issue({

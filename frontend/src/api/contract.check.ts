@@ -154,3 +154,7 @@ type RuleDeleteQuery = Ops["deleteScanRule"]["parameters"]["query"];
 export type Q14 = Fits<RuleDeleteQuery, { version: number }>;
 type VersionsQuery = NonNullable<Ops["listScanRuleVersions"]["parameters"]["query"]>;
 export type Q15 = Fits<keyof VersionsQuery, "limit" | "cursor">;
+// v0.7 wave 1: a scan's org rule links to the rule that ran by id (null before v0.7). Both
+// directions, so a field the UI treats as nullable can't silently become required or vanish.
+export type C86 = Fits<T.ScanRuleRef["scan_rule_id"], S["ScanRuleRef"]["scan_rule_id"]>;
+export type C87 = Fits<S["ScanRuleRef"]["scan_rule_id"], T.ScanRuleRef["scan_rule_id"]>;
