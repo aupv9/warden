@@ -653,3 +653,30 @@ func TestOrgRules(t *testing.T) {
 		t.Fatalf("%v %+v", err, out)
 	}
 }
+
+// A scan rates Checkov findings by the embedded table, not all Medium.
+func TestCheckovSeverityFromTable(t *testing.T) {
+	doc := st.Doc([]any{
+		st.M{"ruleId": "CKV_K8S_16", "message": st.M{"text": "Container should not be privileged"},
+			"locations": []any{st.Loc("/src/app/deploy/pod.yaml", 9, "privileged: true")}},
+		st.M{"ruleId": "CKV_AWS_20", "message": st.M{"text": "S3 READ to everyone"},
+			"locations": []any{st.Loc("/src/app/main.tf", 1, "acl = \"public-read\"")}},
+		st.M{"ruleId": "CKV_XYZ_999999", "message": st.M{"text": "custom"},
+			"locations": []any{st.Loc("/src/app/main.tf", 5, "x")}},
+	})
+	b, _ := json.Marshal(doc)
+	p := filepath.Join(t.TempDir(), "results_sarif.sarif")
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs, _, err := parseRun(sandbox.ToolRun{Tool: "checkov", Sarif: p}, "app", "", "", false, nil, nil)
+	if err != nil || len(fs) != 3 {
+		t.Fatal(fs, err)
+	}
+	want := map[string]severity.Severity{"CKV_K8S_16": severity.High, "CKV_AWS_20": severity.Critical, "CKV_XYZ_999999": severity.Medium}
+	for _, f := range fs {
+		if f.Severity != want[f.RuleID] || f.Severity != severity.Checkov(f.RuleID, severity.CheckovTable()) {
+			t.Errorf("%s: %s, want %s", f.RuleID, f.Severity, want[f.RuleID])
+		}
+	}
+}

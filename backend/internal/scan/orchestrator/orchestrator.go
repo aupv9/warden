@@ -445,7 +445,8 @@ func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipch
 // non-nil, it receives the org rules the tool loaded (sarif.LoadedOrgRules).
 func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool,
 	orgRules map[string]severity.Severity, loaded map[string]bool) ([]sarif.Finding, *trivyjson.Report, error) {
-	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history, OrgRules: orgRules}
+	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history, OrgRules: orgRules,
+		CheckovTable: severity.CheckovTable()}
 	var rep *trivyjson.Report
 	if run.Tool == "trivy" {
 		// The SARIF is converted from this report: without it (or with a
