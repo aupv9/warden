@@ -464,7 +464,9 @@ How it behaves:
   `issues.exported` with the filters and row count; not for API tokens. Text from scanned code
   is defused for spreadsheets: a cell whose first visible character is `=`, `+`, `-` or `@`
   (or a full-width form) gets a leading `'`; control and line-break characters become spaces,
-  and bidi controls are dropped.
+  and bidi controls are dropped. A complete export ends with the line `#warden:end rows=<N>`
+  (N data rows): a file without it, or with another count, was cut off, and the web UI refuses
+  to save it.
 - **Audit verification.** `POST …/audit-log/verify` (org admins, security leads; 10 per org per
   hour) recomputes the org's hash chain like `warden-admin audit verify` and returns
   `{ok, entries, first_bad_id, verified_at}`; the check is recorded as `audit.verified`.
@@ -940,7 +942,8 @@ Changes that weaken one of these need an explicit discussion in the pull request
   and refuses anything younger than a day.
 - The CSV export holds no descriptions, snippets or comments, defuses spreadsheet formulas in
   text from scanned code, and is audited; API tokens can't use it.
-- Gitleaks is the only secret scanner, and raw secrets never leave its sandbox.
+- Gitleaks is the only secret scanner, and raw secrets never leave its sandbox, in any form a
+  reader could decode back (percent-encoding, path normalization).
 - Uploaded code can't configure its own scan. An org's own rules come only from the API, are
   re-rendered from a parsed subset that can only add findings (no allowlists, ignores, paths or
   fixes), carry `org.` ids, and never auto-fix issues of a rule that didn't run. Their versions
