@@ -37,6 +37,11 @@ type ToolSpec struct {
 	TmpfsSize string
 	// Artifacts are reports the tool writes to /out besides its SARIF, by name.
 	Artifacts map[string]ArtifactSpec
+	// OrgRules is the file under <ScanDir>/rules holding the org's rendered
+	// rules for this tool (OrgRulesFile), mounted read-only at /rules/<file>;
+	// "" when the tool runs Warden's rules only. Set by WithOrgRules and
+	// RuleTestTool, never from the upload.
+	OrgRules string
 }
 
 // ArtifactSpec is one extra report: its file name under /out and the largest
@@ -172,6 +177,89 @@ func HistoryTool(l HistoryLimits) ToolSpec {
 // HistoryToolNames: history scans run Gitleaks only.
 var HistoryToolNames = []string{"gitleaks"}
 
+// RulesDir is the directory under the scan directory that holds the org's
+// rendered rules, one file per tool (OrgRulesFile). Warden writes it; the
+// sandbox mounts only the running tool's file, read-only, at /rules/<file>.
+const RulesDir = "rules"
+
+// orgRulesFiles: the tools that take org rules (internal/rules) and the file
+// each one's rules are rendered to.
+var orgRulesFiles = map[string]string{
+	"opengrep": "opengrep.yml",
+	"gitleaks": "gitleaks.toml",
+}
+
+// OrgRulesFile is the file name of tool's org rules under RulesDir, or ""
+// when the tool takes none.
+func OrgRulesFile(tool string) string { return orgRulesFiles[tool] }
+
+// WithOrgRules returns spec running the org's rules in addition to Warden's
+// (never instead of them):
+//
+//   - Opengrep gets a second --config /rules/opengrep.yml. It names rules after
+//     their config's directory, so their ids come out as "rules.org.<key>"
+//     (sarif.Parse maps them back to "org.<key>").
+//   - warden-gitleaks gets the mode org-rules, which extends Warden's config
+//     with /rules/gitleaks.toml (see scanners/gitleaks/warden-gitleaks); the
+//     findings still go through warden-redact.
+//
+// The mode is an argument set here, never anything from the upload. spec's
+// own Command is not modified.
+func WithOrgRules(spec ToolSpec) (ToolSpec, error) {
+	file := OrgRulesFile(spec.Name)
+	if file == "" || len(spec.Command) == 0 {
+		return ToolSpec{}, fmt.Errorf("%s takes no org rules", spec.Name)
+	}
+	cmd := slices.Clone(spec.Command)
+	switch spec.Name {
+	case "opengrep":
+		i := slices.Index(cmd, "/data/rules")
+		if i < 1 || cmd[i-1] != "--config" {
+			return ToolSpec{}, errors.New("opengrep command has no --config /data/rules")
+		}
+		cmd = slices.Insert(cmd, i+1, "--config", "/rules/"+file)
+	case "gitleaks":
+		if cmd[0] != "warden-gitleaks" {
+			return ToolSpec{}, errors.New("gitleaks command is not warden-gitleaks")
+		}
+		cmd = slices.Insert(cmd, 1, "org-rules")
+	}
+	spec.Command, spec.OrgRules = cmd, file
+	return spec, nil
+}
+
+// RuleTestTimeout bounds one rule test run (job test_rules).
+const RuleTestTimeout = 2 * time.Minute
+
+// RuleTestTool is the sandbox of a rule test: one draft org rule against a
+// snippet under /src, with none of Warden's rules, so the results are the
+// draft's alone. Gitleaks still goes through warden-redact (mode rules-only):
+// the snippet may hold a real secret.
+func RuleTestTool(tool string) (ToolSpec, error) {
+	file := OrgRulesFile(tool)
+	switch tool {
+	case "opengrep":
+		return ToolSpec{
+			Name: "opengrep", Timeout: RuleTestTimeout, CPUs: "1", Memory: "2g",
+			Command: []string{
+				"opengrep", "scan", "--config", "/rules/" + file, "--disable-nosem",
+				"--sarif", "--output", "/out/result.sarif", "/src",
+			},
+			TmpExec:     true,
+			OKExitCodes: []int{0, 2},
+			OrgRules:    file,
+		}, nil
+	case "gitleaks":
+		return ToolSpec{
+			Name: "gitleaks", Timeout: RuleTestTimeout, CPUs: "0.25", Memory: "512m",
+			Command:      []string{"warden-gitleaks", "rules-only"},
+			NeedsHMACKey: true,
+			OrgRules:     file,
+		}, nil
+	}
+	return ToolSpec{}, fmt.Errorf("%s takes no org rules", tool)
+}
+
 func (s ToolSpec) tmpfsSize() string {
 	if s.TmpfsSize == "" {
 		return "256m"
@@ -261,6 +349,13 @@ func DockerArgv(spec ToolSpec, c RunConfig) ([]string, error) {
 	}
 	if spec.NeedsHMACKey {
 		argv = append(argv, "-v", filepath.Join(c.ScanDir, "secrets", "hmac")+":/run/warden/hmac:ro")
+	}
+	if spec.OrgRules != "" {
+		// Only this tool's file: no tool sees another's rules.
+		if spec.OrgRules != OrgRulesFile(spec.Name) {
+			return nil, fmt.Errorf("%s: unexpected org rules file %q", spec.Name, spec.OrgRules)
+		}
+		argv = append(argv, "-v", filepath.Join(c.ScanDir, RulesDir, spec.OrgRules)+":/rules/"+spec.OrgRules+":ro")
 	}
 	argv = append(argv, "--entrypoint", spec.Command[0], c.Image)
 	return append(argv, spec.Command[1:]...), nil

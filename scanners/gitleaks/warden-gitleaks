@@ -3,19 +3,48 @@
 # is an argument the sandbox sets (sandbox.Tools, sandbox.HistoryTool), never
 # anything from the upload:
 #
-#   warden-gitleaks                  source scans: the files under /src
-#   warden-gitleaks history MAX      history scans: the newest MAX commits of the
-#                                    bundle /src/repo.bundle (checked by bundlecheck)
+#   warden-gitleaks [RULES]              source scans: the files under /src
+#   warden-gitleaks [RULES] history MAX  history scans: the newest MAX commits of the
+#                                        bundle /src/repo.bundle (checked by bundlecheck)
+#
+# RULES picks the config:
+#
+#   (none)      Warden's config, /data/gitleaks.toml
+#   org-rules   Warden's config plus the org's rules (/rules/gitleaks.toml,
+#               rendered by internal/rules, Warden's own [[rules]] only): the
+#               org's file with an [extend] of Warden's config appended. The
+#               org's rules add findings; the global allowlist of Gitleaks'
+#               default config (lock files, vendored code, placeholders) applies
+#               to them as to Warden's rules.
+#   rules-only  the org's rules alone (rule tests: one draft rule on a snippet)
+#
+# Every mode ends in warden-redact.
 #
 # Exit 3: the bundle's history is incomplete (a shallow clone's bundle, which
 # has no prerequisites but lacks the boundary's parents); exit 4: git refused
 # the bundle. The worker reports them as BUNDLE_INCOMPLETE and BUNDLE_INVALID.
 set -eu
 
-# Warden's config only; no ignore file or config from the upload.
+config=/data/gitleaks.toml
+case "${1:-}" in
+org-rules)
+  shift
+  config=/tmp/config.toml
+  # Appended, so the [extend] table follows whatever the org's file holds at
+  # the top level; a second [extend] in it would make Gitleaks refuse the
+  # config (internal/rules never renders one).
+  { cat /rules/gitleaks.toml; printf '\n[extend]\npath = "/data/gitleaks.toml"\n'; } >"$config"
+  ;;
+rules-only)
+  shift
+  config=/rules/gitleaks.toml
+  ;;
+esac
+
+# Warden's config (and the org's rules) only; no ignore file or config from the upload.
 leaks() {
   gitleaks "$@" \
-    --config /data/gitleaks.toml \
+    --config "$config" \
     --gitleaks-ignore-path /opt/warden/noignore \
     --report-format sarif --report-path /tmp/raw.sarif \
     --exit-code 0 --no-banner --log-level warn

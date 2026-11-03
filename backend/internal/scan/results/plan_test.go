@@ -240,3 +240,71 @@ func TestDuplicateFingerprintsCountOnce(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func existingRule(f sarif.Finding) ExistingIssue {
+	e := existing(f, issuestate.Open, scanA)
+	e.RuleID = f.RuleID
+	return e
+}
+
+// An org rule's issue is auto-fixed only by a scan that ran the rule (its
+// tool succeeded too). A disabled, deleted, out-of-scope or invalid rule
+// didn't look: its issues stay open. Warden's rules behave as before.
+func TestOrgRuleIssuesFixedOnlyWhenTheRuleRan(t *testing.T) {
+	org := finding("opengrep", "org.no-eval", "a.py", 1)
+	otherTool := finding("gitleaks", "org.no-eval", "b.py", 1) // same key, other tool
+	builtin := finding("opengrep", "sqli", "c.py", 1)
+	ex := []ExistingIssue{existingRule(org), existingRule(otherTool), existingRule(builtin)}
+	ok := runs(map[string]sandbox.ToolStatus{"opengrep": sandbox.Succeeded, "gitleaks": sandbox.Succeeded})
+	fixed := func(p Plan) map[string]bool {
+		m := map[string]bool{}
+		for _, e := range p.Fix {
+			m[e.Tool+":"+e.RuleID] = true
+		}
+		return m
+	}
+
+	// Not run (disabled, deleted, out of scope): only the built-in issue goes.
+	p, _ := BuildPlan(PlanInput{ScanID: scanB, Runs: ok, Existing: ex, GuardRatio: 1})
+	if got := fixed(p); len(got) != 1 || !got["opengrep:sqli"] {
+		t.Fatal(got)
+	}
+	// Ran for opengrep only: the gitleaks rule of the same key stays open.
+	p, _ = BuildPlan(PlanInput{ScanID: scanB, Runs: ok, Existing: ex, GuardRatio: 1,
+		OrgRulesRun: map[RuleRun]bool{{"opengrep", "org.no-eval"}: true}})
+	if got := fixed(p); len(got) != 2 || !got["opengrep:org.no-eval"] || got["gitleaks:org.no-eval"] {
+		t.Fatal(got)
+	}
+	// Ran, but the tool failed: nothing of that tool is fixed.
+	failed := runs(map[string]sandbox.ToolStatus{"opengrep": sandbox.Failed, "gitleaks": sandbox.Succeeded})
+	p, _ = BuildPlan(PlanInput{ScanID: scanB, Runs: failed, Existing: ex, GuardRatio: 1,
+		OrgRulesRun: map[RuleRun]bool{{"opengrep", "org.no-eval"}: true, {"gitleaks", "org.no-eval"}: true}})
+	if got := fixed(p); len(got) != 1 || !got["gitleaks:org.no-eval"] {
+		t.Fatal(got)
+	}
+	// Found again: seen, not fixed, whatever OrgRulesRun says.
+	p, _ = BuildPlan(PlanInput{ScanID: scanB, Runs: ok, Existing: ex, GuardRatio: 1,
+		Findings:    map[string][]sarif.Finding{"opengrep": {org}},
+		OrgRulesRun: map[RuleRun]bool{{"opengrep", "org.no-eval"}: true}})
+	if got := fixed(p); len(got) != 1 || !got["opengrep:sqli"] || len(p.Seen) != 1 {
+		t.Fatal(got, p.Seen)
+	}
+}
+
+// Only rules of tools that succeeded are recorded, and only they count as run.
+func TestOrgRulesRun(t *testing.T) {
+	in := Input{
+		Runs: runs(map[string]sandbox.ToolStatus{"opengrep": sandbox.Succeeded, "gitleaks": sandbox.Timeout}),
+		OrgRules: []OrgRuleRef{
+			{RuleID: "org.a", Tool: "opengrep", Version: 2, SHA256: "x"},
+			{RuleID: "org.b", Tool: "gitleaks", Version: 1, SHA256: "y"},
+		},
+	}
+	refs, ran := orgRulesRun(in)
+	if len(refs) != 1 || refs[0].RuleID != "org.a" || len(ran) != 1 || !ran[RuleRun{"opengrep", "org.a"}] {
+		t.Fatal(refs, ran)
+	}
+	if refs, _ := orgRulesRun(Input{}); refs == nil || len(refs) != 0 {
+		t.Fatal("org_rules must be [] when none ran")
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aupv9/warden/backend/internal/domain/fingerprint"
+	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/scan/bundlecheck"
 	"github.com/aupv9/warden/backend/internal/scan/imagecheck"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
@@ -57,6 +58,18 @@ type Job struct {
 	Target string `json:"target,omitempty"`
 	// ProjectKey names the SBOM's root component (set by the worker from the database).
 	ProjectKey string `json:"-"`
+	// OrgRules are the org's own rules per tool (set by the worker from the
+	// database, never from the job's JSON). Only tools in Tools that take org
+	// rules (sandbox.OrgRulesFile) get them.
+	OrgRules map[string]OrgRules `json:"-"`
+}
+
+// OrgRules is one tool's org rules for a scan: the scanner config rendered
+// from them (internal/rules), which the sandbox mounts read-only, and the
+// severity of each rule's findings by rule id ("org.<key>").
+type OrgRules struct {
+	Config   []byte
+	Severity map[string]severity.Severity
 }
 
 // Scan kinds (scan.kind).
@@ -195,6 +208,9 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		return nil, err
 	}
 
+	if err := writeOrgRules(filepath.Join(scanDir, sandbox.RulesDir), job); err != nil {
+		return nil, err
+	}
 	if slices.Contains(job.Tools, "gitleaks") {
 		key, err := deps.HMACKey(ctx, job.OrgID)
 		if err != nil {
@@ -219,7 +235,7 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		if run.Status != sandbox.Succeeded || run.Sarif == "" {
 			continue
 		}
-		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory)
+		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory, job.OrgRules[run.Tool].Severity)
 		if err == nil && kind == KindHistory {
 			out.History, err = loadHistory(run.Artifacts[sandbox.ArtifactHistory], deps.Limits().HistoryMaxCommits)
 		}
@@ -411,8 +427,9 @@ func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipch
 // licenses and packages (returned with FilePath set), and for image scans the
 // OS that names OS package findings. imageTarget is "" for source scans;
 // history is set for history scans (Gitleaks in git mode).
-func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool) ([]sarif.Finding, *trivyjson.Report, error) {
-	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history}
+func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool,
+	orgRules map[string]severity.Severity) ([]sarif.Finding, *trivyjson.Report, error) {
+	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history, OrgRules: orgRules}
 	var rep *trivyjson.Report
 	if run.Tool == "trivy" {
 		// The SARIF is converted from this report: without it (or with a
@@ -480,6 +497,52 @@ func stampArtifact(job Job, what, path string, stamp func(raw []byte, name, scan
 	}
 	slog.Warn(what+" rejected", "scan_id", job.ScanID, "err", err)
 	return nil
+}
+
+// writeOrgRules writes each tool's rendered org rules to dir/<file>
+// (sandbox.OrgRulesFile), read-only, for the sandbox to mount into that tool
+// alone. Nothing is written when the scan has no org rules.
+func writeOrgRules(dir string, job Job) error {
+	var tools []string
+	for _, t := range job.Tools {
+		if len(job.OrgRules[t].Config) > 0 {
+			tools = append(tools, t)
+		}
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return err
+	}
+	for _, t := range tools {
+		file := sandbox.OrgRulesFile(t)
+		if file == "" {
+			return fmt.Errorf("%s takes no org rules", t)
+		}
+		if err := WriteReadOnly(filepath.Join(dir, file), job.OrgRules[t].Config); err != nil {
+			return err
+		}
+	}
+	// The sandbox user (65532) reads them; nobody writes them. RemoveAll undoes this.
+	return os.Chmod(dir, 0o555)
+}
+
+// WriteReadOnly creates path (which must not exist yet) holding data,
+// readable by the sandbox user and writable by nobody.
+func WriteReadOnly(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o444)
 }
 
 // WriteKey writes the HMAC key file mounted read-only into the Gitleaks sandbox.
