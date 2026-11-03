@@ -34,6 +34,9 @@ All notable changes to Warden are listed here. The format follows
 
 ## [0.6.0-alpha.3] - 2026-11-03
 
+Tagged, but its release run stopped at a flaky unit test (`TestCLINetworkGate`, fixed in
+v0.7); nothing was published for this tag. Its change ships in the next release.
+
 ### Changed
 
 - Checkov runs with 1 CPU, 3 GB and a 15-minute timeout (was 0.25 CPU, 2 GB, 10 minutes): on
