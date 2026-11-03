@@ -88,7 +88,9 @@ set -a; source .env; set +a
 go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@example.com
 ```
 
-`warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API.
+`warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API. It is in
+the release image too: with the production Compose, `docker compose -f docker-compose.prod.yml
+run --rm --entrypoint /usr/local/bin/warden-admin api org create …`.
 `warden-admin audit verify --org <org id>` checks an organization's audit-log hash chain.
 `warden-admin secrets rotate` re-encrypts every webhook URL and secret under the current
 `WARDEN_SECRETS__KEY` (see "Webhooks and Slack").
@@ -178,7 +180,17 @@ digest (pre-pull them: pull time counts against each Pod's deadline).
 - The chart takes every secret from an existing Secret (`existingSecret`; NOTES list the keys),
   mounts in each Pod only the keys it needs, runs migrations as a pre-install/pre-upgrade hook,
   and refreshes the mirror with a CronJob (no Docker). `helm install … -f values.yaml` with
-  image digests is the whole install; `values-prod-example.yaml` is a starting point.
+  image digests is the whole install; `values-prod-example.yaml` is a starting point. Each
+  release ships the chart (`warden-X.Y.Z.tgz`, in the checksums and the attestation).
+- *Network*: the worker reaches the API server only, at the addresses `helm install`/`upgrade`
+  looks up (`default/kubernetes`), or at `networkPolicy.egress.kubeAPI.cidrs` when you set them
+  (required for `helm template` and GitOps; run the upgrade again if they change). Object
+  storage at a private address goes in `networkPolicy.egress.storage.to`; by default only
+  public addresses are allowed there.
+- *Sandbox namespace*: one you create yourself must carry Pod Security `enforce=restricted`;
+  when the chart can't read it, set `sandbox.podSecurityConfirmed: true` to say you own the
+  label. Scanner Pods' `/tmp` is executable (Kubernetes can't mount an emptyDir `noexec`);
+  gVisor confines what runs there.
 
 **Schema version.** The API and worker refuse to start on a database migrated by a newer
 Warden. On an older schema the API reports not ready and the worker takes no jobs until
@@ -653,7 +665,9 @@ are auto-fixed) and are audited as `org.license_policy_changed`.
 **Exploit data.** `make mirror` also downloads the [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
 catalog and the [FIRST EPSS](https://www.first.org/epss/) scores into the mirror
 (`scripts/sync-mirror.sh intel` refreshes only these and the OSV feeds; `WARDEN_KEV_URL` and `WARDEN_EPSS_URL`
-override the sources). The worker's `load_vuln_intel` job loads them hourly when they change,
+override the sources, `WARDEN_KEV_FALLBACK_URL` the copy tried when cisa.gov fails, and
+`WARDEN_MIRROR_SKIP_TRIVY=1` skips the Trivy DB step when something else fetches it, as the
+Helm chart's CronJob does). The worker's `load_vuln_intel` job loads them hourly when they change,
 after strict checks (sizes, gzip bomb, every row), and keeps the previous data if a file is bad.
 Issues then show whether a CVE is known exploited and its EPSS score; the issue list filters
 (`kev`, `epss_min`) and sorts (`-epss`) on them, and the gate can fail on KEV. They only rank
@@ -874,7 +888,7 @@ logging, OpenTelemetry, health checks, the HTTP server and the response envelope
 
 Tags `vMAJOR.MINOR.PATCH` on `main` publish a [GitHub release](https://github.com/aupv9/warden/releases)
 after the full CI suite and the release self-scan gate pass: static Linux binaries
-(`warden-api`, `warden-worker`, `warden-migrate` and the `warden` CI client; amd64 and arm64) with SPDX SBOMs and
+(`warden-api`, `warden-worker`, `warden-migrate`, `warden-admin` and the `warden` CI client; amd64 and arm64) with SPDX SBOMs and
 checksums, and the image `ghcr.io/aupv9/warden` (amd64 and arm64; the web UI is bundled in
 the image's `warden-api`, not in the binary tarballs). The version is stamped
 into the binaries and served at `/info`.
@@ -962,7 +976,7 @@ in any SARIF report.
 
 Merge only when CI is green. Branch protection on `main` requires these status checks, the
 jobs of [`ci.yml`](.github/workflows/ci.yml): `lint`, `vulncheck`, `test`, `fuzz`,
-`integration`, `frontend`, `image`, `helm`, `selfscan` and `kube`; a job added to `ci.yml`
+`integration`, `frontend`, `image`, `helm`, `helm-cluster`, `selfscan` and `kube`; a job added to `ci.yml`
 joins the list. [`nightly.yml`](.github/workflows/nightly.yml) fuzzes every target for 10
 minutes and runs `scripts/upgrade-test.sh` (the last baseline release, upgraded on Compose to
 an image built from `main`: data, audit chain, API and the schema gate); a failure opens an
