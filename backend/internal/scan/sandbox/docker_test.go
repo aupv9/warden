@@ -130,3 +130,26 @@ func TestExecRunnerOnlyRunsDocker(t *testing.T) {
 		t.Fatal(c.String())
 	}
 }
+
+// Other backends (sandbox/kube) treat a tool as Run does.
+func TestBackendAccessors(t *testing.T) {
+	og, tr := Tools["opengrep"], ImageTools["trivy"]
+	if og.TmpSize() != "256m" || tr.TmpSize() != "1g" || Tools["checkov"].SarifFile() != "results_sarif.sarif" || og.SarifFile() != "result.sarif" {
+		t.Fatal("sizes or names")
+	}
+	if !og.OKExit(2) || og.OKExit(1) || !Tools["trivy"].OKExit(0) || Tools["trivy"].OKExit(2) {
+		t.Fatal("exit codes")
+	}
+	if CollectArtifacts(og, t.TempDir()) != nil {
+		t.Fatal("opengrep has no artifacts")
+	}
+	id := "0b6f1a52-6c9e-4c52-9a7e-3f0f8c1d2e4a"
+	if s, tool, ok := ParseContainerName(ContainerName(id, "trivy")); !ok || s != id || tool != "trivy" {
+		t.Fatal("parse")
+	}
+	for _, bad := range []string{"warden-" + id + "-sh", "warden-api-1", "warden-" + id + "-trivy-x"} {
+		if _, _, ok := ParseContainerName(bad); ok {
+			t.Fatalf("%q parsed", bad)
+		}
+	}
+}
