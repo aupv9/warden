@@ -354,6 +354,7 @@ endpoints are `/healthz`, `/readyz` and `/info`. Every response is an envelope:
 | `/orgs/{org_id}/issues` | Issues: filters, counts, transitions, bulk assignment (with a skipped count), comments, history, and `export.csv` |
 | `/orgs/{org_id}/exceptions` | False-positive and risk-acceptance requests and decisions |
 | `/orgs/{org_id}/webhooks` | Webhooks and Slack channels (org admins, security leads): create (a generic webhook's signing secret is shown once), change, `rotate-secret`, `test`, `deliveries` |
+| `/orgs/{org_id}/scan-rules` | The org's own Opengrep and Gitleaks rules: list, add, change, delete, versions, `validate`, and `tests` on a snippet (org admins, security leads; members see the rules for their projects) |
 | `/orgs/{org_id}/audit-log` | Hash-chained audit log, and `POST …/verify` to check the chain |
 
 How it behaves:
@@ -528,6 +529,37 @@ has it. `warden scan --history` (see "CI integration") scans every commit for se
 - Gitleaks reads `git log -p`: the date may be the author date, and changes made only in merge
   commits aren't scanned. Very old repositories with malformed objects may fail `fsck`
   (`BUNDLE_INVALID`).
+
+## Your own scan rules
+
+Org admins and security leads can add Opengrep (SAST) and Gitleaks (secret) rules for their
+organization under *Settings → Scan rules* or `/orgs/{org_id}/scan-rules`. They run next to the
+built-in rules in every scan of the org, or only in the projects a rule names. Uploaded code
+still can't configure its scan: rules come only from the API, never from the repository.
+
+**Rules only add findings.** A body is parsed into a fixed subset and rendered again before any
+scanner sees it; everything that could silence or redirect a scan is refused:
+- *Opengrep*: YAML with one rule, with `id`, `message`, `severity` (`ERROR`/`WARNING`/`INFO` →
+  High/Medium/Low), `languages`, the pattern operators (`pattern`, `patterns`, `pattern-either`,
+  `pattern-not`, `pattern-inside`, `pattern-not-inside`, `pattern-regex`, `pattern-not-regex`,
+  `metavariable-regex`, `metavariable-pattern`, `focus-metavariable`), taint mode and short
+  `metadata`. No `fix`, `paths`, `options`, includes or excludes, YAML anchors, aliases, merge
+  keys or tags, and no `security-severity` metadata.
+- *Gitleaks*: TOML with one `[[rules]]`: `id`, `description`, `regex`, `secretGroup`, `entropy`,
+  `keywords` (lower case: Gitleaks lowercases text before matching them), `path`, `tags`. No
+  allowlists, `[extend]` or `useDefault`. Findings are High and go through the same in-sandbox
+  redaction as built-in ones; Gitleaks' default allowlist (lock files, `node_modules`,
+  placeholders) applies to them too.
+- Every regular expression must compile with Go's RE2 and stay short; Opengrep's (PCRE) also
+  may not nest repetition such as `(a+)*`, and no rule may match empty text.
+
+Findings carry `org.<key>` (the id from the body), so an org rule can't collide with a built-in
+one. A scan records the org rules it ran (`Scan.org_rules`), and an `org.*` issue is fixed
+automatically only by a scan that ran that rule and saw it loaded: disabling, deleting or
+narrowing a rule never closes its issues. Every change keeps a version (append-only), audited
+without the body. *Test on a snippet* runs a draft rule alone in the sandbox (20 per person per
+hour); the snippet is deleted when the run ends and Gitleaks matches are reported by line only.
+Limits: 200 rules per scanner, 64 KiB per rule and 1 MiB per org.
 
 ## Images, SBOMs, components, licenses and exploit data
 
@@ -852,7 +884,11 @@ Changes that weaken one of these need an explicit discussion in the pull request
 - The CSV export holds no descriptions, snippets or comments, defuses spreadsheet formulas in
   text from scanned code, and is audited; API tokens can't use it.
 - Gitleaks is the only secret scanner, and raw secrets never leave its sandbox.
-- Uploaded code can't configure its own scan.
+- Uploaded code can't configure its own scan. An org's own rules come only from the API, are
+  re-rendered from a parsed subset that can only add findings (no allowlists, ignores, paths or
+  fixes), carry `org.` ids, and never auto-fix issues of a rule that didn't run. Their versions
+  are append-only, rules are only soft-deleted, and rule-test snippets never reach job arguments
+  or logs and are deleted after the run.
 - Every business table has `org_id` under forced RLS. The app role has no `BYPASSRLS` and
   can't update or delete the audit log. Only `warden-migrate` connects as the schema owner.
 - Permissions are checked in the service layer (`internal/domain/rbac`); RLS is the second

@@ -6,6 +6,18 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An organization's own scan rules (`/orgs/{org_id}/scan-rules`, *Settings → Scan rules*):
+  Opengrep and Gitleaks rules parsed into a subset that can only add findings and rendered again
+  before a scanner sees them (`internal/rules`, fuzzed), per org or per project, versioned
+  (append-only), audited without their bodies, closed to API tokens. Findings and issues carry
+  `org.<key>`; scans record the org rules they ran (`Scan.org_rules`) and only those can fix
+  their issues. `Issue.org_rule`, an Org rule tag and card. Rule check (`validate`) and *Test on a
+  snippet* (job `test_rules`, the draft rule alone in the sandbox, snippet deleted afterwards).
+  Error code `RULE_INVALID`; permission `manage_rules` (org admins, security leads); migration
+  00014.
+
 ## [0.5.0-alpha.2] - 2026-11-02
 
 ### Added

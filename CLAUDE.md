@@ -43,6 +43,10 @@ go under `[Unreleased]` in `CHANGELOG.md`.
 - The web UI ships inside `warden-api` (`-tags webui`, `internal/webui`); its OIDC settings come
   from `GET /web-config` at run time, never from build-time env. HTML CSP sources are origins.
 - Metrics (`internal/metrics`) never carry org, project, user or other unbounded labels.
+- Org scan rules (`internal/rules`): only ever accept a subset that adds findings (never allowlists,
+  ignores, paths, fixes); a scanner only sees what `rules.Render` produced from parsed rules; ids are
+  `org.<key>`; an `org.*` issue is auto-fixed only by a scan whose `org_rules` lists that rule.
+  Opengrep prefixes ids with the config's directory (`rules.org.<key>`), which the SARIF parser maps.
 
 ## Rules
 - This is a security product, and its own security beats features. Keep the invariants in
