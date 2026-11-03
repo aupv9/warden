@@ -400,3 +400,25 @@ export function CommitIcon({ size = 14 }: P) {
     </Svg>
   );
 }
+
+/** v0.7 wave 2: an image's layers (the image-layer card). */
+export function LayersIcon({ size = 14 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M12 3 2 8l10 5 10-5-10-5Z" />
+      <path d="m2 13 10 5 10-5" />
+      <path d="m2 18 10 5 10-5" />
+    </Svg>
+  );
+}
+
+/** v0.7 wave 2: a container registry (Registries). */
+export function RegistryIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <rect x="3" y="4" width="18" height="6" rx="1.5" />
+      <rect x="3" y="14" width="18" height="6" rx="1.5" />
+      <path d="M7 7h.01M7 17h.01" />
+    </Svg>
+  );
+}
