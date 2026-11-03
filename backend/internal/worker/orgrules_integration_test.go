@@ -47,7 +47,9 @@ func TestOrgRulesEndToEnd(t *testing.T) {
 	found := st.Doc([]any{
 		st.M{"ruleId": "rules.org.no-eval", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
 		st.M{"ruleId": "data.rules.r1", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
-	})
+	}, st.M{"id": "rules.org.no-eval"})
+	// What the scanner lists when it loaded the rule but found nothing.
+	loadedNothing := st.Doc([]any{}, st.M{"id": "rules.org.no-eval"})
 	it.sb.docs = map[string]st.M{"opengrep": found}
 	scan := it.sourceScan("opengrep")
 
@@ -92,8 +94,21 @@ func TestOrgRulesEndToEnd(t *testing.T) {
 		t.Fatal("a deleted rule's issue was fixed:", s)
 	}
 
-	// Live again (a new rule of the same key) and finding nothing: fixed.
+	// Live again (a new rule of the same key), but the scanner didn't load
+	// it: still open, nothing recorded.
 	it.orgRule("opengrep", "no-eval", "low", fmt.Sprintf("ARRAY['%s']::uuid[]", it.project))
+	scan = it.sourceScan("opengrep")
+	if s, _ := issue("org.no-eval"); s != "open" {
+		t.Fatal("a rule the scanner didn't load fixed its issue:", s)
+	}
+	it.one(fmt.Sprintf(`SELECT org_rules FROM scan WHERE id = '%s'`, scan), &raw)
+	if string(raw) != "[]" {
+		t.Fatal(string(raw))
+	}
+
+	// Loaded, and finding nothing: fixed.
+	it.sb.empty = false
+	it.sb.docs = map[string]st.M{"opengrep": loadedNothing}
 	scan = it.sourceScan("opengrep")
 	if s, _ := issue("org.no-eval"); s != "fixed" {
 		t.Fatal("the rule ran and found nothing, yet its issue is", s)

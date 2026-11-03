@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -107,6 +108,10 @@ type Outcome struct {
 	// History: how many commits a history scan read, when Gitleaks succeeded.
 	History  *History
 	Warnings []string
+	// OrgRulesLoaded: by tool, the org rules each tool that succeeded listed
+	// in its SARIF (sarif.LoadedOrgRules): the ones that ran. Opengrep runs
+	// the rest of a config when one rule fails to load.
+	OrgRulesLoaded map[string]map[string]bool
 }
 
 // History is what warden-gitleaks reports about a history scan
@@ -235,7 +240,11 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		if run.Status != sandbox.Succeeded || run.Sarif == "" {
 			continue
 		}
-		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory, job.OrgRules[run.Tool].Severity)
+		var loaded map[string]bool
+		if len(job.OrgRules[run.Tool].Severity) > 0 {
+			loaded = map[string]bool{}
+		}
+		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory, job.OrgRules[run.Tool].Severity, loaded)
 		if err == nil && kind == KindHistory {
 			out.History, err = loadHistory(run.Artifacts[sandbox.ArtifactHistory], deps.Limits().HistoryMaxCommits)
 		}
@@ -248,6 +257,12 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 			continue
 		}
 		out.Findings[run.Tool] = fs
+		if loaded != nil {
+			if out.OrgRulesLoaded == nil {
+				out.OrgRulesLoaded = map[string]map[string]bool{}
+			}
+			out.OrgRulesLoaded[run.Tool] = loaded
+		}
 		if run.Tool == "trivy" && rep != nil {
 			out.Licenses, out.Packages = rep.Licenses, rep.Packages
 			// Non-nil even when empty: Trivy succeeded, so the inventory
@@ -426,9 +441,10 @@ func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipch
 // parseRun parses a tool's SARIF and, for Trivy, its JSON report: the
 // licenses and packages (returned with FilePath set), and for image scans the
 // OS that names OS package findings. imageTarget is "" for source scans;
-// history is set for history scans (Gitleaks in git mode).
+// history is set for history scans (Gitleaks in git mode). When loaded is
+// non-nil, it receives the org rules the tool loaded (sarif.LoadedOrgRules).
 func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool,
-	orgRules map[string]severity.Severity) ([]sarif.Finding, *trivyjson.Report, error) {
+	orgRules map[string]severity.Severity, loaded map[string]bool) ([]sarif.Finding, *trivyjson.Report, error) {
 	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history, OrgRules: orgRules}
 	var rep *trivyjson.Report
 	if run.Tool == "trivy" {
@@ -447,6 +463,9 @@ func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history 
 	doc, err := sarif.Load(run.Sarif)
 	if err != nil {
 		return nil, nil, err
+	}
+	if loaded != nil {
+		maps.Copy(loaded, sarif.LoadedOrgRules(doc, run.Tool))
 	}
 	fs, err := sarif.Parse(doc, run.Tool, opts)
 	if err != nil || rep == nil {

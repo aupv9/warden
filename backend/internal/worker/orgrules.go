@@ -135,6 +135,26 @@ func (s scanOrgRules) render(log *slog.Logger) (map[string]orchestrator.OrgRules
 	return jobRules, refs
 }
 
+// loadedRules keeps the refs of rules their tool loaded (listed in its
+// SARIF). A rule the tool dropped (Opengrep runs the rest of a config when one
+// rule doesn't load) didn't run: it isn't recorded and fixes nothing. Refs of
+// tools that didn't succeed are dropped later, by the result processor.
+func loadedRules(refs []results.OrgRuleRef, loaded map[string]map[string]bool, log *slog.Logger) []results.OrgRuleRef {
+	var out []results.OrgRuleRef
+	for _, r := range refs {
+		l, reported := loaded[r.Tool]
+		switch {
+		case !reported: // the tool didn't succeed: nothing to check
+			out = append(out, r)
+		case l[r.RuleID]:
+			out = append(out, r)
+		default:
+			log.Warn("org rule not loaded by its scanner; recorded as not run", "tool", r.Tool, "rule_id", r.RuleID, "version", r.Version)
+		}
+	}
+	return out
+}
+
 // specFor returns the sandbox spec of tool, running the org's rules too when
 // the scan has any for it.
 func specFor(spec sandbox.ToolSpec, orgRules map[string]orchestrator.OrgRules) (sandbox.ToolSpec, error) {

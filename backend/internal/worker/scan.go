@@ -181,7 +181,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		plan, err = results.Process(fin, db, results.Input{
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
 			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, Packages: out.Packages, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
-			SBOM: stored, History: history(out.History), OrgRules: ruleRefs,
+			SBOM: stored, History: history(out.History), OrgRules: loadedRules(ruleRefs, out.OrgRulesLoaded, log),
 		})
 		if err != nil {
 			return err

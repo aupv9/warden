@@ -52,6 +52,41 @@ func IsOrgRule(tool, ruleID string) bool {
 	return strings.HasPrefix(ruleID, OrgRulePrefix) && slices.Contains(orgRuleTools, tool)
 }
 
+// normalizeRuleID maps the id a tool reports onto Warden's: Opengrep's
+// directory prefixes go ("data.rules." for Warden's rules, "rules." for the
+// org's), except that a Warden rule never enters the org namespace.
+func normalizeRuleID(tool, id string) string {
+	if tool != "opengrep" {
+		return id
+	}
+	switch {
+	case strings.HasPrefix(id, opengrepRulePref):
+		if s := strings.TrimPrefix(id, opengrepRulePref); !strings.HasPrefix(s, OrgRulePrefix) {
+			return s
+		}
+	case strings.HasPrefix(id, opengrepOrgPref+OrgRulePrefix):
+		return strings.TrimPrefix(id, opengrepOrgPref)
+	}
+	return id
+}
+
+// LoadedOrgRules returns the org rule ids (normalized) that tool lists in
+// its SARIF rule metadata: the rules it loaded. Opengrep skips an org rule it
+// can't parse with only a notification, and still runs the others, so a rule
+// missing here didn't run, findings or not.
+func LoadedOrgRules(doc map[string]any, tool string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range arr(doc["runs"]) {
+		for _, rv := range arr(at(r, "tool", "driver", "rules")) {
+			id, _ := obj(rv)["id"].(string)
+			if id = normalizeRuleID(tool, id); IsOrgRule(tool, id) && len(id) <= 256 {
+				out[id] = true
+			}
+		}
+	}
+	return out
+}
+
 // Tools whose URIs are relative to the scan target rather than under /src.
 var targetRelativeTools = []string{"trivy"}
 
@@ -408,16 +443,7 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		return nil, nil
 	}
 	rule := rules[ruleID]
-	if tool == "opengrep" {
-		switch {
-		case strings.HasPrefix(ruleID, opengrepRulePref):
-			if id := strings.TrimPrefix(ruleID, opengrepRulePref); !strings.HasPrefix(id, OrgRulePrefix) {
-				ruleID = id
-			}
-		case strings.HasPrefix(ruleID, opengrepOrgPref+OrgRulePrefix):
-			ruleID = strings.TrimPrefix(ruleID, opengrepOrgPref)
-		}
-	}
+	ruleID = normalizeRuleID(tool, ruleID)
 	var orgSeverity severity.Severity
 	if IsOrgRule(tool, ruleID) {
 		sev, ok := opts.OrgRules[ruleID]
