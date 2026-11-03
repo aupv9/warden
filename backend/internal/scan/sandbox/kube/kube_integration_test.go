@@ -15,6 +15,7 @@ package kube
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -34,7 +35,6 @@ import (
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
-	"github.com/aupv9/warden/backend/internal/scan/scantest"
 )
 
 func env(t *testing.T, name string) string {
@@ -68,14 +68,30 @@ func liveBackend(t *testing.T, namespace string) *Backend {
 	return b
 }
 
+// awsKey is an AWS access key id made at run time (CLAUDE.md: no real-looking
+// secret is committed). scantest.FakeSecret won't do here: it contains
+// "EXAMPLE", which Gitleaks's default allowlist skips, so a real Gitleaks finds
+// nothing in it through either backend.
+var awsKey = func() string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return "AKIA" + string(b)
+}()
+
 // sampleScan lays out a scan directory as the orchestrator does: a source
 // tree each scanner finds something in, with a fake AWS key built at run time
-// (CLAUDE.md), and the HMAC key Gitleaks' redaction uses.
+// (awsKey), and the HMAC key Gitleaks' redaction uses.
 func sampleScan(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"app/config.py": "import subprocess\n\nAWS_ACCESS_KEY_ID = \"" + scantest.FakeSecret + "\"\n\n" +
+		"app/config.py": "import subprocess\n\nAWS_ACCESS_KEY_ID = \"" + awsKey + "\"\n\n" +
 			"def run(cmd):\n    return subprocess.call(cmd, shell=True)\n",
 		"requirements.txt": "django==3.2.0\nrequests==2.19.0\n",
 		"Dockerfile":       "FROM ubuntu:latest\nRUN apt-get update && apt-get install -y curl\nADD http://example.com/x.tgz /opt/\n",
@@ -166,7 +182,7 @@ func noRawSecret(t *testing.T, outDir string) {
 			return err
 		}
 		b, err := os.ReadFile(p)
-		if err == nil && bytes.Contains(b, []byte(scantest.FakeSecret)) {
+		if err == nil && bytes.Contains(b, []byte(awsKey)) {
 			t.Errorf("raw secret in %s", p)
 		}
 		return nil
