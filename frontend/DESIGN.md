@@ -10,7 +10,8 @@ see "v0.4 screens". v0.5 reads the sign-in settings from the server, and its sec
 the API gaps this file listed: CSV export of the issue list, a chain check on the audit log, filters
 fed by the server (org-wide images, the inventory's ecosystems, delivery states) and clearer errors;
 the screen sections below say what changed. v0.6 wave 1 adds the org's own scan rules (Opengrep and
-Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". The images below are screenshots of the app running on its
+Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". v0.7 wave 1 checks that
+an exported CSV is complete before saving it and links a scan's org rules by id. The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -236,6 +237,13 @@ navigation items or the bell; 01 and 03 are current.
   rest." 429: the usual rate-limit toast with `Retry-After` ("Try again in 2 minutes"); 422: "Warden
   couldn't export with these filters. Clear them and try again."; other errors as in "Error
   messages". How the file is fetched and saved: see "Security rules for the UI".
+  **v0.7: complete or not saved.** If the server fails after the first row, the response just
+  ends (over HTTP/2 without an error), so before saving the page checks the file's end line: a
+  complete export ends with exactly `#warden:end rows=<N>`, N being its data rows. When that line
+  is missing or N doesn't match the rows, nothing is saved and an error toast says "The export
+  was cut off. Nothing was saved; try again." (the button is back to "Export CSV" for the retry).
+  A file the server cut at 50,000 rows still has its end line, so it is saved with the warning
+  above. The end line stays in the saved file; a spreadsheet shows it as a last row.
 
 ## v0.2 screens
 
@@ -701,7 +709,9 @@ key" note; `?mock_role=member` hides the page.
 
 Every new endpoint has a mock route. The CSV export applies the list's filters and the server's
 apostrophe rule; `?mock_export=truncated` marks it cut at 50,000 rows, `?mock_export=rate_limited`
-answers 429 with `Retry-After: 120`, `?mock_export=invalid` a 422. "Verify chain" passes, and
+answers 429 with `Retry-After: 120`, `?mock_export=invalid` a 422 (v0.7: the export ends with its
+end line, `?mock_export=cut` drops it with the last row, `?mock_export=miscount` counts one row
+too many; both show "The export was cut off"). "Verify chain" passes, and
 `?mock_audit=broken` names a changed entry on the first page of the log; it is recorded as
 `audit.verified`, refused for members and limited to 10 an hour. Audit entry ids are numbers, as
 in the contract. PAY has an image scan (`ghcr.io/acme/payments`), so the org-wide Image filter has
@@ -908,6 +918,8 @@ an hour answers 429. The mock keeps the outcome, never the snippet. Two finished
 (2 lines found, and a timeout). WEB's latest scan ran three rules (one at an older version); a PAY
 scan ran `org.no-pickle-loads`, since deleted, whose issue shows "a deleted rule". New scans run
 the enabled rules in their project's scope. `?mock_error=RULE_INVALID` makes the next write fail.
+v0.7: every scan's rules carry `scan_rule_id`, except WEB's `storefront-2.2.zip` scan, recorded
+"before v0.7", whose rules are found by scanner and rule id.
 
 ## Audit log
 
@@ -1209,8 +1221,16 @@ Below 800 px (screenshots in section 12):
   reach history, logs and `Referer`), same-origin and without cookies, refreshing the token once
   on 401 like every API call. The body is taken as a Blob, re-typed `application/octet-stream` so
   no browser renders it in place, and saved through a temporary hidden `<a download>` on a `blob:`
-  URL that is revoked a minute later. The page never reads, parses or renders the CSV (its cells
-  come from scanned code and other users). The file name comes from `Content-Disposition`, reduced
+  URL that is revoked a minute later. The page never parses or renders the CSV (its cells come
+  from scanned code and other users). v0.7: the completeness check reads as text only the last
+  256 bytes of the Blob (`blob.slice`), to find the end line, and counts newline bytes over the
+  whole Blob through `blob.stream()` without decoding it or building strings; data rows = line
+  breaks minus the header's and the end line's. That count is right because a cell never holds a
+  raw line break (the server turns control characters, CR and LF included, into spaces), and no
+  row can pass for the end line because each starts with the issue key. CRLF and LF both count;
+  blank lines after the end line are ignored; the end line must be a whole line and exactly that
+  text. An incomplete file is never handed to the browser (`src/lib/issueExport.test.ts`: complete,
+  cut, miscounted, cut at 50,000 with its end line, CRLF, and no CSV text in the DOM or a toast). The file name comes from `Content-Disposition`, reduced
   to its last path segment, letters, digits, `.`, `-` and `_`, no leading dot, at most 120
   characters and ending in `.csv`, else `warden-issues-<date>.csv` (`src/lib/issueExport.test.ts`).
   An error body is read only as the JSON envelope; anything else (a proxy's HTML page) is neither
@@ -1324,9 +1344,8 @@ Still in the design but not in the API contract:
   and version, so its tab leads with them.)
 - An issue created or reopened by an advisory without a scan has no event type of its own; the UI
   relies on the server's note on the `created` (or `status_changed`) event.
-- The CSV export doesn't say how many rows it holds (only whether it was cut at 50,000), and the
-  page doesn't read the file, so the success toast names the file but not the count. A header
-  such as `X-Warden-Rows` would let it say "1,204 issues exported".
+- The success toast names the exported file but not its row count. Since v0.7 the end line's N
+  is checked against the rows, so the toast could say "1,204 issues exported"; not decided yet.
 
 ## Not in v0.4
 
