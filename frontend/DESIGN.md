@@ -1,4 +1,4 @@
-# Warden web UI: design spec (v0.5)
+# Warden web UI: design spec (v0.6)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
@@ -9,7 +9,8 @@ and in its second wave secrets in git history, webhooks and Slack, and pull/merg
 see "v0.4 screens". v0.5 reads the sign-in settings from the server, and its second wave closes
 the API gaps this file listed: CSV export of the issue list, a chain check on the audit log, filters
 fed by the server (org-wide images, the inventory's ecosystems, delivery states) and clearer errors;
-the screen sections below say what changed. The images below are screenshots of the app running on its
+the screen sections below say what changed. v0.6 wave 1 adds the org's own scan rules (Opengrep and
+Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -50,6 +51,7 @@ enforces them anyway.
 | 11 | Notifications (v0.2) | everyone, own data | A bell with the unread count in the sidebar header (phone: top bar), a popover with the latest notifications, and a preferences page under the user menu |
 | 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
 | 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook, filtered by state (v0.5) |
+| 14 | Scan rules (v0.6) | everyone reads (`view_results`); org admins and security leads edit (`manage_rules`) | Under Organization in the navigation. The org's own Opengrep and Gitleaks rules: a list per scanner with an on/off switch; a rule page with a plain editor, a live check with problems at their lines, the canonical body, project scope, a snippet test and delete; its versions with a line diff. Issues from these rules carry an Org rule tag and card; the scan panel lists the rules a scan ran |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation, and members don't see
 "Integrations".
@@ -718,6 +720,191 @@ never listed. Two made-up advisories: `acme-ui-icons` 3.1.4 (npm, PAY, found by 
 CycloneDX only. `?mock_vuln=stale|missing` also covers the OSV rows; `?mock_role=member` limits the
 inventory to the caller's projects.
 
+## v0.6 screens: Scan rules
+
+v0.6 wave 1 lets an org write its own **Opengrep** (code patterns) and **Gitleaks** (secret
+formats) rules. They run in every scan of the projects they apply to, next to Warden's built-in
+rules, and their findings carry the rule id `org.<key>` (the `id` inside the rule's body). They
+**only add findings**: a rule can't ignore, allowlist, exclude a path or fix anything (the server
+refuses those keys, and regular expressions RE2 can't compile), and turning a rule off or deleting
+it never fixes or closes its issues. Everyone who sees results reads the rules
+(`view_results`); org admins and security leads (`manage_rules`) add, change, test and delete
+them. API tokens can't use these endpoints.
+
+### List
+
+`/orgs/:org/settings/scan-rules`, **Scan rules** under Organization in the navigation (between
+Integrations and Settings; Settings is no longer marked current there), a **Scan rules** card at
+the end of Org settings ("Manage scan rules" / "View scan rules"), and in ⌘K ("Scan rules
+(Opengrep and Gitleaks)"; "New Opengrep rule" and "New Gitleaks rule" for `manage_rules`).
+
+- **Tabs** in the header: Opengrep / Gitleaks (links, `?tool=`), each with its count. The page
+  loads the whole list once (`GET …/scan-rules`, at most 200 per scanner) and splits it.
+- **Table:** rule (name as a link to its page, `org.<key>` in mono under it), severity, **Runs**
+  (an on/off switch, `role="switch"`, named "run <name> in scans"; text On/Off without
+  `manage_rules`), projects ("All projects" or "n projects"), last changed (relative time with
+  the absolute one in the tooltip, "by <name>"). Off rules are dimmed. Newest change first.
+  "n of 200 Opengrep rules" under the table; at 200 the Add button goes and a line says why.
+- The switch PATCHes `{version, enabled}`. Toasts: "“No eval” is on. It runs from the next
+  scan." / "“No eval” is off. Scans stop running it; the issues it found stay open."
+  `VERSION_CONFLICT` is a warning toast ("Someone changed this rule. “No eval” changed while you
+  had this page open. The list now shows the latest version; try again.") and the list reloads.
+- **Empty state** per tab: "No Opengrep rules yet", what such rules are for (Opengrep: banned
+  functions or unsafe calls of your own framework; Gitleaks: your own secret formats, such as
+  internal API tokens), that findings become issues with `org.<key>`, and in bold "They only add
+  findings." with: an org rule can't ignore, allowlist or exclude anything, Warden's built-in
+  rules still run, and turning a rule off or deleting it doesn't close its issues. "Add an
+  Opengrep rule" for `manage_rules`.
+- Without `manage_rules`: the same list with "Only org admins and security leads can add or
+  change scan rules.", no switches and no Add. A 403 from the API shows the 403 page.
+
+### Rule page and editor
+
+`/settings/scan-rules/new?tool=opengrep|gitleaks` (a page, not a dialog: the body needs the
+room, and the test and delete dialogs open from it) and `/settings/scan-rules/:id` with **Rule /
+History** links in the header (`?tab=history`). A "‹ Scan rules" link goes back to the right tab.
+Under the header: the scanner tag, `org.<key>`, severity, the version and who changed it when.
+
+- **Name** (1–200 characters).
+- **Rule (YAML)** / **Rule (TOML)**: a plain `<textarea>` in JetBrains Mono, 20 px lines,
+  `wrap="off"`, spellcheck and autocorrect off, with a line-number gutter beside it (hidden from
+  screen readers; it scrolls with the textarea). No rich editor and no syntax colouring, so
+  nothing is ever rendered as HTML. A new rule starts from a short template. The hint says one
+  rule per body, its id is the key, no allowlists, ignores or path exclusions, and "n KiB of
+  64 KiB" (UTF-8 bytes; more is refused in the browser).
+- **Check:** 600 ms after typing stops, the body goes to `POST …/validate` (a newer check aborts
+  the older one; nothing is cached). The line under the editor (`role="status"`, polite) reads
+  "Checking…", "✓ Warden can use this rule. Findings carry org.<key> · High", "2 problems. Warden
+  can't use this rule until they're fixed." or "Couldn't check the rule: … Warden checks it again
+  when you save." **Problems** with a line mark that line in the gutter (red number with a bar)
+  and are listed in a red block under the editor ("Line 7:5 “paths” isn't allowed: org rules
+  only add findings"); each "Line n" is a button that puts the caret at that line. Problems
+  without a line are listed as text. The textarea gets `aria-invalid` and `aria-describedby` on
+  the list.
+- **Warden will store:** when the check passes, a `<details>` shows the canonical body the server
+  returned, as plain text with line numbers (no diff): Warden stores and runs the rule as it
+  rendered it from what it understood, so comments and formatting aren't kept.
+- **Where it runs:** All projects (including later ones) or Only these projects (checkboxes, up to
+  200; projects the caller can't see stay selected and are counted), and the switch **Run this
+  rule in scans** ("Turning it off stops new findings from the next scan. It never closes the
+  issues the rule already found.").
+- **Save** ("Add rule" / "Save rule", enabled once something changed, with "Discard changes")
+  runs the check first and doesn't send a body with problems; then `POST` or `PATCH` with the
+  version that was read and only the fields that changed. `RULE_INVALID` (422) puts
+  `metadata.problems` at their lines the same way. `CONFLICT` (409) on create: "A Gitleaks rule
+  with this key already exists, or the org has the most rules Warden allows (200 per scanner,
+  1 MiB in all). Change the id in the rule, or delete a rule you no longer use."
+  **`VERSION_CONFLICT`** (409): a warning banner above the form, "Someone changed this rule while
+  you had it open. Your change wasn't saved. Reload to see the latest version, then make your
+  change again." with **Reload rule**; the form is locked until then and the unsaved text stays
+  readable (and copyable) in "Your unsaved text" below. Never retried automatically.
+- **Delete** (a red "Delete this rule" card): a dialog "Delete “No eval of request data”?",
+  "Scans stop running it from the next scan.", a note in bold "**Its issues stay open.**
+  Deleting a rule never fixes or closes what it found; a security lead can close them.", and
+  "Type `no-eval-of-request-data` to confirm" (the key exactly, or `org.<key>`); **Delete rule**
+  stays disabled until it matches. `DELETE ?version=`; a `VERSION_CONFLICT` shows in the dialog.
+- **Read-only** (without `manage_rules`): scanner, "Findings carry org.<key>", severity, Runs,
+  projects by key, created by and when, and the stored body as text with line numbers.
+
+### Test on a snippet
+
+"Test on a snippet…" next to Save opens a dialog (at most 720 px wide). It tests the
+body as it is in the editor, saved or not.
+
+- **File name** (mono, `^[A-Za-z0-9._-]+$`, ≤ 255; Opengrep picks the language from the
+  extension: `app.js`, `main.go`) and **Snippet** (mono textarea, "n KiB of 64 KiB"; more is
+  refused), with: "Warden deletes the snippet when the run ends and never stores it with the
+  results. Don't paste a real secret: use a made-up value in the same format."
+- **Run test** → `POST …/tests` (202). Then `GET …/tests/{id}` after 1 s, 2 s, 3 s, then every
+  5 s, until the state is `done` or `failed`, and never for more than 3 minutes. The state line
+  (polite): "Queued · waiting for a scanner worker…", "Running in the scanner sandbox…", "2
+  findings, on lines 3 and 7." or "No findings. The rule didn't match this snippet."
+- **Findings:** "Line 3" / "Lines 7–8" in mono and the rule's message, then the snippet the way it
+  was sent, with line numbers and the found lines highlighted (the issue page's flagged-line
+  style, plus "(found)" for screen readers). Gitleaks adds "Gitleaks findings are reported by
+  line only, never with the matched text." The note under it: "The snippet was deleted when the
+  run ended. Warden keeps only the line numbers and the rule's message, for 24 hours."
+- **Failed:** an error banner "The test failed." with the reason: `timeout` "The scanner didn't
+  finish within its time limit. Make the rule's patterns narrower, or test a shorter snippet.",
+  `scanner_failed` "The scanner failed on this rule and snippet. Check the file name's extension
+  matches the snippet's language, then try again; if it keeps failing, tell your operator.",
+  `rule_invalid` "The scanner refused the rule as Warden rendered it. …"; anything else "The test
+  failed. Try again; if it keeps failing, tell your operator." After 3 minutes without a result:
+  a warning "No result after 3 minutes. The scanner workers may be busy. Warden stopped asking;
+  run the test again later."
+- **429** (20 tests per user per hour), in the dialog, not a toast: "You've run 20 tests in the
+  last hour, the most Warden allows. Try again in 40 minutes." (from `Retry-After`).
+  `RULE_INVALID`: "Warden can't use this rule. Fix it in the editor first:" and the problems.
+- "Change the snippet" goes back to the form with the snippet still there.
+
+### History
+
+`?tab=history`: **Versions**, newest first, 50 at a time with "Load older versions"
+(`GET …/versions`): "Version 4", a **Current** tag on the rule's version, who and when, what it
+changed compared with the version before ("Created for 1 project", "Turned on", "Turned off",
+"Projects: 1 project → All projects", "Renamed from “No eval”", "Rule changed"), and its state
+("On · All projects · <first 12 of the SHA-256>"). **Compare versions:** two selects (From,
+To; by default the previous and the newest) and a line diff of the two bodies: "2 lines added, 2
+removed from version 3 to version 4." plus the other changes ("Also: Turned on."), then the
+lines in a code block with both line numbers, "−" and "+" signs (removed red, added green; the
+words "Removed:" / "Added:" for screen readers). The diff is a small LCS over lines in
+`src/lib/scanRules.ts` (no dependency); past 4 million cells it shows the changed middle as
+removed then added.
+
+### Issue page and scan panel
+
+- **Issue page:** an issue from an org rule (`Issue.org_rule`) has an **Org rule** tag (indigo)
+  beside its severity and status, and an **Org rule** card after the malicious-package card:
+  "Found by **No eval of request data**, one of your org's own Opengrep rules ·
+  `org.no-eval-of-request-data`", the name linked to the rule's page while the rule exists (the
+  link is built from `scan_rule_id`, a UUID, never from text). Then: Org admins and security
+  leads write these rules; the built-in rules ran too; turning the rule off or changing it
+  doesn't close the issue, which moves to Fixed when a scan that runs the rule no longer finds
+  it. A deleted rule (`name` and `scan_rule_id` null) reads "Found by **a deleted rule**" with
+  the rule id, no link, and "The rule was deleted, so no scan runs it any more and none will fix
+  this issue. It stays open until someone closes it."
+- **Scan panel:** a scan that ran org rules (`Scan.org_rules`) lists them after the counts: "Org
+  rules · 3", then per rule its name (a link when a current rule has that scanner and rule id),
+  `org.<key>`, the scanner and "version 2 (now 4)" when the rule changed since; a rule that no
+  longer exists reads "Deleted rule org.no-pickle-loads · Opengrep · version 2". Under them:
+  "Issues from an org rule are fixed only by scans that run it."
+
+### Security rules (Scan rules)
+
+- Rule names, keys, bodies, the server's problems and test findings are text from users and
+  scanners: rendered as React text, never as HTML (no `innerHTML`, no rich editor, no syntax
+  highlighting library). The canonical body and the diff are text in `<pre>` blocks
+  (`src/test/scanRules.test.tsx` renders hostile names and bodies).
+- **The snippet** is kept in the test dialog's component state only and dropped when the dialog
+  closes (the dialog unmounts; its cached result is removed too). It reaches the API through a
+  closure, not as mutation variables (which TanStack Query keeps in its MutationCache), so it is
+  never in a query or mutation cache, a query key, the URL, browser storage or a log; only the
+  result (line numbers and messages) is cached, under the test's id
+  (`src/api/scanRules.test.ts`). The dialog asks for a made-up value instead of a real secret.
+- Links to a rule are built from its id only: an issue's `scan_rule_id` must be a UUID
+  (`src/lib/scanRules.test.ts`), and the scan panel links only to rules the list returned.
+- The UI hides what `manage_rules` doesn't allow; the API enforces it anyway.
+
+### Mock mode (v0.6)
+
+Acme Engineering has three Opengrep rules ("No eval of request data", four versions: created for
+WEB as "No eval", made org-wide and renamed, turned off, changed and turned on; "Unsafe YAML load"
+on WEB and PAY; "MD5 in payment signatures", off, PAY only) and one Gitleaks rule ("Acme internal
+API token"). Acme Labs has none (the empty state, read-only: the caller is a member there);
+`?mock_rules=empty` empties Acme Engineering too. The mock checks bodies like the server would
+refuse them (more than one rule, `paths`, `exclude`, `allowlist` and other silencing keys,
+lookaround and backreferences, a bad id, a missing message, severity, languages or pattern) and
+reports each at its line; `sampleRuleBodies` in `fixtures.ts` has a valid and an invalid body per
+scanner to paste. Opening "Unsafe YAML load" makes Huy change it a moment later (once), so saving
+it shows the `VERSION_CONFLICT` banner, and Reload picks up his version. A snippet test is queued
+for 1.5 s, runs until 4 s, then finds the lines that call the rule's pattern (the template finds
+`eval(req.body…)` lines: paste two to see "2 findings"); a file name starting with `timeout`,
+`crash` or `invalid` fails it with `timeout`, `scanner_failed` or `rule_invalid`. The 21st test in
+an hour answers 429. The mock keeps the outcome, never the snippet. Two finished tests are seeded
+(2 lines found, and a timeout). WEB's latest scan ran three rules (one at an older version); a PAY
+scan ran `org.no-pickle-loads`, since deleted, whose issue shows "a deleted rule". New scans run
+the enabled rules in their project's scope. `?mock_error=RULE_INVALID` makes the next write fail.
+
 ## Audit log
 
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
@@ -882,6 +1069,7 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 | `MFA_NOT_ENABLED` (409) | Banner in the sign-in policy form | "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role." |
 | `WEBHOOK_LIMIT` (409, v0.5) | Banner in the add-webhook dialog | "This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one." |
 | `SECRETS_KEY_MISSING` (409, v0.5) | Banner in the add-webhook dialog | "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY." |
+| `RULE_INVALID` (422, v0.6) | Rule editor: each of `metadata.problems` at its line (gutter mark and the list under the editor), and a banner; the snippet test dialog lists them | "Warden can't use this rule. Fix the problems shown at their lines, then try again." The problems are the server's words, shown as text. |
 
 ## Upload flow
 
@@ -1025,6 +1213,9 @@ Below 800 px (screenshots in section 12):
   saved nor shown.
 - **Audit chain check (v0.5):** the result shows the server's numbers and entry id as text; the
   entry is found among the loaded rows by id, never by a selector built from unescaped input.
+- **Scan rules (v0.6):** rule bodies, names, problems and test findings are text, never HTML; a
+  test snippet lives in the test dialog's state only and never reaches a cache, the URL, storage
+  or a log. See "Security rules (Scan rules)".
 
 ## Visual system
 
@@ -1107,6 +1298,15 @@ chain check; CSV export of the issue list. (In v0.3, closed in v0.4: license iss
 `license_category`, and `GET …/targets` lists a project's image targets.)
 
 Still in the design but not in the API contract:
+
+- v0.6: `ScanRuleRef` (in `Scan.org_rules`) has no rule UUID, so the scan panel finds the current
+  rule by scanner and rule id; a rule deleted and added again with the same key links to the new
+  one. A `scan_rule_id` on `ScanRuleRef` would make the link exact.
+- v0.6: there is no list of a user's snippet tests (only `GET …/tests/{id}`), so a test whose
+  dialog was closed can't be found again; the UI doesn't need it, as results are dropped with the
+  dialog.
+- v0.6: the list has no "who created it" column and no filter; at 200 rules per scanner the page
+  shows them all.
 
 - Show users who are deactivated in the identity provider. The API has only Warden's own
   `is_active` flag.
