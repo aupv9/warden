@@ -163,7 +163,9 @@ func TestScannerPodSecurity(t *testing.T) {
 	for name, spec := range sandbox.Tools {
 		cases[name] = spec
 	}
-	cases["image trivy"] = sandbox.ImageTools["trivy"]
+	for _, tool := range sandbox.ImageToolNames {
+		cases["image "+tool], _ = sandbox.ImageTool(tool, sandbox.ImageLimits{MaxBytes: 1 << 30, ScanTimeout: time.Hour})
+	}
 	cases["history"] = sandbox.HistoryTool(sandbox.HistoryLimits{MaxBytes: 1 << 30, MaxCommits: 10, ScanTimeout: time.Hour})
 	for name, spec := range cases {
 		t.Run(name, func(t *testing.T) {
