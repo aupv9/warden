@@ -23,11 +23,15 @@ import (
 
 	"github.com/google/uuid"
 
+	dregistry "github.com/aupv9/warden/backend/internal/domain/registry"
 	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/secretbox"
 	"github.com/aupv9/warden/backend/internal/worker/dbtest"
 )
+
+// pulledKey is the object key the API gives a pulled scan.
+var pulledKey = "images/org/scan.tar"
 
 func sha(b []byte) string {
 	s := sha256.Sum256(b)
@@ -98,12 +102,12 @@ func pullHarness(t *testing.T, password string, overrides ...dbtest.Step) (*harn
 	}
 	h := newHarness(t, "queued")
 	credID := uuid.New()
-	sealed, kid, err := registry.SealPassword(keys, h.org, credID, password)
+	sealed, kid, err := dregistry.SealPassword(keys, h.org, credID, password)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.db = dbtest.Loose(t, h.scanSteps("queued", append([]dbtest.Step{
-		{Prefix: "SELECT status, project_id", Rows: row("queued", h.project, nil, nil, []string{"trivy"}, false, "WEB", "image", "127.0.0.1/team/app")},
+		{Prefix: "SELECT status, project_id", Rows: row("queued", h.project, &pulledKey, nil, []string{"trivy"}, false, "WEB", "image", "127.0.0.1/team/app")},
 		{Prefix: "SELECT pulled, image_ref FROM scan", Rows: row(true, &ref)},
 		{Prefix: "SELECT id, username, password_enc, key_id FROM registry_credential", Rows: row(credID, "ci", sealed, kid),
 			Args: func(a []any) error {
@@ -138,7 +142,7 @@ func lastError(t *testing.T, h *harness) any {
 
 // A pulled scan: the worker decrypts the org's credentials, pulls with them
 // (Basic, to the registry only), hands imagecheck and the scanner the
-// tarball, stamps the credential, deletes no object and leaves no scratch.
+// tarball, stamps the credential, and cleans up like an upload.
 func TestRunScanPullsTheImage(t *testing.T) {
 	h, reg, logs, _ := pullHarness(t, "s3cret-registry-pa55")
 	if err := h.run(1); err != nil {
@@ -150,8 +154,9 @@ func TestRunScanPullsTheImage(t *testing.T) {
 	if got := lastError(t, h); got != (*string)(nil) {
 		t.Fatalf("last_error %v", got)
 	}
-	if len(h.store.deleted) != 0 {
-		t.Fatalf("objects deleted for a pulled scan: %v", h.store.deleted)
+	// The key where an upload would be is "deleted" and stamped like one.
+	if !slices.Equal(h.store.deleted, []string{pulledKey}) {
+		t.Fatalf("deleted %v", h.store.deleted)
 	}
 	if _, err := os.Stat(filepath.Join(h.env.ScratchDir, h.scan.String())); err == nil {
 		t.Fatal("scratch directory left behind")

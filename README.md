@@ -40,7 +40,7 @@ that threat model instead of bolting it on:
   change the schema, or rewrite the audit log.
 - **Uploaded source is short-lived.** The extracted source and the uploaded object are
   deleted on every exit path of a scan. Image tarballs are validated without being unpacked,
-  and Warden never pulls from a registry or holds registry credentials.
+  and Warden pulls from a registry only by digest, through the same guarded client as webhooks, and keeps registry credentials only encrypted.
 
 ## How it works
 
@@ -615,12 +615,29 @@ Limits: 200 rules per scanner, 64 KiB per rule and 1 MiB per org.
 **Container images.** An image scan takes the tarball from `docker save` (Docker and OCI
 layouts), at most `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB`. Warden checks it before Trivy sees it
 (`imagecheck`: one image, at most 4096 entries and 256 layers, only files and directories, every
-referenced blob present, safe names; it is never unpacked by Warden) and runs only Trivy, in the
-same sandbox as any scanner. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
+referenced blob present, safe names; the worker never unpacks it) and runs Trivy and Gitleaks,
+each in its own sandbox. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
 `IMAGE_MULTIPLE`. Issues are tracked per `target` (the image repository): an image scan only
-auto-fixes issues of the same target, never source-code issues or another image's. Secrets in
-image layers are not scanned, because Gitleaks is the only secret scanner (its output is the only
-output Warden redacts).
+auto-fixes issues of the same target, never source-code issues or another image's.
+
+**Secrets in image layers.** Inside the Gitleaks sandbox, `warden-layers` unpacks each layer in
+turn (regular files only, no links or devices, bytes and entries capped at four times the image
+limit) and Gitleaks reads it; the findings go through `warden-redact` like any other. A secret is
+reported once per image, at the lowest layer that holds it (`Issue.image_layer`: the layer's
+digest, its index and how many layers hold it), also when a later layer deletes the file: it is
+still in the image for anyone who pulls it. Rotate the secret; rebuilding without it is not
+enough while the old image exists. The issue's fingerprint doesn't include the digest, so a
+rebuilt image that still holds the secret keeps its issue.
+
+**Pulling from a registry.** `POST …/projects/{id}/scans/pull` (or *New scan → Image from a
+registry*) scans an image the worker pulls itself, by digest only (`repo@sha256:…`, never a
+tag), at most `WARDEN_SCAN__PULL_MAX_MB`, picking `WARDEN_SCAN__PULL_PLATFORM` from a
+multi-platform list. Every blob and the manifest are checked against their digests; every
+connection, including redirects to a CDN, refuses internal addresses, and credentials go only to
+the registry's host. Org admins and security leads keep one credential per registry host under
+*Settings → Registries* (`/orgs/{org_id}/registries`): the password is write-only and stored
+encrypted under `WARDEN_SECRETS__KEY`. Failures end the scan with `PULL_UNAUTHORIZED`,
+`PULL_NOT_FOUND`, `PULL_TOO_LARGE`, `PULL_BLOCKED`, `PULL_PLATFORM` or `PULL_FAILED`.
 
 **SBOM.** Trivy writes one JSON report per scan; Warden converts it to SARIF for findings, to a
 CycloneDX SBOM (spec 1.7) named after the project key with a `warden:scan_id` property, and to an
@@ -915,7 +932,9 @@ Changes that weaken one of these need an explicit discussion in the pull request
 - Archives are only ever extracted by `zipcheck.Extract`; the one other tar reader is
   `sandboxio`, which moves a scan's input into and reports out of a scanner Pod (Kubernetes
   backend) with the same refusals. Image tarballs are checked by
-  `imagecheck` and never extracted by Warden; Trivy reads them inside the sandbox.
+  `imagecheck` and never extracted by the worker; Trivy reads them, and `warden-layers`
+  (`layerscan`) unpacks their layers for Gitleaks, only inside the sandbox, with the same
+  refusals and caps.
 - A history upload is a git bundle checked by `bundlecheck` without unpacking; git reads it only
   in the Gitleaks sandbox, fetched into a fresh bare repository with no system or global config,
   no hooks and `fsck` on. The scan mode and commit limit come from the sandbox, never the upload.

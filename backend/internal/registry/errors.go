@@ -1,6 +1,10 @@
 package registry
 
-import "log/slog"
+import (
+	"log/slog"
+
+	dregistry "github.com/aupv9/warden/backend/internal/domain/registry"
+)
 
 // Pull failures (scan.error_code).
 const (
@@ -25,9 +29,9 @@ const (
 
 // Reasons are registry_credential.last_error and the test endpoint's error.
 const (
-	ReasonUnauthorized = "unauthorized"
-	ReasonUnreachable  = "unreachable"
-	ReasonBlocked      = "blocked"
+	ReasonUnauthorized = dregistry.ErrUnauthorized
+	ReasonUnreachable  = dregistry.ErrUnreachable
+	ReasonBlocked      = dregistry.ErrBlocked
 )
 
 // Error is a pull or check failure. Detail is for logs: it never holds a

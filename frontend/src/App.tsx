@@ -37,6 +37,7 @@ const PreferencesPage = lazyRoute(() => import("./routes/Preferences"), "Prefere
 const IntegrationsPage = lazyRoute(() => import("./routes/Integrations"), "IntegrationsPage");
 const ScanRulesPage = lazyRoute(() => import("./routes/ScanRules"), "ScanRulesPage");
 const ScanRulePage = lazyRoute(() => import("./routes/ScanRule"), "ScanRulePage");
+const RegistriesPage = lazyRoute(() => import("./routes/settings/Registries"), "RegistriesPage");
 
 export function createQueryClient(): QueryClient {
   const qc: QueryClient = new QueryClient({
@@ -122,6 +123,8 @@ export const appRoutes: RouteObject[] = [
           // history) share one route.
           { path: "settings/scan-rules", element: <ScanRulesPage /> },
           { path: "settings/scan-rules/:ruleId", element: <ScanRulePage /> },
+          // v0.7 wave 2: credentials Warden pulls images with (org admins and security leads).
+          { path: "settings/registries", element: <RegistriesPage /> },
           // v0.4 wave 2: webhooks and Slack (org admins and security leads).
           { path: "integrations", element: <IntegrationsPage /> },
           // Notification preferences are the user's own (they apply in every org); the page

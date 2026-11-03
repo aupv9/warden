@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	dregistry "github.com/aupv9/warden/backend/internal/domain/registry"
 	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/secretbox"
@@ -46,9 +47,10 @@ type sealedCredential struct {
 
 // loadPull reads a pulled image scan's reference and the org's credentials
 // for its host (inside the scan's org: RLS). It returns nil for a scan that
-// isn't pulled. A reference that doesn't parse is the API's bug; the scan
-// fails with PULL_FAILED.
-func loadPull(ctx context.Context, db DB, org, scanID uuid.UUID) (*pullRow, error) {
+// isn't pulled. The reference is parsed again with the API's rules
+// (domain/registry.ParseRef; allowed is registry.allow_hosts): one that no
+// longer parses (allow_hosts changed since) fails the scan with PULL_FAILED.
+func loadPull(ctx context.Context, db DB, org, scanID uuid.UUID, allowed func(string) bool) (*pullRow, error) {
 	var pulled bool
 	var imageRef *string
 	if err := db.QueryRow(ctx, `SELECT pulled, image_ref FROM scan WHERE id = $1`, scanID).Scan(&pulled, &imageRef); err != nil {
@@ -62,7 +64,7 @@ func loadPull(ctx context.Context, db DB, org, scanID uuid.UUID) (*pullRow, erro
 		p.bad = errors.New("pulled scan without image_ref")
 		return p, nil
 	}
-	ref, err := registry.ParseRef(*imageRef)
+	ref, err := dregistry.ParseRef(*imageRef, allowed)
 	if err != nil {
 		p.bad = err
 		return p, nil
@@ -97,7 +99,7 @@ func (p *pullRow) open(keys *secretbox.Keyring, org uuid.UUID) (*pullSpec, error
 	if p.cred == nil {
 		return s, nil
 	}
-	pw, err := registry.OpenPassword(keys, org, p.cred.ID, p.cred.KeyID, p.cred.Sealed)
+	pw, err := dregistry.OpenPassword(keys, org, p.cred.ID, p.cred.KeyID, p.cred.Sealed)
 	if err != nil {
 		return nil, fmt.Errorf("registry credential %s (key %q) can't be decrypted: %w", p.cred.ID, p.cred.KeyID, err)
 	}
@@ -107,18 +109,22 @@ func (p *pullRow) open(keys *secretbox.Keyring, org uuid.UUID) (*pullSpec, error
 
 var _ orchestrator.Puller = (*liveDeps)(nil)
 
+// registryClient is Registry.Client, or one without allowed hosts.
+func (e *Env) registryClient() *registry.Client {
+	if e.Registry.Client != nil {
+		return e.Registry.Client
+	}
+	return registry.NewClient(registry.Options{})
+}
+
 // Pull fetches the scan's image into dest (orchestrator.Puller) and records
 // on the credential what happened.
 func (d *liveDeps) Pull(ctx context.Context, dest string) error {
 	if d.pull == nil {
 		return errors.New("not a pulled scan")
 	}
-	r := d.env.Registry
-	client := r.Client
-	if client == nil {
-		client = registry.NewClient(registry.Options{})
-	}
-	plat := r.Platform
+	client := d.env.registryClient()
+	plat := d.env.Registry.Platform
 	if plat.OS == "" {
 		plat = registry.Platform{OS: "linux", Arch: "amd64"}
 	}

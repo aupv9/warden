@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	dregistry "github.com/aupv9/warden/backend/internal/domain/registry"
 	"github.com/aupv9/warden/backend/internal/scan/imagecheck"
 )
 
@@ -962,24 +963,16 @@ func TestCheck(t *testing.T) {
 
 // --- units ---
 
-func TestParseRef(t *testing.T) {
+// Docker Hub references go to its API host, official images under library/.
+func TestDockerHubNames(t *testing.T) {
 	d := "sha256:" + strings.Repeat("ab", 32)
-	r, err := ParseRef("docker.io/busybox@" + d)
-	if err != nil || r.Host != "docker.io" || apiHost(r.Host) != dockerHubAPI || r.apiRepository() != "library/busybox" {
+	r, err := dregistry.ParseRef("docker.io/busybox@"+d, nil)
+	if err != nil || apiHost(r.Host) != dockerHubAPI || apiRepository(r) != "library/busybox" {
 		t.Fatal(r, err)
 	}
-	r, err = ParseRef("registry.example.com:5000/team/app@" + d)
-	if err != nil || r.Host != "registry.example.com:5000" || r.apiRepository() != "team/app" || r.String() != "registry.example.com:5000/team/app@"+d {
+	r, err = dregistry.ParseRef("registry.example.com:5000/team/app@"+d, nil)
+	if err != nil || apiHost(r.Host) != r.Host || apiRepository(r) != "team/app" {
 		t.Fatal(r, err)
-	}
-	for _, bad := range []string{
-		"busybox@" + d, "ghcr.io/app:latest", "ghcr.io/app:latest@" + d, "GHCR.io/app@" + d,
-		"ghcr.io:0/app@" + d, "ghcr.io:99999/app@" + d, "ghcr.io/app@sha256:abc", "ghcr.io/../app@" + d,
-		"https://ghcr.io/app@" + d, "ghcr.io/app@" + d + "\n", "user@ghcr.io/app@" + d,
-	} {
-		if _, err := ParseRef(bad); err == nil {
-			t.Errorf("%q accepted", bad)
-		}
 	}
 }
 

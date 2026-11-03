@@ -29,59 +29,23 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
+
+	dregistry "github.com/aupv9/warden/backend/internal/domain/registry"
 )
 
-// Ref is an image reference pinned by digest: host[:port]/repository@sha256:….
-type Ref struct {
-	// Host is the registry as written (lower case, with port): the org's
-	// credentials are looked up by it.
-	Host       string
-	Repository string
-	Digest     string
-}
+// Ref is an image reference pinned by digest, as domain/registry.ParseRef
+// reads it (the API and the worker both apply it, with registry.allow_hosts).
+type Ref = dregistry.Ref
 
-// MaxRefLen is scan.image_ref's limit.
-const MaxRefLen = 512
-
-// refPattern is the API's PullScanRequest.image_ref pattern, with groups.
-var refPattern = regexp.MustCompile(`^([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?)/` +
-	`([a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*)` +
-	`@(sha256:[0-9a-f]{64})$`)
-
-// ParseRef parses a digest-pinned reference. Tags are refused: Warden never
-// pulls by tag.
-func ParseRef(s string) (Ref, error) {
-	if len(s) > MaxRefLen {
-		return Ref{}, errors.New("image reference too long")
-	}
-	m := refPattern.FindStringSubmatch(s)
-	if m == nil {
-		return Ref{}, errors.New("image reference must be host/repository@sha256:<digest>")
-	}
-	if err := checkHost(m[1]); err != nil {
-		return Ref{}, err
-	}
-	return Ref{Host: m[1], Repository: m[2], Digest: m[3]}, nil
-}
-
-// checkHost validates host[:port] (the reference's registry, or a credential's).
+// checkHost validates host[:port] (a credential's, for Check).
 func checkHost(h string) error {
-	name, port, hasPort := strings.Cut(h, ":")
-	if name == "" || len(h) > 253+6 {
+	name, _, ok := dregistry.SplitHost(h)
+	if name == "" || !ok || len(h) > dregistry.MaxHost+6 {
 		return errors.New("bad registry host")
-	}
-	if hasPort {
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 1 || n > 65535 || port[0] == '0' {
-			return errors.New("bad registry port")
-		}
 	}
 	return nil
 }
-
-func (r Ref) String() string { return r.Host + "/" + r.Repository + "@" + r.Digest }
 
 // Docker Hub is named docker.io in references; its API lives elsewhere.
 const dockerHubAPI = "registry-1.docker.io"
@@ -98,7 +62,7 @@ func apiHost(host string) string {
 
 // apiRepository is the repository as the API names it (Docker Hub's official
 // images live under library/).
-func (r Ref) apiRepository() string {
+func apiRepository(r Ref) string {
 	if isDockerHub(r.Host) && !strings.Contains(r.Repository, "/") {
 		return "library/" + r.Repository
 	}
