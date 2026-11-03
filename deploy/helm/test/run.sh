@@ -61,6 +61,16 @@ must_fail "managed key in extraEnv" "set by the chart" "${R[@]}" --set extraEnv.
 must_fail "dev webhook hosts in extraEnv" "can't be set" "${R[@]}" --set extraEnv.WARDEN_WEBHOOK__ALLOW_HOSTS=localhost
 must_fail "bad timeout" "scan/timeout" "${R[@]}" --set-string scan.timeout=30
 must_fail "nfs without server" "mirror.storage.nfs" "${R[@]}" --set mirror.storage.type=nfs
+# The worker's way to the API server: its addresses, never "anywhere on 443".
+# helm template can't look them up, so without cidrs the render must fail.
+must_fail "kubeAPI egress without addresses" "kubeAPI.cidrs is required" "${R[@]}" --set networkPolicy.egress.kubeAPI.cidrs=null
+must_fail "kubeAPI egress to a network" "wider than /16" "${R[@]}" --set 'networkPolicy.egress.kubeAPI.cidrs={172.18.0.2/32,10.0.0.0/8}'
+must_fail "kubeAPI egress to any IPv6" "wider than /48" "${R[@]}" --set 'networkPolicy.egress.kubeAPI.cidrs={::/0}'
+must_fail "kubeAPI egress by name" "kubeAPI/cidrs" "${R[@]}" --set 'networkPolicy.egress.kubeAPI.cidrs={kubernetes.default.svc}'
+must_fail "kubeAPI egress as peers (pre-0.7)" "replaced by networkPolicy.egress.kubeAPI.cidrs" "${R[@]}" \
+  --set 'networkPolicy.egress.kubeAPI.to[0].ipBlock.cidr=0.0.0.0/0'
+# An existing sandbox namespace whose Pod Security label can't be read here.
+must_fail "unchecked sandbox namespace" "sandbox.podSecurityConfirmed=true" "${R[@]}" --set sandbox.createNamespace=false
 
 echo "==> renders that must pass (helm lint --strict, helm template)"
 # must_pass NAME helm-args...
@@ -74,7 +84,7 @@ must_pass required "${R[@]}"
 must_pass prod-example -f "$CHART/values-prod-example.yaml"
 must_pass variants "${R[@]}" -f "$V/variants.yaml"
 must_pass ingress-secret "${R[@]}" --set ingress.enabled=true --set ingress.tls.secretName=warden-tls \
-  --set mirror.cronjob.enabled=false --set networkPolicy.enabled=false
+  --set mirror.cronjob.enabled=false --set networkPolicy.enabled=false --set networkPolicy.egress.kubeAPI.cidrs=null
 rm -f "$out/lint.log"
 
 echo "==> kubeconform"
@@ -93,7 +103,8 @@ mkdir "$out/mutants"
 mutant() {
   local name="$1" expr="$2" f="$out/mutants/$1.yaml"
   yq "$expr" "$out/required.yaml" >"$f"
-  cmp -s "$f" "$out/required.yaml" && fail "mutant $name: the expression changed nothing"
+  # Compared as data: yq also reformats what it doesn't change.
+  [ "$(yq -o=json -I=0 "$f")" = "$(yq -o=json -I=0 "$out/required.yaml")" ] && fail "mutant $name: the expression changed nothing"
   if "$HERE/check-security.sh" "$f" >/dev/null 2>&1; then
     fail "mutant $name: check-security.sh accepted it"
   fi
@@ -121,6 +132,15 @@ mutant sandbox-ingress-only "(select(.kind == \"NetworkPolicy\" and .metadata.na
 mutant sandbox-psa "(select(.kind == \"Namespace\") | .metadata.labels.\"pod-security.kubernetes.io/enforce\") = \"baseline\""
 mutant no-quota "del(select(.kind == \"ResourceQuota\"))"
 mutant docker-backend "(($W | .spec.template.spec.containers[0].env[] | select(.name == \"WARDEN_SCAN__SANDBOX_BACKEND\")).value) = \"docker\""
+WNP='select(.kind == "NetworkPolicy" and .metadata.name == "t-warden-worker")'
+KAPI="$WNP | .spec.egress[] | select(.ports | any_c(.port == 6443))"
+mutant kubeapi-open "del($KAPI | .to)"
+mutant kubeapi-split "($KAPI | .to) = [{\"ipBlock\": {\"cidr\": \"0.0.0.0/1\"}}, {\"ipBlock\": {\"cidr\": \"128.0.0.0/1\"}}]"
+mutant kubeapi-any-pod "($KAPI | .to) += [{\"namespaceSelector\": {}}]"
+mutant webhook-private "del($WNP | .spec.egress[].to[]?.ipBlock.except)"
+mutant webhook-partial-except "($WNP | .spec.egress[].to[]?.ipBlock.except[]? | select(. == \"10.0.0.0/8\")) = \"10.0.0.0/9\""
+mutant webhook-ipv6-private "($WNP | .spec.egress[].to[]?.ipBlock.except) |= ((. // []) - [\"fe80::/10\"])"
+mutant https-rules-open "($WNP | .spec.egress[] | select((.ports | length) == 1 and .ports[0].port == 443) | .to) = []"
 mutant public-service "(select(.kind == \"Service\" and .metadata.name == \"t-warden-api\") | .spec.type) = \"LoadBalancer\""
 { cat "$out/required.yaml"; printf -- '---\napiVersion: v1\nkind: Secret\nmetadata: {name: leaked}\nstringData: {k: v}\n'; } >"$out/mutants/secret.yaml"
 "$HERE/check-security.sh" "$out/mutants/secret.yaml" >/dev/null 2>&1 && fail "mutant secret: check-security.sh accepted it"
