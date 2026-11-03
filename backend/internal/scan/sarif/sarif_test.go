@@ -419,6 +419,28 @@ func TestOrgRuleNamespace(t *testing.T) {
 	}
 }
 
+// Only org rules the tool listed count as loaded; Warden's rules, other
+// tools' namespaces and junk entries don't.
+func TestLoadedOrgRules(t *testing.T) {
+	doc := st.RoundTrip(st.Doc([]any{},
+		st.M{"id": "rules.org.good"}, st.M{"id": "data.rules.org.sneaky"}, st.M{"id": "data.rules.python.x"},
+		st.M{"id": 7}, "junk", st.M{"id": "rules.org." + strings.Repeat("a", 300)}))
+	got := sarif.LoadedOrgRules(doc, "opengrep")
+	if len(got) != 1 || !got["org.good"] {
+		t.Fatal(got)
+	}
+	gl := st.RoundTrip(st.Doc([]any{}, st.M{"id": "org.acme"}, st.M{"id": "aws-access-token"}))
+	if got := sarif.LoadedOrgRules(gl, "gitleaks"); len(got) != 1 || !got["org.acme"] {
+		t.Fatal(got)
+	}
+	if got := sarif.LoadedOrgRules(gl, "trivy"); len(got) != 0 {
+		t.Fatal(got)
+	}
+	if got := sarif.LoadedOrgRules(st.M{"runs": "x"}, "opengrep"); len(got) != 0 {
+		t.Fatal(got)
+	}
+}
+
 func writeFile(t *testing.T, data string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "x.sarif")

@@ -64,7 +64,7 @@ func TestRunScanWithOrgRules(t *testing.T) {
 	h.db = dbtest.Loose(t, h.scanSteps("queued", dbtest.Step{Prefix: orgRulesQuery, Rows: ruleRows})...)
 	h.sb.docs = map[string]st.M{"opengrep": st.Doc([]any{
 		st.M{"ruleId": "rules.org.no-eval", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
-	})}
+	}, st.M{"id": "rules.org.no-eval"})}
 	if err := h.run(1); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +92,25 @@ func TestRunScanWithOrgRules(t *testing.T) {
 	}
 	h.assertCleaned()
 	h.assertScoped()
+}
+
+// A rule the scanner didn't load (absent from its SARIF rules; Opengrep runs
+// the rest of a config without it) didn't run: not recorded, fixes nothing.
+func TestRunScanOrgRuleNotLoaded(t *testing.T) {
+	fakeRules(t)
+	h := newHarness(t, "queued", dbtest.Step{Prefix: orgRulesQuery, Rows: [][]any{
+		{uuid.New(), "opengrep", "loaded", []byte("loaded:high"), "high", 1, "h1"},
+		{uuid.New(), "opengrep", "dropped", []byte("dropped:high"), "high", 1, "h2"},
+	}})
+	h.sb.docs = map[string]st.M{"opengrep": st.Doc([]any{}, st.M{"id": "data.rules.x"}, st.M{"id": "rules.org.loaded"})}
+	if err := h.run(1); err != nil {
+		t.Fatal(err)
+	}
+	fin := h.db.Calls("UPDATE scan SET status = $2, error_code = NULL")
+	var refs []results.OrgRuleRef
+	if len(fin) != 1 || json.Unmarshal(fin[0].Args[5].([]byte), &refs) != nil || len(refs) != 1 || refs[0].RuleID != "org.loaded" {
+		t.Fatalf("%v", fin)
+	}
 }
 
 // The rules of a tool that failed are not recorded (and fix nothing).

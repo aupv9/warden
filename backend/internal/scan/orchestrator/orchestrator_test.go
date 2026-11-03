@@ -613,7 +613,7 @@ func TestOrgRules(t *testing.T) {
 	d.opengrepDoc = st.Doc([]any{
 		st.M{"ruleId": "rules.org.k", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
 		st.M{"ruleId": "data.rules.r1", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
-	})
+	}, st.M{"id": "rules.org.k"}, st.M{"id": "data.rules.r1"})
 	j := newJob(sha, "opengrep", "checkov")
 	j.OrgRules = map[string]OrgRules{
 		"opengrep": {Config: []byte("rules: []\n"), Severity: map[string]severity.Severity{"org.k": severity.Info}},
@@ -632,6 +632,9 @@ func TestOrgRules(t *testing.T) {
 	if out.Status != Completed || len(fs) != 2 || fs[0].RuleID != "org.k" || fs[0].Severity != severity.Info ||
 		fs[1].RuleID != "r1" || fs[1].Severity != severity.High {
 		t.Fatalf("%s %+v", out.Status, fs)
+	}
+	if len(out.OrgRulesLoaded) != 1 || len(out.OrgRulesLoaded["opengrep"]) != 1 || !out.OrgRulesLoaded["opengrep"]["org.k"] {
+		t.Fatal(out.OrgRulesLoaded)
 	}
 
 	// No org rules: no rules directory.
