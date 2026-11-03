@@ -8,13 +8,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/service/servicetest"
 )
 
@@ -142,16 +145,30 @@ func (e *env) export(query, email string) *httptest.ResponseRecorder {
 	return w
 }
 
+// readCSV returns a complete export's data rows: after the header, and before
+// the end line, which must count them.
 func readCSV(t *testing.T, w *httptest.ResponseRecorder) [][]string {
 	t.Helper()
 	if w.Code != 200 {
 		t.Fatalf("%d: %s", w.Code, w.Body)
 	}
-	recs, err := csv.NewReader(bytes.NewReader(w.Body.Bytes())).ReadAll()
-	if err != nil || len(recs) == 0 || !slices.Equal(recs[0], exportColumns) {
+	cr := csv.NewReader(bytes.NewReader(w.Body.Bytes()))
+	cr.FieldsPerRecord = -1
+	recs, err := cr.ReadAll()
+	if err != nil || len(recs) < 2 || !slices.Equal(recs[0], exportColumns) {
 		t.Fatal(recs, err)
 	}
-	return recs[1:]
+	data := recs[1 : len(recs)-1]
+	end := "#warden:end rows=" + strconv.Itoa(len(data))
+	if !slices.Equal(recs[len(recs)-1], []string{end}) || !strings.HasSuffix(w.Body.String(), "\r\n"+end+"\r\n") {
+		t.Fatalf("no end line %q: %q", end, recs[len(recs)-1])
+	}
+	for _, row := range data {
+		if len(row) != len(exportColumns) {
+			t.Fatalf("%q", row)
+		}
+	}
+	return data
 }
 
 func TestExportIssuesCSV(t *testing.T) {
@@ -191,7 +208,13 @@ func TestExportIssuesCSV(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 	// Nothing but the fixed columns: no description, snippet or comment column.
-	if strings.Contains(w.Body.String(), "\x00") || bytes.Count(w.Body.Bytes(), []byte("\r\n")) != 3 {
+	// Header, two rows and the end line, exactly that last.
+	if strings.Contains(w.Body.String(), "\x00") || bytes.Count(w.Body.Bytes(), []byte("\r\n")) != 4 ||
+		!strings.HasSuffix(w.Body.String(), "\r\n#warden:end rows=2\r\n") {
+		t.Fatalf("%q", w.Body.String())
+	}
+	// Nothing to count: still the header and the end line.
+	if w := e.export("", outsider); w.Body.String() != strings.Join(exportColumns, ",")+"\r\n#warden:end rows=0\r\n" {
 		t.Fatalf("%q", w.Body.String())
 	}
 
@@ -264,7 +287,8 @@ func TestExportIssuesTruncated(t *testing.T) {
 	if w.Header().Get("X-Warden-Truncated") != "true" {
 		t.Fatal(w.Header())
 	}
-	if rows := readCSV(t, w); len(rows) != 50000 {
+	// Truncated is still complete: the end line counts the rows sent.
+	if rows := readCSV(t, w); len(rows) != 50000 || !strings.HasSuffix(w.Body.String(), "\r\n#warden:end rows=50000\r\n") {
 		t.Fatal(len(rows))
 	}
 	a := e.f.AuditLog()
@@ -331,7 +355,52 @@ func TestExportIssuesFailures(t *testing.T) {
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(res.Body)
-	if err == nil || strings.Contains(string(body), `"error"`) {
+	if err == nil || strings.Contains(string(body), `"error"`) || strings.Contains(string(body), "#warden:end") {
 		t.Fatalf("read %q without an error (%v)", body, err)
+	}
+
+	// Where the connection can't be cut (HTTP/2; here a recorder) the
+	// response just ends, with rows but without the end line.
+	w = e.export("", lead)
+	if w.Code != 200 || bytes.Count(w.Body.Bytes(), []byte("\r\n")) < 500 || strings.Contains(w.Body.String(), "#warden:end") {
+		t.Fatalf("%d %d %q", w.Code, bytes.Count(w.Body.Bytes(), []byte("\r\n")), w.Body.String()[max(0, w.Body.Len()-200):])
+	}
+}
+
+// The end line can't come from data: every data row has all the columns, the
+// key is the server's, and a cell can't break its row.
+func TestExportEndLineCantBeForged(t *testing.T) {
+	end := exportEndLine(1)
+	fp := end + "\r\n" + end
+	hostile := service.IssueExportRow{Key: end, ProjectName: end, Title: "\n" + end, Severity: end, Status: end, Tool: end,
+		RuleID: end + "\n", FilePath: &fp, Target: end}
+	var buf bytes.Buffer
+	cw := csv.NewWriter(&buf)
+	cw.UseCRLF = true
+	_ = cw.Write(exportRecord(hostile))
+	cw.Flush()
+	for _, line := range strings.Split(buf.String(), "\r\n") {
+		if strings.HasPrefix(line, "#warden:end") || strings.HasPrefix(line, `"#warden:end`) || strings.TrimSpace(line) == end {
+			t.Fatalf("%q", buf.String())
+		}
+	}
+	if rec := exportRecord(hostile); rec[0] != "'"+end {
+		t.Fatal(rec[0])
+	}
+
+	// Keys are the project's key and a number: a project key can't start with "#".
+	e := newEnv(t)
+	for _, key := range []string{"#WARDEN", "#warden:end rows=1", "'#W"} {
+		r := e.do("POST", "/projects", lead, map[string]any{"key": key, "name": "x"})
+		e.expect(r, 422, "VALIDATION_FAILED")
+		if _, ok := r.Error.Metadata["fields"].(map[string]any)["key"]; !ok {
+			t.Fatal(key, r.body)
+		}
+	}
+	e.f.AddIssues(e.web, 3, "low", "open")
+	for _, row := range readCSV(t, e.export("", lead)) {
+		if !regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`).MatchString(row[0]) {
+			t.Fatal(row[0])
+		}
 	}
 }
