@@ -104,6 +104,48 @@ func TestProdRefusals(t *testing.T) {
 	}
 }
 
+// validKubeProd is validProd on the kubernetes backend.
+func validKubeProd() *Config {
+	c := validProd()
+	c.Scan.SandboxBackend = "kubernetes"
+	c.Scan.SandboxRuntime = "runc" // the docker backend's setting: not used
+	c.Scan.Kube.MirrorPVC = "warden-mirror"
+	c.Scan.Kube.IOImage = "ghcr.io/aupv9/warden:0.6.0@sha256:" + strings.Repeat("b", 64)
+	return c
+}
+
+func TestProdKubernetesBackend(t *testing.T) {
+	if err := validKubeProd().checkProd(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*Config)
+		setting string
+	}{
+		{"no runtime class", func(c *Config) { c.Scan.Kube.RuntimeClass = " " }, "scan.kube.runtime_class"},
+		{"no mirror", func(c *Config) { c.Scan.Kube.MirrorPVC = "" }, "scan.kube.mirror_pvc"},
+		{"no io image", func(c *Config) { c.Scan.Kube.IOImage = "" }, "scan.kube.io_image"},
+		{"io image by tag", func(c *Config) { c.Scan.Kube.IOImage = "ghcr.io/aupv9/warden:0.6.0" }, "scan.kube.io_image"},
+		{"io image by local ID", func(c *Config) { c.Scan.Kube.IOImage = "sha256:" + strings.Repeat("b", 64) }, "scan.kube.io_image"},
+		{"kubeconfig", func(c *Config) { c.Scan.Kube.Kubeconfig = "/home/me/.kube/config" }, "scan.kube.kubeconfig"},
+		{"local scanner image", func(c *Config) { c.Scan.Images["gitleaks"] = "sha256:" + strings.Repeat("c", 64) }, "scan.images.gitleaks"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validKubeProd()
+			tc.mutate(c)
+			err := c.checkProd()
+			if err == nil || !strings.Contains(err.Error(), tc.setting) || strings.Count(err.Error(), "app.env=prod") != 1 {
+				t.Fatalf("got %v, want one refusal naming %s", err, tc.setting)
+			}
+			c.App.Env = "dev"
+			if err := c.checkProd(); err != nil {
+				t.Fatalf("dev refused: %v", err)
+			}
+		})
+	}
+}
+
 func TestProdReportsEveryProblem(t *testing.T) {
 	c := validProd()
 	c.Scan.SandboxRuntime = "runc"

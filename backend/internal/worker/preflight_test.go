@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -190,10 +189,10 @@ func TestPreflightKeepsEverythingWhenScansCantBeListed(t *testing.T) {
 	}
 }
 
-func TestDockerChecker(t *testing.T) {
+func TestSandboxChecker(t *testing.T) {
 	now := time.Now()
 	d := &fakeDocker{out: map[string]string{"info": runtimesJSON}}
-	c := &DockerChecker{Docker: d, Runtime: "runsc", TTL: 15 * time.Second, Now: func() time.Time { return now }, Warn: quietLog().Warn}
+	c := &SandboxChecker{Probe: DockerProbe(d, "runsc"), TTL: 15 * time.Second, Now: func() time.Time { return now }, Warn: quietLog().Warn}
 	if err := c.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +210,12 @@ func TestDockerChecker(t *testing.T) {
 	if err := c.Check(context.Background()); err == nil {
 		t.Fatal("runtime missing but ready")
 	}
-	if !slices.Contains([]string{"docker"}, c.Name()) {
+	d.out["info"] = runtimesJSON
+	now = now.Add(time.Minute)
+	if err := c.Check(context.Background()); err != nil {
+		t.Fatal("not ready again", err)
+	}
+	if c.Name() != "sandbox" {
 		t.Fatal(c.Name())
 	}
 }
