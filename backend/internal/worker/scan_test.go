@@ -104,12 +104,34 @@ type fakeSandbox struct {
 	// failed tool's exit status.
 	docs     map[string]st.M
 	exitCode int
+	// mounted: what the tool's mounts held when it ran, by path under the
+	// scan directory (org rules, a rule test's snippet), with their modes.
+	mounted map[string]mountedFile
+}
+
+type mountedFile struct {
+	data []byte
+	mode os.FileMode
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.RunConfig) sandbox.ToolRun {
 	f.mu.Lock()
 	f.configs = append(f.configs, c)
 	f.specs = append(f.specs, spec)
+	_ = filepath.WalkDir(c.ScanDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(c.ScanDir, p)
+		if b, err := os.ReadFile(p); err == nil {
+			fi, _ := d.Info()
+			if f.mounted == nil {
+				f.mounted = map[string]mountedFile{}
+			}
+			f.mounted[rel] = mountedFile{data: b, mode: fi.Mode().Perm()}
+		}
+		return nil
+	})
 	f.mu.Unlock()
 	if f.block {
 		select {
@@ -210,6 +232,9 @@ func (c copyDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, src pg
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// orgRulesQuery starts loadOrgRules' statement.
+const orgRulesQuery = "SELECT id, tool::text, key, body_canonical"
+
 func row(vals ...any) [][]any { return [][]any{vals} }
 
 // scanSteps answers every statement of a normal scan; overrides replace steps
@@ -217,6 +242,7 @@ func row(vals ...any) [][]any { return [][]any{vals} }
 func (h *harness) scanSteps(status string, overrides ...dbtest.Step) []dbtest.Step {
 	steps := []dbtest.Step{
 		{Prefix: "SELECT status, project_id", Rows: row(status, h.project, objectKey, h.sha, []string{"opengrep"}, false, "WEB", "source", "")},
+		{Prefix: orgRulesQuery}, // none
 		{Prefix: "UPDATE scan SET status = 'running'", Affected: 1},
 		{Prefix: "INSERT INTO scan_tool_run", Affected: 1},
 		{Prefix: "SELECT status FROM scan WHERE id = $1", Rows: row("running")},
