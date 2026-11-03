@@ -20,6 +20,12 @@ All notable changes to Warden are listed here. The format follows
   values schema; CI jobs `helm` (lint, kubeconform, security properties) and `kube` (kind with
   gVisor).
 
+### Changed
+
+- Checkov runs with 1 CPU, 3 GB and a 15-minute timeout (was 0.25 CPU, 2 GB, 10 minutes): on
+  Warden's own repository it was killed for memory under gVisor, or took 535 s of 600. The Helm
+  chart's sandbox ResourceQuota grows to match (24 CPU, 64 GiB requested).
+
 ### Fixed
 
 - An Opengrep result whose rule id was only Warden's rules-directory prefix (`data.rules.`)
