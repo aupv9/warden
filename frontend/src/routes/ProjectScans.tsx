@@ -469,8 +469,10 @@ function ScanPanel({
 }
 
 /** v0.6: the org's own rules this scan ran, at the version it ran. A rule that still exists links
- *  to its page (by id); a deleted one is its rule id as text. Only these rules' issues can be
- *  fixed by this scan. */
+ *  to its page (by id); a deleted one is its rule id as text. v0.7: the rule that ran is found by
+ *  `scan_rule_id`, so one deleted and added again with the same key reads as deleted (scans
+ *  from before v0.7 fall back to scanner and rule id; see ranRules). Only these rules' issues
+ *  can be fixed by this scan. */
 function OrgRulesRan({ scan: s }: { scan: Scan }) {
   const { orgId } = useOrgCtx();
   const rules = useScanRules(orgId);

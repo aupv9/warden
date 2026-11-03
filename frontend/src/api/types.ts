@@ -1006,6 +1006,9 @@ export interface ScanRuleRef {
   tool: ScanRuleTool;
   version: number;
   sha256: string;
+  /** v0.7: the rule that ran, by id: it survives a delete and re-add of the same key. Null on
+   *  scans recorded before v0.7. */
+  scan_rule_id: UUID | null;
 }
 
 // ---- Errors ----

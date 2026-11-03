@@ -864,10 +864,14 @@ removed then added.
   the rule id, no link, and "The rule was deleted, so no scan runs it any more and none will fix
   this issue. It stays open until someone closes it."
 - **Scan panel:** a scan that ran org rules (`Scan.org_rules`) lists them after the counts: "Org
-  rules · 3", then per rule its name (a link when a current rule has that scanner and rule id),
-  `org.<key>`, the scanner and "version 2 (now 4)" when the rule changed since; a rule that no
-  longer exists reads "Deleted rule org.no-pickle-loads · Opengrep · version 2". Under them:
-  "Issues from an org rule are fixed only by scans that run it."
+  rules · 3", then per rule its name (a link to the rule that ran while it exists), `org.<key>`,
+  the scanner and "version 2 (now 4)" when the rule changed since; a rule that no longer exists
+  reads "Deleted rule org.no-pickle-loads · Opengrep · version 2". Under them: "Issues from an
+  org rule are fixed only by scans that run it." v0.7: the rule that ran is found by
+  `ScanRuleRef.scan_rule_id`, so a rule deleted and added again with the same key reads as the
+  deleted rule and never links to the new one (whose versions are not the ones that ran). Only a
+  scan recorded before v0.7 (`scan_rule_id` null) falls back to the current rule with that
+  scanner and rule id (`ranRules` in `src/lib/scanRules.ts`).
 
 ### Security rules (Scan rules)
 
@@ -1297,11 +1301,12 @@ targets for the issue list's Image filter; the inventory's ecosystem list; `WEBH
 chain check; CSV export of the issue list. (In v0.3, closed in v0.4: license issues have
 `license_category`, and `GET …/targets` lists a project's image targets.)
 
+Closed in v0.7 wave 1: `ScanRuleRef.scan_rule_id`, so the scan panel links to the rule that ran
+and a rule deleted and added again with the same key no longer links to the new one (see "Issue
+page and scan panel").
+
 Still in the design but not in the API contract:
 
-- v0.6: `ScanRuleRef` (in `Scan.org_rules`) has no rule UUID, so the scan panel finds the current
-  rule by scanner and rule id; a rule deleted and added again with the same key links to the new
-  one. A `scan_rule_id` on `ScanRuleRef` would make the link exact.
 - v0.6: there is no list of a user's snippet tests (only `GET …/tests/{id}`), so a test whose
   dialog was closed can't be found again; the UI doesn't need it, as results are dropped with the
   dialog.

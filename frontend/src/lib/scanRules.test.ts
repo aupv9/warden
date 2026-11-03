@@ -253,14 +253,27 @@ describe("issues and scans", () => {
     expect(orgRuleLink(ORG, { scan_rule_id: "javascript:alert(1)", name: "x" })).toBeNull();
   });
 
-  it("matches the rules a scan ran to the org's current rules by scanner and rule id", () => {
+  it("a scan from before v0.7 (no scan_rule_id) matches the current rules by scanner and rule id", () => {
     const r = rule();
     const refs = [
-      { rule_id: "org.no-eval", tool: "opengrep" as const, version: 2, sha256: "b".repeat(64) },
-      { rule_id: "org.no-eval", tool: "gitleaks" as const, version: 1, sha256: "c".repeat(64) },
-      { rule_id: "org.gone", tool: "opengrep" as const, version: 1, sha256: "d".repeat(64) },
+      { rule_id: "org.no-eval", tool: "opengrep" as const, version: 2, sha256: "b".repeat(64), scan_rule_id: null },
+      { rule_id: "org.no-eval", tool: "gitleaks" as const, version: 1, sha256: "c".repeat(64), scan_rule_id: null },
+      { rule_id: "org.gone", tool: "opengrep" as const, version: 1, sha256: "d".repeat(64), scan_rule_id: null },
     ];
     expect(ranRules(refs, [r]).map((x) => x.rule?.id ?? null)).toEqual([r.id, null, null]);
     expect(ranRules(refs, undefined).every((x) => x.rule === null)).toBe(true);
+  });
+
+  it("v0.7: a ref with scan_rule_id matches by that id only; a rule deleted and added again with the same key is deleted", () => {
+    const ran = rule();
+    const readded = rule({ id: "00000000-0000-4000-8000-0000000000r2", version: 1 });
+    const ref = { rule_id: "org.no-eval", tool: "opengrep" as const, version: 3, sha256: "a".repeat(64), scan_rule_id: ran.id };
+    expect(ranRules([ref], [ran])[0]!.rule?.id).toBe(ran.id);
+    // Same scanner and rule id, different rule: not the one that ran.
+    expect(ranRules([ref], [readded])[0]!.rule).toBeNull();
+    // The id decides even when the key has changed scanner or rule id.
+    expect(ranRules([{ ...ref, rule_id: "org.other" }], [ran])[0]!.rule?.id).toBe(ran.id);
+    // Without the id, the old lookup would have linked the new rule.
+    expect(ranRules([{ ...ref, scan_rule_id: null }], [readded])[0]!.rule?.id).toBe(readded.id);
   });
 });
