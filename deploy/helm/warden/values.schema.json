@@ -455,7 +455,7 @@
         "egress": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["dns", "database", "storage", "oidc", "smtp", "kubeAPI", "webhooks", "mirror"],
+          "required": ["dns", "database", "storage", "oidc", "smtp", "kubeAPI", "webhooks", "registries", "mirror"],
           "properties": {
             "dns": { "$ref": "#/definitions/egressRule" },
             "database": { "$ref": "#/definitions/egressRule" },
@@ -464,6 +464,7 @@
             "smtp": { "$ref": "#/definitions/egressRule" },
             "kubeAPI": { "$ref": "#/definitions/kubeAPIRule" },
             "webhooks": { "$ref": "#/definitions/egressRule" },
+            "registries": { "$ref": "#/definitions/egressRule" },
             "mirror": { "$ref": "#/definitions/egressRule" }
           }
         }

@@ -296,9 +296,10 @@ mirror:
 
 # NetworkPolicies for this release's Pods (the sandbox namespace always denies
 # everything). Each egress entry is {to, ports}; an empty `to` means any
-# destination on those ports. The worker calls webhook URLs users give it, so
-# none of its rules on 443 reaches private addresses unless you list them
-# (storage, kubeAPI); Warden also refuses internal webhook addresses itself.
+# destination on those ports. The worker calls webhook URLs and pulls from
+# registries users give it, so none of its rules on 443 reaches private
+# addresses unless you list them (storage, kubeAPI); Warden also refuses
+# internal webhook and registry addresses itself.
 networkPolicy:
   enabled: true
   # Who may reach the API's HTTP port: your ingress controller or Gateway.
@@ -356,6 +357,20 @@ networkPolicy:
       ports: [{ port: 443, protocol: TCP }, { port: 6443, protocol: TCP }]
     # The worker's webhooks and Slack (Warden refuses internal addresses itself).
     webhooks:
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+        - ipBlock:
+            cidr: "::/0"
+            except: ["fc00::/7", "fe80::/10", "::1/128"]
+      ports: [{ port: 443, protocol: TCP }]
+    # Image pulls (POST …/scans/pull, worker) and the registry credential test
+    # (API): public addresses on 443 only, like webhooks; Warden refuses
+    # internal addresses itself, on every redirect hop and token realm. A
+    # registry on another port (registry.example.com:5000) needs its port
+    # here.
+    registries:
       to:
         - ipBlock:
             cidr: 0.0.0.0/0
