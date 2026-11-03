@@ -22,6 +22,7 @@ import (
 
 	cgconfig "github.com/aupv9/common-go/config"
 
+	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/secretbox"
 	"github.com/aupv9/warden/backend/internal/webhook"
 )
@@ -360,6 +361,14 @@ func Load() (*Config, error) {
 		if !webhook.ValidAllowHost(h) {
 			return nil, fmt.Errorf("config: webhook.allow_hosts: %q must be a host name or IP address, without scheme or port", h)
 		}
+	}
+	for _, h := range c.Registry.AllowHosts {
+		if !webhook.ValidAllowHost(h) {
+			return nil, fmt.Errorf("config: registry.allow_hosts: %q must be a host name or IP address, without scheme or port", h)
+		}
+	}
+	if _, err := registry.ParsePlatform(c.Scan.PullPlatform); err != nil {
+		return nil, fmt.Errorf("config: scan.pull_platform: %w", err)
 	}
 	if err := c.checkProdSecrets(); err != nil {
 		return nil, err
