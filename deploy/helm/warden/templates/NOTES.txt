@@ -4,9 +4,21 @@ Scanner Pods run in namespace {{ .Values.sandbox.namespace }}.
 PREREQUISITES (the chart doesn't install them)
   - RuntimeClass "{{ .Values.sandbox.runtimeClassName }}" whose handler is gVisor's (runsc, or gvisor on GKE Sandbox), e.g. containerd's
     runsc shim on the scan nodes (https://gvisor.dev/docs/user_guide/containerd/quick_start/).
-    The worker checks the handler and refuses to start without it.
+    The worker checks the handler and refuses to start without it. gVisor is what confines
+    scanner Pods' /tmp: it is an emptyDir, which Kubernetes can't mount noexec, so whatever a
+    scanner writes there can run.
   - A CNI that enforces NetworkPolicy (Calico, Cilium, GKE Dataplane V2, …). Without one, the
     sandbox namespace's deny-all policy does nothing; the worker's network canary then stops it.
+{{- if .Values.networkPolicy.enabled }}
+  - The worker reaches the Kubernetes API only at {{ include "warden.kubeAPICIDRs" . | fromJsonArray | join ", " }}
+    {{- if not .Values.networkPolicy.egress.kubeAPI.cidrs }} (read from the cluster at this
+    release; run helm upgrade, or set networkPolicy.egress.kubeAPI.cidrs, if those addresses change){{ end }}.
+{{- end }}
+{{- if not .Values.sandbox.createNamespace }}
+  - Namespace {{ .Values.sandbox.namespace }} is yours: keep its label pod-security.kubernetes.io/enforce=restricted
+    {{- if .Values.sandbox.podSecurityConfirmed }}
+    (sandbox.podSecurityConfirmed=true: the chart may not have been able to check it){{ end }}.
+{{- end }}
   - Shared storage for the mirror, mounted in two namespaces: claim "{{ include "warden.mirrorClaim" . }}"
     (ReadWriteMany) in {{ .Release.Namespace }} and claim "{{ include "warden.sandboxMirrorClaim" . }}"
     (read-only) in {{ .Values.sandbox.namespace }}, both on the same files{{ if eq .Values.mirror.storage.type "existingClaims" }}: create them yourself (mirror.storage.type=existingClaims){{ end }}.

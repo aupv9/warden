@@ -187,11 +187,20 @@ migrate:
 sandbox:
   namespace: warden-sandbox
   # false: the namespace exists already; it must carry the Pod Security
-  # Admission label enforce=restricted (checked at install when readable).
+  # Admission label pod-security.kubernetes.io/enforce=restricted. On helm
+  # install/upgrade the chart reads the namespace and refuses one without it.
+  # Where it can't (helm template, GitOps tools that render offline, or a
+  # namespace that doesn't exist yet) it refuses to render unless
+  # podSecurityConfirmed is true: you then own that label, and nothing else
+  # checks it before scanner Pods run there.
   createNamespace: true
+  podSecurityConfirmed: false
   podSecurityVersion: latest
   # Must name a RuntimeClass with gVisor's handler (runsc; gvisor on GKE Sandbox),
-  # installed beforehand. Pre-pull the scanner images on the scan nodes: pull
+  # installed beforehand. Scanner Pods' /tmp is an emptyDir, and Kubernetes
+  # can't mount an emptyDir noexec, so code a scanner writes there can run
+  # (with Docker, only Opengrep's /tmp is exec): gVisor is what confines it,
+  # with the read-only root, no capabilities and no network. Pre-pull the scanner images on the scan nodes: pull
   # time counts against each scanner Pod's deadline.
   runtimeClassName: gvisor
   # Lets the worker get that one RuntimeClass (its startup check); the only
@@ -287,8 +296,9 @@ mirror:
 
 # NetworkPolicies for this release's Pods (the sandbox namespace always denies
 # everything). Each egress entry is {to, ports}; an empty `to` means any
-# destination on those ports. The kube API rule must match how your CNI sees
-# the API server (some, like Cilium, need their own policy for it).
+# destination on those ports. The worker calls webhook URLs users give it, so
+# none of its rules on 443 reaches private addresses unless you list them
+# (storage, kubeAPI); Warden also refuses internal webhook addresses itself.
 networkPolicy:
   enabled: true
   # Who may reach the API's HTTP port: your ingress controller or Gateway.
@@ -310,8 +320,17 @@ networkPolicy:
     database:
       to: []
       ports: [{ port: 5432, protocol: TCP }]
+    # The object store (API and worker). Public addresses only by default,
+    # like webhooks: for a store on a private address (in-cluster, a VPC
+    # interface endpoint), list it here, with its port.
     storage:
-      to: []
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+        - ipBlock:
+            cidr: "::/0"
+            except: ["fc00::/7", "fe80::/10", "::1/128"]
       ports: [{ port: 443, protocol: TCP }]
     # The identity provider's discovery document and keys (API).
     oidc:
@@ -320,9 +339,20 @@ networkPolicy:
     smtp:
       to: []
       ports: [{ port: 587, protocol: TCP }, { port: 465, protocol: TCP }]
-    # The worker: Pods and exec in the sandbox namespace.
+    # The worker: Pods and exec in the sandbox namespace, through the API
+    # server only. cidrs: the API server's addresses, as the CNI sees them
+    # after Service translation (the endpoints of default/kubernetes:
+    # kubectl get endpointslice -n default kubernetes), e.g. [172.18.0.2/32];
+    # add the kubernetes Service's ClusterIP if your CNI applies policy before
+    # translation. Empty: helm install/upgrade reads those endpoints and the
+    # ClusterIP from the cluster at each release; where it can't (helm
+    # template, offline GitOps renders) the render fails. When the addresses
+    # can change outside a helm upgrade (some managed control planes), list
+    # the control plane's range yourself. Blocks wider than /16 (IPv4) or /48
+    # (IPv6) are refused. Some CNIs (Cilium) match the API server only by
+    # their own policy; NetworkPolicy then can't express this rule.
     kubeAPI:
-      to: []
+      cidrs: []
       ports: [{ port: 443, protocol: TCP }, { port: 6443, protocol: TCP }]
     # The worker's webhooks and Slack (Warden refuses internal addresses itself).
     webhooks:
