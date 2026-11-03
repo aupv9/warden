@@ -430,7 +430,7 @@ function ruleTestView({ _t: _a, _outcome: _b, _by: _c, ...t }: db.MockRuleTest):
 function orgRulesFor(p: Project, tools: Scan["tools"]): Scan["org_rules"] {
   return (db.scanRules[db.orgOfProject(p.id)] ?? [])
     .filter((r) => r.enabled && tools.includes(r.tool) && (r.project_ids === null || r.project_ids.includes(p.id)))
-    .map((r) => ({ rule_id: r.rule_id, tool: r.tool, version: r.version, sha256: r.sha256 }));
+    .map((r) => ({ rule_id: r.rule_id, tool: r.tool, version: r.version, sha256: r.sha256, scan_rule_id: r.id }));
 }
 
 // ---- v0.4 wave 2: webhooks and Slack ----
