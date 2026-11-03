@@ -63,6 +63,9 @@ type NewScan struct {
 	Kind     string
 	Target   string
 	ImageRef *string
+	// Pulled: the worker pulls ImageRef itself; there is no upload, so
+	// FileSize and SHA256 are unset (NULL).
+	Pulled bool
 }
 
 // ScanCursor positions a newest-first scan list.
@@ -292,6 +295,7 @@ type Repo interface {
 	ComponentRepo     // components.go (v0.4)
 	WebhookRepo       // webhooks.go (v0.4 wave 2)
 	ScanRuleRepo      // scanrules.go (v0.6)
+	RegistryRepo      // registries.go (v0.7 wave 2)
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }

@@ -154,11 +154,20 @@ func (r *Repo) InsertScan(ctx context.Context, s service.NewScan) error {
 	if kind == "" {
 		kind = service.KindSource
 	}
+	// A pulled scan has no upload: its size and checksum stay NULL until the
+	// worker knows them.
+	var (
+		size *int64
+		sum  *string
+	)
+	if !s.Pulled {
+		size, sum = &s.FileSize, &s.SHA256
+	}
 	_, err := r.tx.Exec(ctx, `INSERT INTO scan (id, org_id, project_id, created_by, status, file_name, object_key, file_size, sha256, tools, via_token,
-		kind, target, image_ref)
-		VALUES ($1, $2, $3, $4, 'pending_upload', $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		s.ID, s.OrgID, s.ProjectID, s.CreatedBy, s.FileName, s.ObjectKey, s.FileSize, s.SHA256, s.Tools, s.ViaToken,
-		kind, s.Target, s.ImageRef)
+		kind, target, image_ref, pulled)
+		VALUES ($1, $2, $3, $4, 'pending_upload', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		s.ID, s.OrgID, s.ProjectID, s.CreatedBy, s.FileName, s.ObjectKey, size, sum, s.Tools, s.ViaToken,
+		kind, s.Target, s.ImageRef, s.Pulled)
 	return mapErr(err)
 }
 
@@ -167,7 +176,7 @@ const scanSelect = `SELECT s.id, s.org_id, s.project_id, s.status::text, s.file_
 	coalesce(s.object_key, ''), coalesce(s.sha256, ''), u.id, u.email::text, u.display_name,
 	vt.id, vt.name, vt.prefix::text, s.kind, s.target, s.image_ref,
 	CASE WHEN s.sbom_expires_at > now() THEN s.sbom_key END, s.sbom_size, s.sbom_sha256, s.sbom_components,
-	s.sbom_spdx_key, s.sbom_spdx_size, s.sbom_spdx_sha256, s.history_commits, s.history_truncated, s.org_rules
+	s.sbom_spdx_key, s.sbom_spdx_size, s.sbom_spdx_sha256, s.history_commits, s.history_truncated, s.org_rules, s.pulled
 	FROM scan s JOIN app_user u ON u.id = s.created_by LEFT JOIN api_token vt ON vt.id = s.via_token`
 
 func scanScan(row pgx.CollectableRow) (service.Scan, error) {
@@ -187,7 +196,7 @@ func scanScan(row pgx.CollectableRow) (service.Scan, error) {
 		&s.ErrorCode, &s.Stats, &s.CreatedAt, &s.QueuedAt, &s.StartedAt, &s.FinishedAt,
 		&s.ObjectKey, &s.SHA256, &s.CreatedBy.ID, &s.CreatedBy.Email, &s.CreatedBy.DisplayName, &vtID, &vtName, &vtPrefix,
 		&s.Kind, &s.Target, &s.ImageRef, &sbomKey, &sbomSize, &sbomSum, &sbomComponents, &spdxKey, &spdxSize, &spdxSum,
-		&historyCommits, &historyTruncated, &s.OrgRules)
+		&historyCommits, &historyTruncated, &s.OrgRules, &s.Pulled)
 	if vtID != nil && vtName != nil && vtPrefix != nil {
 		s.ViaToken = &service.TokenRef{ID: *vtID, Name: *vtName, Prefix: *vtPrefix}
 	}

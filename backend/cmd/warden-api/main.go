@@ -156,6 +156,11 @@ func ServiceConfig(c *config.Config) service.Config {
 	return service.Config{
 		Webhooks: service.WebhookConfig{Keys: keys,
 			Checker: &webhook.Checker{Policy: webhook.Policy{AllowHosts: c.Webhook.AllowHosts}}},
+		// TODO(v0.7 wave 2): Checker is the worker's guarded registry client
+		// (the one pulls go through, honouring registry.allow_hosts) once it
+		// lands; until then service.UnreachableChecker answers every test.
+		Registries: service.RegistryConfig{Keys: keys, AllowHosts: c.Registry.AllowHosts,
+			Checker: service.UnreachableChecker{}},
 		UploadMaxBytes:        int64(c.Scan.UploadMaxMB) << 20,
 		ImageUploadMaxBytes:   int64(c.Scan.ImageUploadMaxMB) << 20,
 		HistoryUploadMaxBytes: int64(c.Scan.HistoryUploadMaxMB) << 20,

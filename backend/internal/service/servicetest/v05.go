@@ -18,7 +18,8 @@ func (f *Fake) AuditSince(_ context.Context, q service.AuditCount) (int, time.Ti
 	for k, r := range f.st.Audit {
 		at := f.st.AuditAt[k]
 		if r.OrgID != q.OrgID || r.OrgID != f.org || r.Action != q.Action || !at.After(q.Since) ||
-			(q.ActorID != nil && (r.ActorID == nil || *r.ActorID != *q.ActorID)) {
+			(q.ActorID != nil && (r.ActorID == nil || *r.ActorID != *q.ActorID)) ||
+			(q.TargetID != nil && r.TargetID != *q.TargetID) {
 			continue
 		}
 		n++

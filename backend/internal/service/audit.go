@@ -20,8 +20,8 @@ const auditVerifiesPerHour = 10
 type AuditRepo interface {
 	// LockAuditVerify serializes audit-log checks per org, so the rate limit holds.
 	LockAuditVerify(ctx context.Context, orgID uuid.UUID) error
-	// AuditSince counts the org's entries of q.Action (by q.ActorID, if set)
-	// created after q.Since, and returns the oldest one's time (zero if none).
+	// AuditSince counts the org's entries of q.Action (by q.ActorID and about
+	// q.TargetID, if set) created after q.Since, and returns the oldest one's time (zero if none).
 	AuditSince(ctx context.Context, q AuditCount) (int, time.Time, error)
 	// VerifyAudit recomputes the org's hash chain, like warden-admin audit verify.
 	VerifyAudit(ctx context.Context, orgID uuid.UUID) (AuditChain, error)
@@ -31,7 +31,9 @@ type AuditCount struct {
 	OrgID   uuid.UUID
 	Action  string
 	ActorID *uuid.UUID
-	Since   time.Time
+	// TargetID, if set, counts only entries about that target.
+	TargetID *string
+	Since    time.Time
 }
 
 // AuditChain: Entries is the size of the org's log; FirstBadID the first entry
