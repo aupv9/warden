@@ -30,6 +30,9 @@ export const MESSAGES: Record<string, string> = {
   WEBHOOK_LIMIT: "This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one.",
   SECRETS_KEY_MISSING:
     "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY.",
+  // v0.6: the rule's problems are shown at their lines in the editor (ruleProblems below); this
+  // sentence goes above them.
+  RULE_INVALID: "Warden can't use this rule. Fix the problems shown at their lines, then try again.",
   [NETWORK_ERROR]: "Warden didn't answer. Check your connection and try again.",
   // Client-side codes from the upload (lib/upload.ts).
   UPLOAD_FAILED: "The connection dropped. Your file is fine; try again.",
@@ -114,4 +117,26 @@ export function isToastedActionError(err: unknown): boolean {
   if (!(err instanceof ApiError)) return true;
   if (isMfaRequired(err)) return false;
   return isForbidden(err) || isNotFound(err) || err.code === "RATE_LIMITED" || isServerError(err);
+}
+
+/** v0.6: the problems of a RULE_INVALID error (`metadata.problems`), checked field by field: the
+ *  server's words are shown as text at their line, and anything malformed is dropped. At most
+ *  100, like the editor shows. */
+export function ruleProblems(err: unknown): { line: number | null; column: number | null; message: string }[] {
+  if (!(err instanceof ApiError) || err.code !== "RULE_INVALID") return [];
+  return parseRuleProblems(err.body.metadata?.problems);
+}
+
+export function parseRuleProblems(raw: unknown): { line: number | null; column: number | null; message: string }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { line: number | null; column: number | null; message: string }[] = [];
+  for (const p of raw) {
+    if (!p || typeof p !== "object") continue;
+    const { line, column, message } = p as Record<string, unknown>;
+    if (typeof message !== "string" || message.trim() === "") continue;
+    const pos = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 1_000_000 ? v : null);
+    out.push({ line: pos(line), column: pos(column), message: message.slice(0, 500) });
+    if (out.length >= 100) break;
+  }
+  return out;
 }

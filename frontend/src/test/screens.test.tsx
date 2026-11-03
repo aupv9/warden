@@ -74,8 +74,9 @@ describe("every screen renders with mock data", () => {
     const t = text(await render(`${org()}/projects`));
     expect(t).toContain("Web storefront");
     expect(t).toContain("No scan yet");
-    // WEB: two code issues and (v0.3) Log4Shell from the image scan.
-    expect(t).toMatch(/3 Critical/);
+    // WEB: two code issues, (v0.3) Log4Shell from the image scan and (v0.4 wave 2) the AWS key
+    // found in git history. (This used to match "23 Critical", the org total before it.)
+    expect(t).toMatch(/Web storefront WEB Owner 4 Critical/);
     expect(t).toContain("Exceptions to review");
   });
 

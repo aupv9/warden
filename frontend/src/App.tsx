@@ -35,6 +35,8 @@ const AuditLogPage = lazyRoute(() => import("./routes/AuditLog"), "AuditLogPage"
 const OrgSettingsPage = lazyRoute(() => import("./routes/OrgSettings"), "OrgSettingsPage");
 const PreferencesPage = lazyRoute(() => import("./routes/Preferences"), "PreferencesPage");
 const IntegrationsPage = lazyRoute(() => import("./routes/Integrations"), "IntegrationsPage");
+const ScanRulesPage = lazyRoute(() => import("./routes/ScanRules"), "ScanRulesPage");
+const ScanRulePage = lazyRoute(() => import("./routes/ScanRule"), "ScanRulePage");
 
 export function createQueryClient(): QueryClient {
   const qc: QueryClient = new QueryClient({
@@ -55,6 +57,8 @@ export function createQueryClient(): QueryClient {
         // Errors with no better place go to a toast (DESIGN.md "API error.code"); 403 also
         // refetches so the page shows only what the role allows.
         if (!isToastedActionError(err)) return;
+        // v0.6: a mutation whose screen shows every error in place (the rule test dialog).
+        if (mutation.meta?.inlineErrors) return;
         const rateLimited = err instanceof ApiError && err.code === "RATE_LIMITED";
         // A mutation may word a code itself (meta.errorMessages), e.g. the webhook test's 429.
         const overrides = (mutation.meta?.errorMessages ?? undefined) as ErrorOverrides | undefined;
@@ -114,6 +118,10 @@ export const appRoutes: RouteObject[] = [
           { path: "members", element: <MembersPage /> },
           { path: "audit-log", element: <AuditLogPage /> },
           { path: "settings", element: <OrgSettingsPage /> },
+          // v0.6: the org's own Opengrep and Gitleaks rules; `new` and a rule's page (with its
+          // history) share one route.
+          { path: "settings/scan-rules", element: <ScanRulesPage /> },
+          { path: "settings/scan-rules/:ruleId", element: <ScanRulePage /> },
           // v0.4 wave 2: webhooks and Slack (org admins and security leads).
           { path: "integrations", element: <IntegrationsPage /> },
           // Notification preferences are the user's own (they apply in every org); the page

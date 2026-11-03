@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Link, useSearchParams } from "react-router";
 import { BAD_DOWNLOAD_URL, IN_PROGRESS, SBOM_GONE, useCancelScan, useScan, useScans, useSbomDownload } from "../api/hooks/scans";
+import { useScanRules } from "../api/hooks/scanRules";
 import { flattenPages } from "../api/paging";
 import type { Limits, SbomFormat, SbomFormatParam, Scan, UploadKind } from "../api/types";
 import { DotMark, Pill, ScanStatusMark, ToolStatusMark } from "../components/Badges";
@@ -24,6 +25,7 @@ import { commitsText, HISTORY_TARGET } from "../lib/history";
 import { isImageTarget } from "../lib/intel";
 import { isRejected, scanErrorMessages } from "../lib/scanErrors";
 import { can } from "../lib/permissions";
+import { ranRules, SCAN_RULE_TOOL_LABELS } from "../lib/scanRules";
 import { showToast } from "../lib/toast";
 import { NewScan, useLimits } from "./NewScan";
 import { useProjectCtx } from "./projectCtx";
@@ -431,6 +433,7 @@ function ScanPanel({
             findings in total
           </p>
         )}
+        {s.org_rules.length > 0 && !rejected && <OrgRulesRan scan={s} />}
         {s.sbom && (s.status === "completed" || s.status === "partial") && <SbomRow scan={s} sbom={s.sbom} />}
         {rejected && <p className="muted">Nothing was scanned and no issues changed.</p>}
         {history && (rejected || s.status === "failed" || s.status === "cancelled") && (
@@ -462,6 +465,40 @@ function ScanPanel({
         </div>
       </div>
     </Card>
+  );
+}
+
+/** v0.6: the org's own rules this scan ran, at the version it ran. A rule that still exists links
+ *  to its page (by id); a deleted one is its rule id as text. Only these rules' issues can be
+ *  fixed by this scan. */
+function OrgRulesRan({ scan: s }: { scan: Scan }) {
+  const { orgId } = useOrgCtx();
+  const rules = useScanRules(orgId);
+  const ran = ranRules(s.org_rules, rules.data?.items);
+  return (
+    <div className="scan-org-rules small">
+      <strong>
+        Org rules · {s.org_rules.length}
+      </strong>
+      <ul aria-label="Org rules this scan ran">
+        {ran.map(({ ref, rule }) => (
+          <li key={`${ref.tool}:${ref.rule_id}`}>
+            {rule ? (
+              <Link to={`/orgs/${orgId}/settings/scan-rules/${rule.id}`}>{rule.name}</Link>
+            ) : (
+              <span className="muted">{rules.data ? "Deleted rule" : "Rule"}</span>
+            )}{" "}
+            <span className="mono faint">{ref.rule_id}</span>
+            <span className="muted">
+              {" "}
+              · {SCAN_RULE_TOOL_LABELS[ref.tool] ?? ref.tool} · version {ref.version}
+              {rule && rule.version !== ref.version && ` (now ${rule.version})`}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <span className="faint">Issues from an org rule are fixed only by scans that run it.</span>
+    </div>
   );
 }
 
