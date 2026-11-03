@@ -1,0 +1,152 @@
+# An example production install (values only; the Secret is yours):
+#
+#   kubectl create namespace warden
+#   kubectl label namespace warden pod-security.kubernetes.io/enforce=restricted
+#   kubectl -n warden create secret generic warden-secrets \
+#     --from-literal=WARDEN_DATABASE__DSN='postgres://warden_app:…@db.internal:5432/warden?sslmode=verify-full' \
+#     --from-literal=WARDEN_MIGRATE__DSN='postgres://warden_owner:…@db.internal:5432/warden?sslmode=verify-full' \
+#     --from-literal=WARDEN_STORAGE__ACCESS_KEY=… --from-literal=WARDEN_STORAGE__SECRET_KEY=… \
+#     --from-literal=WARDEN_SECRETS__KEY="k1:$(openssl rand -base64 32)" \
+#     --from-literal=WARDEN_SCAN__HMAC_KEY="$(openssl rand -hex 32)" \
+#     --from-literal=WARDEN_SMTP__PASSWORD=…
+#   helm install warden deploy/helm/warden -n warden -f values-prod.yaml
+#
+# Every digest below is a placeholder: use the release's Warden image digest
+# and your own registry's scanner and mirror images.
+existingSecret: warden-secrets
+existingSecretOptional:
+  smtpPassword: true
+
+image:
+  repository: ghcr.io/aupv9/warden
+  digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+scannerImages:
+  # Built from scanners/ and pushed to your registry.
+  gitleaks: registry.example.com/warden/gitleaks:v8.30.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  opengrep: registry.example.com/warden/opengrep:v1.30.2@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  # trivy and checkov: the chart's defaults (scanners/images.lock.json).
+
+domain: warden.example.com
+
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    certManager:
+      clusterIssuer: letsencrypt
+
+oidc:
+  issuer: https://sso.example.com/realms/warden
+  audience: warden-api
+  consoleUrl: https://sso.example.com/admin/warden/console/
+
+storage:
+  endpoint: https://s3.eu-west-1.amazonaws.com
+  bucket: example-warden-uploads
+
+smtp:
+  host: smtp.example.com
+  port: 587
+  from: warden@example.com
+  username: warden
+
+scan:
+  timeout: 30m
+  slotsPerNode: 4
+
+api:
+  replicas: 3
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels: { app.kubernetes.io/name: warden, app.kubernetes.io/component: api }
+
+worker:
+  replicas: 2
+  # A node pool for scanning, with nothing else of value on it.
+  nodeSelector:
+    example.com/pool: warden-scan
+  tolerations:
+    - { key: example.com/pool, operator: Equal, value: warden-scan, effect: NoSchedule }
+  scratch:
+    sizeLimit: 24Gi
+
+sandbox:
+  namespace: warden-sandbox
+  runtimeClassName: gvisor
+  resourceQuota:
+    hard:
+      pods: "40"
+      requests.cpu: "16"
+      limits.cpu: "24"
+      requests.memory: 48Gi
+      limits.memory: 64Gi
+      requests.ephemeral-storage: 64Gi
+      limits.ephemeral-storage: 96Gi
+
+mirror:
+  storage:
+    # Filestore / any NFS export, owned by uid 65532.
+    type: nfs
+    nfs:
+      server: 10.20.0.2
+      path: /warden_mirror
+    mountOptions: [nfsvers=4.1, hard]
+    size: 20Gi
+  cronjob:
+    image: registry.example.com/warden/mirror@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+    # An internal copy of the Trivy DB (oras copy ghcr.io/aquasecurity/trivy-db:2 …).
+    trivyDBRepositories: [registry.example.com/mirror/trivy-db:2]
+
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: monitoring }
+  egress:
+    dns:
+      to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    database:
+      to: [{ ipBlock: { cidr: 10.30.0.5/32 } }]
+      ports: [{ port: 5432, protocol: TCP }]
+    storage:
+      to: []
+      ports: [{ port: 443, protocol: TCP }]
+    oidc:
+      to: []
+      ports: [{ port: 443, protocol: TCP }]
+    smtp:
+      to: []
+      ports: [{ port: 587, protocol: TCP }]
+    kubeAPI:
+      to: [{ ipBlock: { cidr: 172.16.0.2/32 } }]
+      ports: [{ port: 443, protocol: TCP }]
+    webhooks:
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+      ports: [{ port: 443, protocol: TCP }]
+    mirror:
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+        # The internal registry holding the Trivy DB copy.
+        - ipBlock: { cidr: 10.40.0.10/32 }
+      ports: [{ port: 443, protocol: TCP }]
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus
