@@ -154,6 +154,37 @@ jobs:
           sudo install -d -o 65532 -g 65532 -m 755 "$SMOKE_MIRROR"
           ./scripts/compose-smoke.sh warden/api:ci
 
+  # The Helm chart (deploy/helm): lint, renders that must pass or be refused,
+  # kubeconform, and the security properties of every render.
+  helm:
+    runs-on: ubuntu-24.04
+    env:
+      HELM_VERSION: v3.22.1
+      HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+      YQ_VERSION: v4.54.1
+      YQ_SHA256: 8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Install helm, kubeconform, yq (pinned, checksummed)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"; mkdir -p "$bin"; cd "$RUNNER_TEMP"
+          curl -fsSL -o helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz --strip-components=1 -C "$bin" linux-amd64/helm
+          curl -fsSL -o kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz -C "$bin" kubeconform
+          curl -fsSL -o "$bin/yq" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  $bin/yq" | sha256sum -c -
+          chmod 0755 "$bin/yq"
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Chart checks
+        run: ./deploy/helm/test/run.sh
+
   # Warden scans itself with the production sandbox (gVisor). Any Critical or
   # un-baselined High blocks every run, so a finding surfaces on its pull request
   # instead of at release time (v0.1.0-alpha.1 was stopped at the tag by one).
