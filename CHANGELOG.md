@@ -11,6 +11,10 @@ All notable changes to Warden are listed here. The format follows
 - An Opengrep result whose rule id was only Warden's rules-directory prefix (`data.rules.`)
   became a finding with no rule id and no title (found by `FuzzParse` during the
   v0.5.0-alpha.2 release, whose run stopped there; nothing was published for that tag).
+- An SPDX SBOM with a key that differs from `documentNamespace`, `name`, `creationInfo` or
+  `comment` only in case (`docUmentNamespace`) kept it next to the value Warden stamped, so a
+  reader that matches keys without case could take the forged one; such keys are now removed
+  (found by `FuzzStampSPDX`).
 
 ## [0.6.0-alpha.1] - 2026-11-03
 
