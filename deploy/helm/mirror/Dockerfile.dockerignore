@@ -1,0 +1,7 @@
+# Build context for deploy/helm/mirror/Dockerfile (the repository root): only
+# what the image copies.
+*
+!scripts/sync-mirror.sh
+!scanners/images.lock.json
+!scanners/gitleaks/gitleaks.toml
+!rules/opengrep

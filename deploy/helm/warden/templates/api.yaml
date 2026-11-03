@@ -1,0 +1,132 @@
+{{- $c := dict "ctx" . "component" "api" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "warden.fullname" . }}-api
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "warden.selectorLabels" $c | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "warden.componentLabels" $c | nindent 8 }}
+      annotations:
+        checksum/env: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "warden.fullname" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- include "warden.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Long enough for in-flight requests (server.shutdown_timeout is 20s).
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          image: {{ include "warden.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/warden-api"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "warden.fullname" . }}-env
+          env:
+            - name: WARDEN_SERVER__HOST
+              value: 0.0.0.0
+            - name: WARDEN_SERVER__PORT
+              value: "8000"
+            {{- include "warden.secretEnv" $c | trim | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: admin
+              containerPort: {{ .Values.admin.port }}
+              protocol: TCP
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Database and schema: not ready on an older schema until migrate has run.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            {{- include "warden.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/warden
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- include "warden.secretVolume" $c | nindent 8 }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# The web UI and API. Only this port is routed by the Ingress / HTTPRoute.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "warden.fullname" . }}-api
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "warden.selectorLabels" $c | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- if .Values.api.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "warden.fullname" . }}-api
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.api.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "warden.selectorLabels" $c | nindent 6 }}
+{{- end }}

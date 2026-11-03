@@ -1,0 +1,20 @@
+apiVersion: v2
+name: warden
+description: >-
+  Warden, a self-hosted security scanning service: API and web UI, the scan
+  worker with a Kubernetes (gVisor) sandbox, schema migrations and the offline
+  scanner mirror.
+type: application
+# The chart is released with Warden: the release sets both from the tag
+# (helm package --version X.Y.Z --app-version X.Y.Z).
+version: 0.6.0
+appVersion: "0.6.0"
+# 1.29: native sidecars (scanner Pods may use one for warden-sandbox-io) and
+# the oldest release the rendered manifests are validated against.
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/aupv9/warden
+sources:
+  - https://github.com/aupv9/warden
+keywords: [security, sast, sca, secrets, gvisor]
+annotations:
+  artifacthub.io/license: MIT

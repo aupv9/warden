@@ -1,0 +1,63 @@
+{{- $st := .Values.mirror.storage }}
+{{- if or (eq $st.type "nfs") (eq $st.type "csi") }}
+{{- $c := dict "ctx" . "component" "mirror" }}
+{{- $sides := list
+  (dict "suffix" "mirror" "namespace" .Release.Namespace "claim" (include "warden.mirrorClaim" .) "mode" $st.accessMode "readOnly" false)
+  (dict "suffix" "mirror-sandbox" "namespace" .Values.sandbox.namespace "claim" (include "warden.sandboxMirrorClaim" .) "mode" $st.sandboxAccessMode "readOnly" true) }}
+{{- range $s := $sides }}
+---
+# The mirror's files, statically bound to one claim in {{ $s.namespace }}
+# (claimRef): read-write for the CronJob and the worker in the release
+# namespace, read-only at the volume itself for the scanner Pods.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "warden.clusterName" $ }}-{{ $s.suffix }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ $st.size }}
+  accessModes: [{{ $s.mode }}]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  volumeMode: Filesystem
+  {{- with $st.mountOptions }}
+  mountOptions:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  claimRef:
+    namespace: {{ $s.namespace }}
+    name: {{ $s.claim }}
+  {{- if eq $st.type "nfs" }}
+  nfs:
+    server: {{ $st.nfs.server | quote }}
+    path: {{ $st.nfs.path | quote }}
+    readOnly: {{ $s.readOnly }}
+  {{- else }}
+  csi:
+    driver: {{ $st.csi.driver | quote }}
+    volumeHandle: {{ $st.csi.volumeHandle | quote }}
+    readOnly: {{ $s.readOnly }}
+    {{- with $st.csi.volumeAttributes }}
+    volumeAttributes:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $s.claim }}
+  namespace: {{ $s.namespace }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  accessModes: [{{ $s.mode }}]
+  storageClassName: ""
+  volumeName: {{ include "warden.clusterName" $ }}-{{ $s.suffix }}
+  resources:
+    requests:
+      storage: {{ $st.size }}
+{{- end }}
+{{- end }}

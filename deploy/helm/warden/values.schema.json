@@ -1,0 +1,469 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Warden Helm chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "digestRef": {
+      "description": "A registry reference pinned by @sha256 digest (a tag may precede the digest). Empty only where the chart then refuses to render.",
+      "type": "string",
+      "pattern": "^([a-z0-9.\\-]+(:[0-9]+)?(/[a-z0-9._\\-]+)+(:[A-Za-z0-9_][A-Za-z0-9._\\-]{0,127})?@sha256:[0-9a-f]{64})?$"
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+h)?([0-9]+m)?([0-9]+s)?$",
+      "minLength": 2
+    },
+    "quantity": { "type": ["string", "number"] },
+    "quantities": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/quantity" }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "$ref": "#/definitions/quantities" },
+        "limits": { "$ref": "#/definitions/quantities" }
+      }
+    },
+    "scheduling": {
+      "nodeSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+      "tolerations": { "type": "array", "items": { "type": "object" } },
+      "affinity": { "type": "object" },
+      "topologySpreadConstraints": { "type": "array", "items": { "type": "object" } }
+    },
+    "stringMap": { "type": "object", "additionalProperties": { "type": "string" } },
+    "httpsUrl": { "type": "string", "pattern": "^(https://.+)?$" },
+    "peers": { "type": "array", "items": { "type": "object" } },
+    "egressRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ports"],
+      "properties": {
+        "to": { "$ref": "#/definitions/peers" },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["port"],
+            "properties": {
+              "port": { "type": ["integer", "string"] },
+              "endPort": { "type": "integer" },
+              "protocol": { "enum": ["TCP", "UDP", "SCTP"] }
+            }
+          }
+        }
+      }
+    },
+    "role": { "enum": ["org_admin", "security_lead", "member"] }
+  },
+  "properties": {
+    "existingSecret": {
+      "description": "Secret in the release namespace with Warden's keys (values.yaml lists them). The chart never creates secret values.",
+      "type": "string",
+      "pattern": "^([a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$"
+    },
+    "existingSecretOptional": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "smtpPassword": { "type": "boolean" },
+        "secretsOldKeys": { "type": "boolean" }
+      }
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "commonLabels": { "$ref": "#/definitions/stringMap" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9.\\-]+(:[0-9]+)?(/[a-z0-9._\\-]+)+$",
+          "description": "Registry and repository, without tag or digest."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[0-9a-f]{64})?$",
+          "description": "Required: tags are not accepted."
+        },
+        "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "scannerImages": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gitleaks": { "$ref": "#/definitions/digestRef" },
+        "opengrep": { "$ref": "#/definitions/digestRef" },
+        "trivy": { "$ref": "#/definitions/digestRef" },
+        "checkov": { "$ref": "#/definitions/digestRef" }
+      }
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+)?$",
+      "description": "Public host name, no scheme or path."
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "$ref": "#/definitions/stringMap" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": { "type": "string" },
+            "certManager": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clusterIssuer": { "type": "string" },
+                "issuer": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "parentRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "namespace": { "type": "string" },
+              "sectionName": { "type": "string" },
+              "port": { "type": "integer" },
+              "group": { "type": "string" },
+              "kind": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "annotations": { "$ref": "#/definitions/stringMap" }
+      }
+    },
+    "logLevel": { "enum": ["debug", "info", "warn", "error"] },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuer": { "$ref": "#/definitions/httpsUrl" },
+        "audience": { "type": "string", "minLength": 1 },
+        "jwksUrl": { "$ref": "#/definitions/httpsUrl" },
+        "algorithms": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["RS256", "ES256"] }
+        },
+        "requireMfaRoles": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/definitions/role" } },
+        "mfaAmr": { "type": "array", "items": { "type": "string", "pattern": "^[^,]+$" } },
+        "mfaAcr": { "type": "array", "items": { "type": "string", "pattern": "^[^,]+$" } },
+        "consoleUrl": { "type": "string", "pattern": "^(https?://.+)?$" }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "oidcClientId": { "type": "string", "minLength": 1 },
+        "oidcScope": { "type": "string", "minLength": 1 },
+        "oidcAudience": { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^(https://.+|http://[A-Za-z0-9_-]+(:[0-9]+)?/?)?$",
+          "description": "https, or http to a host name without a dot (an in-cluster Service)."
+        },
+        "publicEndpoint": { "$ref": "#/definitions/httpsUrl" },
+        "bucket": { "type": "string", "minLength": 3 }
+      }
+    },
+    "smtp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "from": { "type": "string" },
+        "username": { "type": "string" },
+        "implicitTls": { "type": "boolean" },
+        "digestHour": { "type": "integer", "minimum": 0, "maximum": 23 }
+      }
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readRetention": { "$ref": "#/definitions/duration" },
+        "unreadRetention": { "$ref": "#/definitions/duration" }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failureLimit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout": { "$ref": "#/definitions/duration" },
+        "slotsPerNode": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "extraEnv": {
+      "type": "object",
+      "propertyNames": { "pattern": "^WARDEN_[A-Z0-9_]+$" },
+      "additionalProperties": { "type": "string" }
+    },
+    "admin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "not": { "const": 8000 } }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runAsUser": { "type": "integer", "minimum": 1 },
+        "runAsGroup": { "type": "integer", "minimum": 1 },
+        "fsGroup": { "type": "integer", "minimum": 1 },
+        "fsGroupChangePolicy": { "enum": ["OnRootMismatch", "Always"] },
+        "supplementalGroups": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "podAnnotations": { "$ref": "#/definitions/stringMap" },
+        "nodeSelector": { "$ref": "#/definitions/scheduling/nodeSelector" },
+        "tolerations": { "$ref": "#/definitions/scheduling/tolerations" },
+        "affinity": { "$ref": "#/definitions/scheduling/affinity" },
+        "topologySpreadConstraints": { "$ref": "#/definitions/scheduling/topologySpreadConstraints" },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+        },
+        "pdb": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "maxUnavailable": { "type": ["integer", "string"] }
+          }
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "scratch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sizeLimit"],
+          "properties": { "sizeLimit": { "$ref": "#/definitions/quantity" } }
+        },
+        "terminationGracePeriodSeconds": { "type": ["integer", "null"], "minimum": 660 },
+        "podAnnotations": { "$ref": "#/definitions/stringMap" },
+        "nodeSelector": { "$ref": "#/definitions/scheduling/nodeSelector" },
+        "tolerations": { "$ref": "#/definitions/scheduling/tolerations" },
+        "affinity": { "$ref": "#/definitions/scheduling/affinity" },
+        "topologySpreadConstraints": { "$ref": "#/definitions/scheduling/topologySpreadConstraints" }
+      }
+    },
+    "migrate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resources": { "$ref": "#/definitions/resources" },
+        "backoffLimit": { "type": "integer", "minimum": 0 },
+        "activeDeadlineSeconds": { "type": "integer", "minimum": 60 },
+        "nodeSelector": { "$ref": "#/definitions/scheduling/nodeSelector" },
+        "tolerations": { "$ref": "#/definitions/scheduling/tolerations" },
+        "affinity": { "$ref": "#/definitions/scheduling/affinity" }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "createNamespace": { "type": "boolean" },
+        "podSecurityVersion": { "type": "string", "pattern": "^(latest|v1\\.[0-9]+)$" },
+        "runtimeClassName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" },
+        "readRuntimeClass": { "type": "boolean" },
+        "ioImage": { "$ref": "#/definitions/digestRef" },
+        "resourceQuota": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "hard": { "$ref": "#/definitions/quantities" }
+          }
+        },
+        "limitRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "default": { "$ref": "#/definitions/quantities" },
+            "defaultRequest": { "$ref": "#/definitions/quantities" },
+            "max": { "$ref": "#/definitions/quantities" }
+          }
+        }
+      }
+    },
+    "mirror": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["existingClaims", "nfs", "csi"] },
+            "claimName": { "type": "string" },
+            "accessMode": {
+              "const": "ReadWriteMany",
+              "description": "The CronJob writes while the worker reads, possibly on other nodes."
+            },
+            "sandboxClaimName": { "type": "string", "minLength": 1 },
+            "sandboxAccessMode": { "enum": ["ReadOnlyMany", "ReadWriteMany"] },
+            "size": { "$ref": "#/definitions/quantity" },
+            "mountOptions": { "type": "array", "items": { "type": "string" } },
+            "nfs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "server": { "type": "string" },
+                "path": { "type": "string" }
+              }
+            },
+            "csi": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "driver": { "type": "string" },
+                "volumeHandle": { "type": "string" },
+                "volumeAttributes": { "$ref": "#/definitions/stringMap" }
+              }
+            }
+          }
+        },
+        "cronjob": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": { "$ref": "#/definitions/digestRef" },
+            "schedule": { "type": "string", "minLength": 9 },
+            "timeZone": { "type": "string", "minLength": 1 },
+            "trivyImage": { "$ref": "#/definitions/digestRef" },
+            "trivyDBRepositories": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[a-z0-9.\\-]+(:[0-9]+)?(/[a-z0-9._\\-]+)+(:[A-Za-z0-9_.\\-]+)?$" }
+            },
+            "feeds": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kevUrl": { "$ref": "#/definitions/httpsUrl" },
+                "kevFallbackUrl": { "$ref": "#/definitions/httpsUrl" },
+                "epssUrl": { "$ref": "#/definitions/httpsUrl" },
+                "osvUrl": { "$ref": "#/definitions/httpsUrl" },
+                "osvEcosystems": { "type": "string", "pattern": "^[A-Za-z0-9. ]*$" }
+              }
+            },
+            "activeDeadlineSeconds": { "type": "integer", "minimum": 300 },
+            "backoffLimit": { "type": "integer", "minimum": 0 },
+            "resources": { "$ref": "#/definitions/resources" },
+            "nodeSelector": { "$ref": "#/definitions/scheduling/nodeSelector" },
+            "tolerations": { "$ref": "#/definitions/scheduling/tolerations" },
+            "affinity": { "$ref": "#/definitions/scheduling/affinity" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressFrom": { "$ref": "#/definitions/peers" },
+        "metricsFrom": { "$ref": "#/definitions/peers" },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dns", "database", "storage", "oidc", "smtp", "kubeAPI", "webhooks", "mirror"],
+          "properties": {
+            "dns": { "$ref": "#/definitions/egressRule" },
+            "database": { "$ref": "#/definitions/egressRule" },
+            "storage": { "$ref": "#/definitions/egressRule" },
+            "oidc": { "$ref": "#/definitions/egressRule" },
+            "smtp": { "$ref": "#/definitions/egressRule" },
+            "kubeAPI": { "$ref": "#/definitions/egressRule" },
+            "webhooks": { "$ref": "#/definitions/egressRule" },
+            "mirror": { "$ref": "#/definitions/egressRule" }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "scrapeTimeout": { "type": "string" },
+        "labels": { "$ref": "#/definitions/stringMap" }
+      }
+    }
+  }
+}
