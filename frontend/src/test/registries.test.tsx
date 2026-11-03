@@ -324,3 +324,59 @@ describe("v0.7 wave 2: scans of pulled images", () => {
     expect(t).not.toContain("scans/pull");
   });
 });
+
+describe("v0.7 wave 2: secrets in image layers", () => {
+  it("issue page: Found in image layer <index> (<short digest>), the later layers, the rotate sentence; the digest is text with Copy", async () => {
+    const issue = db.IMAGE_LAYER_ISSUE;
+    const digest = issue.image_layer!.digest;
+    const { html } = await render(`${org()}/issues/${issue.id}`);
+    const t = text(html);
+    expect(t).toContain(`Found in image layer 4 (${digest.slice(7, 19)})`);
+    expect(t).toContain("Layer 4, counting the base layer as 0");
+    expect(t).toContain("app/.env:3");
+    expect(t).toContain("in ghcr.io/acme/api");
+    expect(t).toContain("It is also in 1 later layer. This is the lowest one.");
+    expect(t).toContain("Deleting the file in a later layer doesn't remove it from the image");
+    // The full digest is in the accessible name and the Copy button; never a link.
+    expect(t).toContain(digest);
+    expect(t).toContain("Copy digest");
+    expect(html).not.toMatch(new RegExp(`href="[^"]*${digest.slice(7, 19)}`));
+    expect(html).not.toMatch(/href="[^"]*sha256/);
+    // How to fix falls back to the same sentence; the snippet stays masked.
+    expect(t).toMatch(/How to fix.*Rotate this secret\. Deleting the file in a later layer/);
+    expect(t).toContain("AWS_ACCESS_KEY_ID=" + "AKIA" + "****");
+  });
+
+  it("the base layer, one layer only: no later-layers note", async () => {
+    const issue = db.BASE_LAYER_ISSUE;
+    const t = text((await render(`${org()}/issues/${issue.id}`)).html);
+    expect(t).toContain("Found in image layer 0");
+    expect(t).toContain("The base layer");
+    expect(t).not.toContain("later layer.");
+    expect(t).not.toContain("later layers.");
+  });
+
+  it("hostile digests are text, shown whole, never cut or linked; issues without a layer have no card", async () => {
+    const issue = db.IMAGE_LAYER_ISSUE;
+    const saved = issue.image_layer;
+    issue.image_layer = { digest: '"><img src=x onerror=alert(1)>javascript:alert(1)', index: 2, count: 1 };
+    try {
+      const { html } = await render(`${org()}/issues/${issue.id}`);
+      expect(html).not.toContain("<img");
+      expect(html).not.toMatch(/href="javascript:/);
+      expect(text(html)).toContain("Found in image layer 2 (&quot;&gt;&lt;img src=x onerror=alert(1)&gt;javascript:alert(1))".replace(/&quot;/g, '"'));
+    } finally {
+      issue.image_layer = saved;
+    }
+    const plain = db.issues.find((i) => !i.image_layer && i.tool === "gitleaks" && i.target === "")!;
+    expect(text((await render(`${org()}/issues/${plain.id}`)).html)).not.toContain("Found in image layer");
+  });
+
+  it("mock API: image_layer is on the issue, not on list rows", async () => {
+    const one = await call("GET", `/orgs/${db.ORG_ID}/issues/${db.IMAGE_LAYER_ISSUE.id}`);
+    expect(one.json.data).toMatchObject({ image_layer: { index: 4, count: 2 } });
+    const list = await call("GET", `/orgs/${db.ORG_ID}/issues?target=ghcr.io%2Facme%2Fapi&tool=gitleaks`);
+    expect(list.json.data!.items!.map((i) => i.title)).toEqual(expect.arrayContaining(["AWS access key in image layer", "Slack bot token in image layer"]));
+    expect(list.json.data!.items![0]).not.toHaveProperty("image_layer");
+  });
+});
