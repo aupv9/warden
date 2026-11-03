@@ -27,5 +27,9 @@ DO $$ BEGIN
     -- appended: what a past scan ran stays readable (00014_scan_rules.sql).
     REVOKE DELETE, TRUNCATE ON scan_rule FROM warden_app;
     REVOKE UPDATE, DELETE, TRUNCATE ON scan_rule_version FROM warden_app;
+    -- A registry credential's host, org and creator are fixed: the app may
+    -- change the credential itself and record its last use (00015_registry_pulls.sql).
+    REVOKE UPDATE, TRUNCATE ON registry_credential FROM warden_app;
+    GRANT UPDATE (username, password_enc, key_id, updated_at, last_used_at, last_error) ON registry_credential TO warden_app;
   END IF;
 END $$;

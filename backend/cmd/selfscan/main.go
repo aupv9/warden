@@ -5,6 +5,7 @@
 //	go -C backend run ./cmd/selfscan -root .. -fail-on high
 //	go -C backend run ./cmd/selfscan -root .. -zip sample.zip   # push any archive through
 //	go -C backend run ./cmd/selfscan -root .. -bundle repo.bundle   # a history scan: Gitleaks over every commit
+//	go -C backend run ./cmd/selfscan -root .. -image image.tar      # an image scan: Trivy, Gitleaks over the layers
 package main
 
 import (
@@ -24,6 +25,8 @@ import (
 	"github.com/aupv9/warden/backend/internal/pack"
 	"github.com/aupv9/warden/backend/internal/scan/bundlecheck"
 	"github.com/aupv9/warden/backend/internal/scan/gate"
+	"github.com/aupv9/warden/backend/internal/scan/imagecheck"
+	"github.com/aupv9/warden/backend/internal/scan/layerscan"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
@@ -46,6 +49,9 @@ type options struct {
 	// bundlePath: a history scan of this git bundle (Gitleaks only).
 	bundlePath string
 	maxCommits int
+	// imagePath: an image scan of this docker save tarball (Trivy, and
+	// Gitleaks over the layers).
+	imagePath string
 }
 
 func run() (int, error) {
@@ -61,7 +67,10 @@ func run() (int, error) {
 	flag.StringVar(&o.zipPath, "zip", "", "scan this archive instead of the Warden repo")
 	flag.StringVar(&o.bundlePath, "bundle", "", "history scan of this git bundle (Gitleaks in git mode) instead of the Warden repo")
 	flag.IntVar(&o.maxCommits, "max-commits", historyMaxCommits, "with -bundle: the newest commits Gitleaks reads (scan.history_max_commits)")
+	flag.StringVar(&o.imagePath, "image", "", "image scan of this docker save tarball (Trivy, Gitleaks over the layers) instead of the Warden repo")
 	flag.Parse()
+	toolsSet := false
+	flag.Visit(func(f *flag.Flag) { toolsSet = toolsSet || f.Name == "tools" })
 
 	failOn, err := severity.Parse(o.failOn)
 	if err != nil {
@@ -89,11 +98,23 @@ func run() (int, error) {
 		}
 		tools = "gitleaks"
 	}
+	if o.imagePath != "" {
+		if o.zipPath != "" || o.bundlePath != "" {
+			return 2, fmt.Errorf("-image with -zip or -bundle: give one")
+		}
+		if !toolsSet {
+			tools = strings.Join(sandbox.ImageToolNames, ",")
+		}
+	}
 	for _, t := range strings.Split(tools, ",") {
 		if t == "" {
 			continue
 		}
-		if _, ok := sandbox.Tools[t]; !ok {
+		_, ok := sandbox.Tools[t]
+		if o.imagePath != "" {
+			_, ok = sandbox.ImageTool(t, sandbox.ImageLimits{})
+		}
+		if !ok {
 			return 2, fmt.Errorf("unknown tool %q", t)
 		}
 		o.tools = append(o.tools, t)
@@ -135,7 +156,15 @@ func run() (int, error) {
 
 func scan(o options, failOn severity.Severity, images map[string]string, scanID, scanDir string) (int, error) {
 	specs := sandbox.Tools
-	if o.bundlePath != "" {
+	if o.imagePath != "" {
+		if err := prepareImage(o.imagePath, scanDir); err != nil {
+			return 1, err
+		}
+		specs = map[string]sandbox.ToolSpec{}
+		for _, t := range o.tools {
+			specs[t], _ = sandbox.ImageTool(t, sandbox.ImageLimits{MaxBytes: imageMaxBytes, ScanTimeout: 30 * time.Minute})
+		}
+	} else if o.bundlePath != "" {
 		if err := prepareBundle(o.bundlePath, scanDir); err != nil {
 			return 1, err
 		}
@@ -207,7 +236,17 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 				return 2, err
 			}
 		}
-		inputs = append(inputs, gate.Input{Tool: r.Tool, File: out})
+		in := gate.Input{Tool: r.Tool, File: out}
+		if o.imagePath != "" && r.Tool == "gitleaks" {
+			rep, err := readLayers(r.Artifacts[sandbox.ArtifactLayers])
+			if err != nil {
+				return 2, err
+			}
+			fmt.Printf("==> %d layers; %d files skipped, %d whiteouts, %d entries not written\n",
+				len(rep.Layers), rep.Skipped, rep.Whiteouts, rep.Unsafe)
+			in.ImageLayers = rep.Layers
+		}
+		inputs = append(inputs, in)
 	}
 
 	code := 1
@@ -215,7 +254,7 @@ func scan(o options, failOn severity.Severity, images map[string]string, scanID,
 		if code, err = gate.Run(gate.Options{
 			Inputs: inputs, FailOn: failOn, Baseline: o.baseline,
 			SourceRoot: filepath.Join(scanDir, "src"), JSONOut: filepath.Join(o.reports, "findings.json"),
-			History: o.bundlePath != "",
+			History: o.bundlePath != "", ImageTarget: "selfscan/image",
 		}, os.Stdout); err != nil {
 			return 2, err
 		}
@@ -232,6 +271,48 @@ const (
 	historyMaxBytes   = 1024 << 20
 	historyMaxCommits = 50_000 // the -max-commits default
 )
+
+// imageMaxBytes is the server's default scan.image_upload_max_mb.
+const imageMaxBytes = 2048 << 20
+
+// prepareImage checks the tarball as the worker does (imagecheck: never
+// extracted here; Gitleaks unpacks the layers in its sandbox) and mounts it
+// read-only at src/image.tar.
+func prepareImage(p, scanDir string) error {
+	r, err := imagecheck.Check(p, imagecheck.Limits{MaxBytes: imageMaxBytes})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("==> image (%s layout): %d layers\n", r.Layout, r.Layers)
+	src := filepath.Join(scanDir, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		return err
+	}
+	dest := filepath.Join(src, "image.tar")
+	if err := copyFile(p, dest); err != nil {
+		return err
+	}
+	if err := os.Chmod(dest, 0o444); err != nil {
+		return err
+	}
+	return os.Chmod(src, 0o555)
+}
+
+// readLayers reads Gitleaks' layer report of an image scan.
+func readLayers(p string) (*layerscan.Report, error) {
+	if p == "" {
+		return nil, fmt.Errorf("gitleaks wrote no layer report")
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var rep layerscan.Report
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		return nil, fmt.Errorf("layer report: %w", err)
+	}
+	return &rep, nil
+}
 
 // prepareBundle checks the bundle as the worker does (bundlecheck: never
 // unpacked) and mounts it read-only at src/repo.bundle.

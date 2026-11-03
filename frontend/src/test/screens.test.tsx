@@ -535,12 +535,13 @@ describe("every screen renders with mock data", () => {
 
     const scans = `/orgs/${db.ORG_ID}/projects/${web().id}/scans`;
     const sha = "a".repeat(64);
-    const badImage = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api:1", tools: ["gitleaks"] });
+    const badImage = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api:1", tools: ["opengrep"] });
     expect(badImage.json.error?.metadata?.fields).toEqual({ target: expect.any(String), tools: expect.any(String) });
     const created = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api", image_ref: "ghcr.io/acme/api:2" });
     expect(created.status).toBe(201);
     const made = (created.json.data as { scan: { id: string; kind: string; tools: string[]; target: string } }).scan;
-    expect(made).toMatchObject({ kind: "image", tools: ["trivy"], target: "ghcr.io/acme/api" });
+    // v0.7 wave 2: image scans run Trivy and Gitleaks (secrets in the layers).
+    expect(made).toMatchObject({ kind: "image", tools: ["trivy", "gitleaks"], target: "ghcr.io/acme/api", pulled: false });
     db.scans.splice(db.scans.findIndex((s) => s.id === made.id), 1);
   });
 });

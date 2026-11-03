@@ -65,6 +65,56 @@ func checkFinding(t *testing.T, f sarif.Finding, history bool) {
 	} else if history && f.Tool == "gitleaks" {
 		t.Fatalf("history finding without a commit")
 	}
+	if l := f.ImageLayer; l != nil {
+		if history || f.Tool != "gitleaks" || l.Index < 0 || l.Index >= len(fuzzLayers) || l.Digest != fuzzLayers[l.Index] || l.Count != 1 ||
+			!strings.HasPrefix(f.FilePath, fuzzImage+"::/") || f.FilePath == fuzzImage+"::/" {
+			t.Fatalf("image layer %+v at %q", l, f.FilePath)
+		}
+	}
+}
+
+var (
+	fuzzImage  = "ghcr.io/acme/api"
+	fuzzLayers = []string{"sha256:" + strings.Repeat("0", 64), "sha256:" + strings.Repeat("1", 64)}
+)
+
+// checkCollapseImage: one finding per key with a layer, the lowest of its
+// group, Count the group's distinct layers; findings without a layer unchanged.
+func checkCollapseImage(t *testing.T, in []sarif.Finding) {
+	t.Helper()
+	out := sarif.CollapseImageLayers(in)
+	plain := 0
+	groups := map[any][]sarif.Finding{}
+	for _, f := range in {
+		if f.ImageLayer == nil {
+			plain++
+		} else {
+			groups[f.Key()] = append(groups[f.Key()], f)
+		}
+	}
+	if len(out) != plain+len(groups) {
+		t.Fatalf("%d findings collapsed to %d (%d plain, %d groups)", len(in), len(out), plain, len(groups))
+	}
+	for _, f := range out {
+		if f.ImageLayer == nil {
+			continue
+		}
+		layers := map[int]bool{}
+		for _, g := range groups[f.Key()] {
+			layers[g.ImageLayer.Index] = true
+			if g.ImageLayer.Index < f.ImageLayer.Index {
+				t.Fatalf("kept layer %d, but %d holds it too", f.ImageLayer.Index, g.ImageLayer.Index)
+			}
+		}
+		if f.ImageLayer.Count != len(layers) || !layers[f.ImageLayer.Index] {
+			t.Fatalf("count %d, %d layers", f.ImageLayer.Count, len(layers))
+		}
+	}
+	for _, f := range in {
+		if f.ImageLayer != nil && f.ImageLayer.Count != 1 {
+			t.Fatal("CollapseImageLayers changed its input")
+		}
+	}
 }
 
 // olderRef is CollapseHistory's order, written out again as the oracle.
@@ -150,9 +200,14 @@ func FuzzParse(f *testing.F) {
 		st.M{"id": "CVE-2024-1234", "shortDescription": st.M{"text": "proto pollution"}, "properties": st.M{"tags": []any{"security", "HIGH", "CWE-1321"}}})
 	og := st.Doc([]any{st.M{"ruleId": "data.rules.sqli", "level": "error", "message": st.M{"text": "SQL\ninjection"}, "locations": []any{st.Loc("svc/db.py", 3, "cur.execute(q)")}}},
 		st.M{"id": "data.rules.sqli", "shortDescription": st.M{"text": "Opengrep Finding"}, "properties": st.M{"security-severity": "9.1", "tags": []any{"CWE-89: x"}}})
+	img, _ := redact.Doc(st.RoundTrip(st.Doc([]any{
+		st.ImageResult("aws-access-token", "/app/.env", 4, st.FakeSecret, 1),
+		st.ImageResult("aws-access-token", "/etc/x", 1, st.FakeSecret, 0),
+	})), st.HMACKey)
 	for i, doc := range []st.M{gl, hist, trivy, og} {
 		f.Add(seed(doc), uint8(i), i == 1)
 	}
+	f.Add(seed(img), uint8(4), false)
 	f.Add([]byte(`{"runs":[{"results":[{"ruleId":"x","locations":[{"physicalLocation":{"region":{"startLine":-1,"endLine":1e99}}}]}]}]}`), uint8(3), false)
 	f.Add([]byte(`{"runs":[{"tool":{"driver":{"rules":"x"}},"results":[1,"x",null,{"ruleId":7}]}],"x":{}}`), uint8(2), false)
 	f.Fuzz(func(t *testing.T, data []byte, which uint8, history bool) {
@@ -170,7 +225,10 @@ func FuzzParse(f *testing.F) {
 		tool := fuzzTools[int(which)%len(fuzzTools)]
 		opts := sarif.Options{RootDir: "src", History: history}
 		if which&4 != 0 {
-			opts.ImageTarget, opts.OSLabel = "ghcr.io/acme/api", "alpine"
+			opts.ImageTarget, opts.OSLabel = fuzzImage, "alpine"
+			if tool == "gitleaks" {
+				opts.OSLabel, opts.ImageLayers = "", fuzzLayers
+			}
 		}
 		fs, err := sarif.Parse(doc, tool, opts)
 		if err != nil {
@@ -189,6 +247,7 @@ func FuzzParse(f *testing.F) {
 			checkFinding(t, f, history)
 		}
 		checkCollapse(t, fs)
+		checkCollapseImage(t, fs)
 	})
 }
 

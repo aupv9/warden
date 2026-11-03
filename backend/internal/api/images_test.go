@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -25,13 +26,13 @@ func TestCreateImageScan(t *testing.T) {
 	sc := r.obj()["scan"].(map[string]any)
 	id := sc["id"].(string)
 	if sc["kind"] != "image" || sc["target"] != "ghcr.io/acme/api" || !strings.HasPrefix(sc["image_ref"].(string), "ghcr.io/acme/api:1.2@") ||
-		len(sc["tools"].([]any)) != 1 || sc["tools"].([]any)[0] != "trivy" || sc["sbom"] != nil {
+		fmt.Sprint(sc["tools"]) != "[trivy gitleaks]" || sc["sbom"] != nil || sc["pulled"] != false {
 		t.Fatal(r.body)
 	}
 	if u := r.obj()["upload"].(map[string]any)["url"].(string); !strings.HasSuffix(u, "/scans/"+e.org.String()+"/"+id+".tar") {
 		t.Fatal(u)
 	}
-	// Tools may be given, as long as they are just trivy.
+	// Tools may be given, as long as they are trivy and/or gitleaks.
 	b := imageBody()
 	b["tools"] = []string{"trivy"}
 	delete(b, "image_ref")
@@ -40,12 +41,20 @@ func TestCreateImageScan(t *testing.T) {
 	if r.obj()["scan"].(map[string]any)["image_ref"] != nil {
 		t.Fatal(r.body)
 	}
+	b["tools"] = []string{"gitleaks"}
+	r = e.do("POST", "/projects/"+e.web.String()+"/scans", lead, b)
+	e.expect(r, 201, "")
+	if fmt.Sprint(r.obj()["scan"].(map[string]any)["tools"]) != "[gitleaks]" {
+		t.Fatal(r.body)
+	}
 
 	for name, c := range map[string]struct {
 		change func(map[string]any)
 		field  string
 	}{
-		"other tools":      {func(b map[string]any) { b["tools"] = []string{"trivy", "gitleaks"} }, "tools"},
+		"other tools":      {func(b map[string]any) { b["tools"] = []string{"trivy", "opengrep"} }, "tools"},
+		"checkov":          {func(b map[string]any) { b["tools"] = []string{"checkov"} }, "tools"},
+		"same tool twice":  {func(b map[string]any) { b["tools"] = []string{"gitleaks", "gitleaks"} }, "tools"},
 		"no target":        {func(b map[string]any) { delete(b, "target") }, "target"},
 		"tag in target":    {func(b map[string]any) { b["target"] = "ghcr.io/acme/api:1.2" }, "target"},
 		"upper target":     {func(b map[string]any) { b["target"] = "GHCR.io/acme/api" }, "target"},

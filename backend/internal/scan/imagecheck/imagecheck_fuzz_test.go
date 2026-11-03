@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -47,7 +48,7 @@ func checkTarball(t *testing.T, data []byte) {
 	limits := Limits{MaxBytes: 1 << 20}
 	res, err := Check(p, limits)
 	res2, err2 := Check(p, limits)
-	if (err == nil) != (err2 == nil) || (err == nil && *res != *res2) {
+	if (err == nil) != (err2 == nil) || (err == nil && !reflect.DeepEqual(res, res2)) {
 		t.Fatalf("not deterministic: %v / %v", err, err2)
 	}
 	if err != nil {
@@ -60,7 +61,7 @@ func checkTarball(t *testing.T, data []byte) {
 		}
 		return
 	}
-	if res.Layers < 1 || res.Layers > MaxLayers || (res.Layout != "docker" && res.Layout != "oci") {
+	if res.Layers < 1 || res.Layers > MaxLayers || (res.Layout != "docker" && res.Layout != "oci") || len(res.LayerFiles) != res.Layers {
 		t.Fatalf("accepted %+v", res)
 	}
 	tr := tar.NewReader(bytes.NewReader(data))
@@ -105,6 +106,12 @@ func checkTarball(t *testing.T, data []byte) {
 	}
 	if n > MaxEntries {
 		t.Fatalf("accepted %d entries", n)
+	}
+	// warden-layers opens exactly these: safe names of regular files.
+	for _, l := range res.LayerFiles {
+		if !files[l] {
+			t.Fatalf("layer %q is not a regular file of the tarball", l)
+		}
 	}
 	if res.Layout == "docker" {
 		var m []struct {

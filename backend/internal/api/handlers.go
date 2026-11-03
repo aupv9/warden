@@ -57,6 +57,7 @@ func (h handlers) routes(v1 *gin.RouterGroup) {
 	h.webhookRoutes(o)  // webhooks and Slack (webhooks.go)
 	h.scanRuleRoutes(o) // the org's own scan rules (scanrules.go)
 	h.v05Routes(o)      // org targets, ecosystems, audit-log check, issue export (v05.go)
+	h.registryRoutes(o) // registry credentials, pulled image scans (registries.go)
 }
 
 // reply renders a service result: data with status (200/201), or the error.

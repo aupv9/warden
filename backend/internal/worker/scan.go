@@ -120,7 +120,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 				return err
 			}
 			if sc.Kind == orchestrator.KindImage {
-				pr, err = loadPull(ctx, db, org, scanID)
+				pr, err = loadPull(ctx, db, org, scanID, e.registryClient().Allowed)
 			}
 		}
 		return err
@@ -150,6 +150,11 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 			return done(orchestrator.Failed, e.finishFailed(ctx, org, scanID, sc.Tools, registry.CodeFailed))
 		}
 		job.ObjectKey, job.SHA256, job.Pulled = "", "", true
+		if sc.ObjectKey != nil {
+			// Where an upload would be (the API sets it): never written, but
+			// deleted and stamped like one.
+			job.ObjectKey = *sc.ObjectKey
+		}
 	} else if sc.SourceDeleted || sc.ObjectKey == nil || sc.SHA256 == nil {
 		return done(orchestrator.Failed, e.finishFailed(ctx, org, scanID, sc.Tools, CodeSourceUnavailable))
 	} else {

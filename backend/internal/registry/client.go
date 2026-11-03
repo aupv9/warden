@@ -114,6 +114,10 @@ func (s *session) close() { s.tr.CloseIdleConnections() }
 
 func (s *session) allowed(host string) bool { return s.c.policy.Allowed(host) }
 
+// Allowed reports whether a host name (without port) is in
+// registry.allow_hosts: domain/registry.ParseRef's allowed func.
+func (c *Client) Allowed(name string) bool { return c.policy.Allowed(name) }
+
 // checkURL: https, or http to an allowed host; no user info. The address is
 // the dialer's to check.
 func (s *session) checkURL(u *url.URL) *Error {

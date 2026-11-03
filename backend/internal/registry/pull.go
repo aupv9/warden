@@ -47,9 +47,9 @@ const TarOverhead = (MaxLayers+2)*2*512 + 64<<10
 // On error dest may be left partly written; the caller removes it (the
 // scan's scratch directory).
 func (c *Client) Pull(ctx context.Context, ref Ref, creds *Credentials, plat Platform, lim Limits, dest string) (*Result, error) {
-	s := c.session(ref.Host, creds, "repository:"+ref.apiRepository()+":pull")
+	s := c.session(ref.Host, creds, "repository:"+apiRepository(ref)+":pull")
 	defer s.close()
-	p := &puller{s: s, repo: ref.apiRepository(), budget: lim.MaxBytes}
+	p := &puller{s: s, repo: apiRepository(ref), budget: lim.MaxBytes}
 
 	top, n, err := p.manifest(ctx, ref.Digest, MaxManifestBytes)
 	if err != nil {

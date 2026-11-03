@@ -15,6 +15,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sync"
 	"time"
@@ -213,10 +214,17 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		if job.Pulled {
 			maxBytes = deps.Limits().PullMaxBytes + registry.TarOverhead
 		}
+		var layers int
 		src, err = prepareFile(ctx, job, deps, scanDir, srcDir, "image.tar", func(p string) error {
-			_, err := imagecheck.Check(p, imagecheck.Limits{MaxBytes: maxBytes})
+			r, err := imagecheck.Check(p, imagecheck.Limits{MaxBytes: maxBytes})
+			if err == nil {
+				layers = r.Layers
+			}
 			return err
 		})
+		if err == nil {
+			src.imageLayers = layers
+		}
 	case KindHistory:
 		src, err = prepareFile(ctx, job, deps, scanDir, srcDir, "repo.bundle", func(p string) error {
 			_, err := bundlecheck.Check(p, bundlecheck.Limits{MaxBytes: deps.Limits().HistoryMaxBytes})
@@ -249,7 +257,7 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 	if cancelled {
 		return &Outcome{Status: Cancelled, Warnings: src.warnings}, nil
 	}
-	if code, ok := historyRejection(job, runs); ok {
+	if code, ok := sandboxRejection(job, runs); ok {
 		return &Outcome{Status: Failed, ErrorCode: code, Runs: runs}, nil
 	}
 
@@ -263,7 +271,17 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 		if len(job.OrgRules[run.Tool].Severity) > 0 {
 			loaded = map[string]bool{}
 		}
-		fs, rep, err := parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory, job.OrgRules[run.Tool].Severity, loaded)
+		// Gitleaks in an image scan: the layers' digests come from its layer report.
+		var layers []string
+		var err error
+		if kind == KindImage && run.Tool == "gitleaks" {
+			layers, err = loadLayers(job, run.Artifacts[sandbox.ArtifactLayers], src.imageLayers)
+		}
+		var fs []sarif.Finding
+		var rep *trivyjson.Report
+		if err == nil {
+			fs, rep, err = parseRun(*run, src.rootDir, srcDir, job.Target, kind == KindHistory, layers, job.OrgRules[run.Tool].Severity, loaded)
+		}
 		if err == nil && kind == KindHistory {
 			out.History, err = loadHistory(run.Artifacts[sandbox.ArtifactHistory], deps.Limits().HistoryMaxCommits)
 		}
@@ -304,6 +322,8 @@ func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome,
 type prepared struct {
 	rootDir  string // the zip's single top-level directory, if any
 	warnings []string
+	// imageLayers: how many layers imagecheck found in the image's manifest.
+	imageLayers int
 }
 
 // rejection returns the error code of an upload the checks refused.
@@ -331,12 +351,11 @@ func rejection(job Job, err error) (string, bool) {
 	return "", false
 }
 
-// knownTool: image scans run Trivy only, history scans Gitleaks only.
+// knownTool: image scans run Trivy and Gitleaks, history scans Gitleaks only.
 func knownTool(kind, tool string) bool {
 	switch kind {
 	case KindImage:
-		_, ok := sandbox.ImageTools[tool]
-		return ok
+		return slices.Contains(sandbox.ImageToolNames, tool)
 	case KindHistory:
 		return slices.Contains(sandbox.HistoryToolNames, tool)
 	}
@@ -344,31 +363,93 @@ func knownTool(kind, tool string) bool {
 	return ok
 }
 
-// historyRejection: git, in the sandbox, found the bundle unusable. bundlecheck
-// reads only the header and the pack's framing, so a shallow clone's bundle
-// (no prerequisites, but the boundary's parents missing) or objects that fail
-// fsck show up only there; they are rejections of the upload like the others.
-func historyRejection(job Job, runs []sandbox.ToolRun) (string, bool) {
-	if job.kind() != KindHistory {
+// sandboxRejection: Gitleaks' sandbox found the upload unusable, which the
+// checks outside can't tell, as they never unpack it; these are rejections of
+// the upload like the others.
+//
+//   - History: bundlecheck reads only the header and the pack's framing, so a
+//     shallow clone's bundle (no prerequisites, but the boundary's parents
+//     missing) or objects that fail fsck show up only when git fetches it.
+//   - Image: imagecheck never opens the layers, so layers that expand past the
+//     limit (a decompression bomb) or aren't tars show up only when
+//     warden-layers reads them. The whole scan fails, Trivy's results too:
+//     Trivy read the same layers.
+func sandboxRejection(job Job, runs []sandbox.ToolRun) (string, bool) {
+	codes := map[int]string{}
+	detail := ""
+	switch job.kind() {
+	case KindHistory:
+		codes[sandbox.ExitHistoryIncomplete], codes[sandbox.ExitHistoryUnreadable] = bundlecheck.CodeIncomplete, bundlecheck.CodeInvalid
+		detail = "git could not fetch the bundle"
+	case KindImage:
+		codes[sandbox.ExitImageTooLarge], codes[sandbox.ExitImageUnreadable] = imagecheck.CodeTooLarge, imagecheck.CodeInvalid
+		detail = "gitleaks could not read the layers"
+	default:
 		return "", false
 	}
 	for _, r := range runs {
 		if r.Tool != "gitleaks" || r.Status != sandbox.Failed {
 			continue
 		}
-		code := ""
-		switch r.ExitCode {
-		case sandbox.ExitHistoryIncomplete:
-			code = bundlecheck.CodeIncomplete
-		case sandbox.ExitHistoryUnreadable:
-			code = bundlecheck.CodeInvalid
-		default:
-			continue
+		if code, ok := codes[r.ExitCode]; ok {
+			slog.Info("scan rejected", "scan_id", job.ScanID, "code", code, "detail", detail)
+			return code, true
 		}
-		slog.Info("scan rejected", "scan_id", job.ScanID, "code", code, "detail", "git could not fetch the bundle")
-		return code, true
 	}
 	return "", false
+}
+
+// maxLayersArtifact bounds layers.json; the sandbox caps it too.
+const maxLayersArtifact = 64 << 10
+
+var layerDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// loadLayers reads the layer report warden-layers wrote (layerscan.Report):
+// a digest for each of the image's layers (as many as imagecheck found), and
+// what it didn't scan. It comes out of the sandbox, so it is checked like
+// any scanner output; without it Gitleaks' findings have no layer. (The
+// worker doesn't import layerscan: nothing that unpacks layers is linked
+// into it.)
+func loadLayers(job Job, path string, want int) ([]string, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%w: gitleaks wrote no layer report (or one over the size cap)", sarif.ErrSARIF)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxLayersArtifact+1))
+	if err != nil {
+		return nil, err
+	}
+	var rep struct {
+		Layers    []string `json:"layers"`
+		Skipped   int      `json:"skipped_files"`
+		Whiteouts int      `json:"whiteouts"`
+		Unsafe    int      `json:"unsafe_entries"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	err = dec.Decode(&rep)
+	if err == nil {
+		if _, terr := dec.Token(); !errors.Is(terr, io.EOF) {
+			err = errors.New("trailing data")
+		}
+	}
+	ok := err == nil && len(raw) <= maxLayersArtifact && len(rep.Layers) == want && want > 0 &&
+		rep.Skipped >= 0 && rep.Whiteouts >= 0 && rep.Unsafe >= 0
+	for _, d := range rep.Layers {
+		ok = ok && layerDigest.MatchString(d)
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: invalid layer report", sarif.ErrSARIF)
+	}
+	if rep.Skipped > 0 || rep.Unsafe > 0 {
+		slog.Info("image layers: entries gitleaks did not read", "scan_id", job.ScanID,
+			"skipped_files", rep.Skipped, "unsafe_entries", rep.Unsafe)
+	}
+	return rep.Layers, nil
 }
 
 // maxHistoryArtifact bounds history.json; the sandbox caps it too.
@@ -477,11 +558,17 @@ func verifyAndExtract(zipPath, sha, dest string, limits zipcheck.Limits) (*zipch
 // parseRun parses a tool's SARIF and, for Trivy, its JSON report: the
 // licenses and packages (returned with FilePath set), and for image scans the
 // OS that names OS package findings. imageTarget is "" for source scans;
-// history is set for history scans (Gitleaks in git mode). When loaded is
-// non-nil, it receives the org rules the tool loaded (sarif.LoadedOrgRules).
-func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool,
+// history is set for history scans (Gitleaks in git mode); layers are the
+// image's layer digests for Gitleaks in an image scan (nil otherwise). When
+// loaded is non-nil, it receives the org rules the tool loaded
+// (sarif.LoadedOrgRules).
+func parseRun(run sandbox.ToolRun, rootDir, srcDir, imageTarget string, history bool, layers []string,
 	orgRules map[string]severity.Severity, loaded map[string]bool) ([]sarif.Finding, *trivyjson.Report, error) {
-	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history, OrgRules: orgRules}
+	opts := sarif.Options{RootDir: rootDir, SourceRoot: srcDir, History: history, OrgRules: orgRules,
+		CheckovTable: severity.CheckovTable()}
+	if layers != nil {
+		opts.ImageTarget, opts.ImageLayers = imageTarget, layers
+	}
 	var rep *trivyjson.Report
 	if run.Tool == "trivy" {
 		// The SARIF is converted from this report: without it (or with a
@@ -667,9 +754,11 @@ func runTools(ctx context.Context, job Job, deps Deps, scanDir string) ([]sandbo
 
 func cleanup(job Job, deps Deps, scanDir string) error {
 	err := zipcheck.RemoveAll(scanDir)
-	if job.Pulled {
-		return err // nothing was uploaded
+	if job.ObjectKey == "" {
+		return err // a pulled scan without an object key: nothing was uploaded
 	}
+	// A pulled scan's key names where an upload would be; deleting it (absent)
+	// records source_deleted_at like an upload's.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if derr := deps.DeleteObject(ctx, job.ObjectKey); derr != nil {
