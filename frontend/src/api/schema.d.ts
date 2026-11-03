@@ -1238,6 +1238,144 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/scan-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /** The org's scan rules (view_results) */
+        get: operations["listScanRules"];
+        put?: never;
+        /**
+         * Add a rule (manage_rules)
+         * @description At most 200 rules per tool, 64 KiB per body, 1 MiB per org. Audited as scan_rule.created (id, tool, key, sha256; never the body). Not for API tokens.
+         */
+        post: operations["createScanRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/scan-rules/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check a rule without saving it (manage_rules) */
+        post: operations["validateScanRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/scan-rules/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run a rule on a snippet in the sandbox (manage_rules)
+         * @description Queued as job test_rules; poll GET …/tests/{test_id}. 20 per user per hour. The snippet is never logged and is deleted when the run ends; results are kept 24 hours.
+         */
+        post: operations["testScanRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/scan-rules/tests/{test_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        /** A rule test's state and findings (its creator only) */
+        get: operations["getScanRuleTest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/scan-rules/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        /** One rule (view_results) */
+        get: operations["getScanRule"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a rule (manage_rules)
+         * @description Its versions are kept for history; its issues stay as they are. Audited as scan_rule.deleted.
+         */
+        delete: operations["deleteScanRule"];
+        options?: never;
+        head?: never;
+        /**
+         * Change a rule (manage_rules)
+         * @description Every change makes a new version (scan_rule_version, append-only). Disabling or deleting a rule never fixes its issues: they stay open until a security lead closes them. Audited as scan_rule.updated / enabled / disabled.
+         */
+        patch: operations["updateScanRule"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/scan-rules/{rule_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        /** A rule's history, newest first (view_results) */
+        get: operations["listScanRuleVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export interface webhooks {
     event: {
@@ -1432,6 +1570,8 @@ export interface components {
                 commits: number;
                 truncated: boolean;
             } | null;
+            /** @description The org rules this scan ran (empty when none); issues from a rule not listed here are never auto-fixed by this scan. */
+            org_rules: components["schemas"]["ScanRuleRef"][];
         };
         Upload: {
             /** @enum {string} */
@@ -1555,6 +1695,17 @@ export interface components {
                 committed_at: string | null;
                 /** @description How many commits added this secret. */
                 count: number;
+            } | null;
+            /** @description Set when the issue comes from an org rule (rule_id org.*). */
+            org_rule: {
+                rule_id: string;
+                /** @description The rule's name; a deleted rule's last name. Null only when no rule of this org ever had that key. */
+                name: string | null;
+                /**
+                 * Format: uuid
+                 * @description The live rule, else the most recently deleted one with that key.
+                 */
+                scan_rule_id: string | null;
             } | null;
         };
         IssueEvent: {
@@ -1700,9 +1851,9 @@ export interface components {
         };
         Error: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "MFA_NOT_ENABLED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL" | "WEBHOOK_LIMIT" | "SECRETS_KEY_MISSING";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "CONFLICT" | "VERSION_CONFLICT" | "INVALID_TRANSITION" | "USER_NOT_FOUND" | "UPLOAD_MISMATCH" | "RATE_LIMITED" | "MFA_REQUIRED" | "MFA_NOT_ENABLED" | "TOKEN_SCOPE" | "PROJECT_ARCHIVED" | "PAYLOAD_TOO_LARGE" | "METHOD_NOT_ALLOWED" | "INTERNAL" | "WEBHOOK_LIMIT" | "SECRETS_KEY_MISSING" | "RULE_INVALID";
             message: string;
-            /** @description VALIDATION_FAILED: {fields: {field: message}}. RATE_LIMITED: {retry_after: seconds}. */
+            /** @description VALIDATION_FAILED: {fields: {field: message}}. RATE_LIMITED: {retry_after: seconds}. RULE_INVALID: {problems: [RuleProblem]}. */
             metadata?: {
                 fields?: {
                     [key: string]: string;
@@ -2259,6 +2410,110 @@ export interface components {
             first_bad_id: string | null;
             /** Format: date-time */
             verified_at: string;
+        };
+        /**
+         * @description Org rules exist for Opengrep (SAST) and Gitleaks (secrets) only.
+         * @enum {string}
+         */
+        ScanRuleTool: "opengrep" | "gitleaks";
+        RuleProblem: {
+            /** @description 1-based line in the submitted body, when known. */
+            line: number | null;
+            column: number | null;
+            message: string;
+        };
+        /** @description One Opengrep or Gitleaks rule of the org. Rules only add findings: no allowlists, ignores or path exclusions. The rule's id inside its body is the rule key; findings carry it as org.<key>. */
+        ScanRule: {
+            /** Format: uuid */
+            id: string;
+            tool: components["schemas"]["ScanRuleTool"];
+            /** @description The id from the body; unique per org and tool. */
+            key: string;
+            /** @description What findings and issues carry: org.<key>. */
+            rule_id: string;
+            name: string;
+            /** @description As Warden re-rendered it from the parsed rule (canonical form), not the text as submitted. */
+            body: string;
+            sha256: string;
+            version: number;
+            enabled: boolean;
+            severity: components["schemas"]["Severity"];
+            /** @description Null: every project of the org. */
+            project_ids: string[] | null;
+            created_by: components["schemas"]["UserRef"] | null;
+            updated_by: components["schemas"]["UserRef"] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CreateScanRuleRequest: {
+            tool: components["schemas"]["ScanRuleTool"];
+            name: string;
+            /** @description Opengrep: YAML with rules: [exactly one rule]. Gitleaks: TOML with exactly one [[rules]]. */
+            body: string;
+            enabled?: boolean;
+            project_ids?: string[] | null;
+        };
+        UpdateScanRuleRequest: {
+            /** @description The version you read (optimistic lock). */
+            version: number;
+            name?: string;
+            /** @description Must keep the rule's key: issues and past scans refer to org.<key> (changing it is 422 RULE_INVALID). */
+            body?: string;
+            enabled?: boolean;
+            project_ids?: string[] | null;
+        };
+        ScanRuleVersion: {
+            version: number;
+            body: string;
+            sha256: string;
+            name: string;
+            enabled: boolean;
+            project_ids: string[] | null;
+            created_by: components["schemas"]["UserRef"] | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        RuleValidation: {
+            ok: boolean;
+            key: string | null;
+            severity: components["schemas"]["Severity"] | null;
+            /** @description The canonical form Warden would store. */
+            body: string | null;
+            problems: components["schemas"]["RuleProblem"][];
+        };
+        RuleTestRequest: {
+            tool: components["schemas"]["ScanRuleTool"];
+            body: string;
+            /** @description Decides the language for Opengrep. */
+            filename: string;
+            snippet: string;
+        };
+        /** @description A rule run against a snippet in the scanner sandbox. The snippet is deleted when the run ends; Gitleaks matches are reported by line only, never by content. */
+        RuleTest: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            state: "queued" | "running" | "done" | "failed";
+            findings: {
+                line: number;
+                end_line: number | null;
+                /** @description The rule's message (Opengrep) or description (Gitleaks); never matched text. */
+                message: string;
+            }[];
+            /** @enum {string|null} */
+            error: "timeout" | "scanner_failed" | "rule_invalid" | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            finished_at: string | null;
+        };
+        ScanRuleRef: {
+            rule_id: string;
+            tool: components["schemas"]["ScanRuleTool"];
+            version: number;
+            sha256: string;
         };
     };
     responses: never;
@@ -7169,6 +7424,675 @@ export interface operations {
             };
             /** @description Too many requests (Retry-After says when to retry). */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listScanRules: {
+        parameters: {
+            query?: {
+                tool?: components["schemas"]["ScanRuleTool"];
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ScanRule"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createScanRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateScanRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ScanRule"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description CONFLICT: a rule with this key exists for the tool, or the org's limit is reached. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description VALIDATION_FAILED, or RULE_INVALID with metadata.problems. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    validateScanRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    tool: components["schemas"]["ScanRuleTool"];
+                    body: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RuleValidation"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description VALIDATION_FAILED, or RULE_INVALID with metadata.problems. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    testScanRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuleTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RuleTest"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description VALIDATION_FAILED, or RULE_INVALID with metadata.problems. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Too many requests (Retry-After says when to retry). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getScanRuleTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RuleTest"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getScanRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ScanRule"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteScanRule: {
+        parameters: {
+            query: {
+                version: number;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description VERSION_CONFLICT: the rule changed since you read it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateScanRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateScanRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ScanRule"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description VERSION_CONFLICT: the rule changed since you read it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description VALIDATION_FAILED, or RULE_INVALID with metadata.problems. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listScanRuleVersions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["ScanRuleVersion"][];
+                            next_cursor: string | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

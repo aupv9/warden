@@ -4752,3 +4752,256 @@ fieldset.policy-section > legend.policy-head + * {
     min-height: var(--touch-h);
   }
 }
+
+/* ---------- v0.6: Scan rules ---------- */
+.rule-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.rules-readonly {
+  margin-bottom: 12px;
+}
+.rules-explainer {
+  max-width: 560px;
+  text-align: left;
+}
+.rule-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 960px;
+}
+.rule-page > .back-link {
+  align-self: flex-start;
+}
+.rule-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.rule-form {
+  gap: 16px;
+}
+/* The body editor: a line-number gutter beside a plain textarea, both 20 px per line so the
+   numbers stay level with the text (the gutter follows the textarea's scroll). */
+.rule-editor {
+  display: flex;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  overflow: hidden;
+}
+.rule-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.rule-editor.invalid {
+  border-color: var(--danger);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+.rule-gutter {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 4ch;
+  padding: 8px 8px 8px 10px;
+  overflow: hidden;
+  background: var(--ground);
+  border-right: 1px solid var(--line);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 20px;
+  text-align: right;
+  user-select: none;
+}
+.rule-gutter .bad {
+  color: var(--danger);
+  font-weight: 600;
+  box-shadow: inset -2px 0 0 var(--danger);
+}
+.rule-textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 200px;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  outline: none;
+  resize: vertical;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 20px;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.rule-textarea:disabled {
+  color: var(--muted);
+}
+.rule-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border-radius: var(--radius-control);
+  background: var(--msg-error-bg);
+  color: var(--msg-error-fg);
+  font-size: var(--text-sm);
+}
+.rule-problems li {
+  overflow-wrap: anywhere;
+}
+.rule-problems .btn-link {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.rule-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+.ok-text {
+  color: var(--success-text);
+}
+.ok-text svg,
+.rule-check .danger-text svg {
+  vertical-align: -2px;
+}
+.rule-canonical summary,
+.rule-kept summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.rule-canonical > p {
+  margin: 6px 0 8px;
+}
+.rule-code {
+  max-height: 420px;
+  overflow: auto;
+}
+.rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+dialog.dialog.rule-test-dialog {
+  width: min(720px, calc(100vw - 32px));
+}
+.rule-snippet {
+  min-height: 180px;
+  white-space: pre;
+  font-size: var(--text-sm);
+  line-height: 20px;
+}
+.rule-test-state {
+  min-height: 20px;
+}
+.rule-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+.rule-findings li {
+  overflow-wrap: anywhere;
+}
+.block {
+  display: block;
+}
+.rule-versions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rule-version {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.rule-version:first-child {
+  border-top: none;
+}
+.rule-version-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.rule-compare-pick {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.rule-compare-pick .field {
+  min-width: 220px;
+}
+.rule-diff .ln {
+  width: 3ch;
+  margin-right: 8px;
+}
+.rule-diff .diff-sign {
+  flex: 0 0 auto;
+  width: 2ch;
+  color: var(--code-ln);
+  user-select: none;
+}
+.rule-diff .diff-add {
+  background: rgba(43, 154, 102, 0.22);
+}
+.rule-diff .diff-add .diff-sign {
+  color: #6fdba5;
+}
+.rule-diff .diff-del {
+  background: var(--code-hl-bg);
+}
+.rule-diff .diff-del .diff-sign {
+  color: #ff9a9e;
+}
+.org-rule-tag {
+  font-weight: 600;
+  background: var(--accent-tint);
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+.org-rule-card a {
+  overflow-wrap: anywhere;
+}
+.scan-org-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.scan-org-rules ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.scan-org-rules li {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px) {
+  .rule-actions > .btn {
+    flex: 1 1 auto;
+    min-height: var(--touch-h);
+  }
+  .rule-actions > .grow {
+    display: none;
+  }
+}

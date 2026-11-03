@@ -19,6 +19,7 @@ import {
   ExceptionsIcon,
   IssuesIcon,
   IntegrationsIcon,
+  RulesIcon,
   MembersIcon,
   MenuIcon,
   OverviewIcon,
@@ -448,7 +449,12 @@ function OrgNav({ org }: { org: MeOrg }) {
           <span className="grow">Integrations</span>
         </NavLink>
       )}
-      <NavLink to={`${base}/settings`}>
+      {/* v0.6: the org's own scan rules; everyone reads them, manage_rules changes them. */}
+      <NavLink to={`${base}/settings/scan-rules`}>
+        <RulesIcon />
+        <span className="grow">Scan rules</span>
+      </NavLink>
+      <NavLink to={`${base}/settings`} end>
         <SettingsIcon />
         <span className="grow">Settings</span>
       </NavLink>

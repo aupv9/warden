@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
@@ -46,6 +47,10 @@ type fakeDeps struct {
 	gitleaksDoc st.M
 	historyOut  *string
 	exitCode    int
+	// Org rules: the opengrep SARIF to write, and the rules files (and their
+	// modes) a tool saw.
+	opengrepDoc st.M
+	sawRules    map[string]os.FileMode
 }
 
 func (d *fakeDeps) Limits() Limits {
@@ -102,6 +107,21 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 		d.sawKey = true
 		d.mu.Unlock()
 	}
+	if es, err := os.ReadDir(filepath.Join(scanDir, sandbox.RulesDir)); err == nil {
+		d.mu.Lock()
+		if d.sawRules == nil {
+			d.sawRules = map[string]os.FileMode{}
+		}
+		for _, e := range es {
+			if fi, err := e.Info(); err == nil {
+				d.sawRules[e.Name()] = fi.Mode().Perm()
+			}
+		}
+		if fi, err := os.Stat(filepath.Join(scanDir, sandbox.RulesDir)); err == nil {
+			d.sawRules["."] = fi.Mode().Perm()
+		}
+		d.mu.Unlock()
+	}
 	status := d.results[tool]
 	if status != sandbox.Succeeded {
 		return sandbox.ToolRun{Tool: tool, Status: status, DurationMS: 1, Error: "boom", ExitCode: d.exitCode}
@@ -109,6 +129,9 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 	out := filepath.Join(scanDir, "out", tool)
 	_ = os.MkdirAll(out, 0o700)
 	doc := st.Doc([]any{st.M{"ruleId": "r1", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}}})
+	if tool == "opengrep" && d.opengrepDoc != nil {
+		doc = d.opengrepDoc
+	}
 	if tool == "gitleaks" {
 		doc = st.GitleaksDoc() // unredacted on purpose: the parser must refuse it
 		if d.gitleaksDoc != nil {
@@ -579,5 +602,54 @@ func TestHistoryRejections(t *testing.T) {
 	d.exitCode = sandbox.ExitHistoryIncomplete
 	if out, err := Execute(context.Background(), newJob(sha, "gitleaks"), d); err != nil || out.ErrorCode != "ALL_SCANNERS_FAILED" {
 		t.Fatal(out, err)
+	}
+}
+
+// Org rules are written read-only under rules/ for the sandbox, only for the
+// scan's tools, and their findings take the rule's severity.
+func TestOrgRules(t *testing.T) {
+	data, sha := zipBytes(t)
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"opengrep": sandbox.Succeeded, "checkov": sandbox.Succeeded})
+	d.opengrepDoc = st.Doc([]any{
+		st.M{"ruleId": "rules.org.k", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
+		st.M{"ruleId": "data.rules.r1", "level": "error", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}},
+	}, st.M{"id": "rules.org.k"}, st.M{"id": "data.rules.r1"})
+	j := newJob(sha, "opengrep", "checkov")
+	j.OrgRules = map[string]OrgRules{
+		"opengrep": {Config: []byte("rules: []\n"), Severity: map[string]severity.Severity{"org.k": severity.Info}},
+		// Not a tool of this scan: never written.
+		"gitleaks": {Config: []byte("x"), Severity: map[string]severity.Severity{"org.g": severity.High}},
+	}
+	out, err := Execute(context.Background(), j, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCleaned(t, d, j)
+	if len(d.sawRules) != 2 || d.sawRules["opengrep.yml"] != 0o444 || d.sawRules["."] != 0o555 {
+		t.Fatalf("%v", d.sawRules)
+	}
+	fs := out.Findings["opengrep"]
+	if out.Status != Completed || len(fs) != 2 || fs[0].RuleID != "org.k" || fs[0].Severity != severity.Info ||
+		fs[1].RuleID != "r1" || fs[1].Severity != severity.High {
+		t.Fatalf("%s %+v", out.Status, fs)
+	}
+	if len(out.OrgRulesLoaded) != 1 || len(out.OrgRulesLoaded["opengrep"]) != 1 || !out.OrgRulesLoaded["opengrep"]["org.k"] {
+		t.Fatal(out.OrgRulesLoaded)
+	}
+
+	// No org rules: no rules directory.
+	d = newDeps(t, data, map[string]sandbox.ToolStatus{"checkov": sandbox.Succeeded})
+	if _, err := Execute(context.Background(), newJob(sha, "checkov"), d); err != nil || d.sawRules != nil {
+		t.Fatal(err, d.sawRules)
+	}
+
+	// An org rule id the scan didn't run fails the tool.
+	d = newDeps(t, data, map[string]sandbox.ToolStatus{"opengrep": sandbox.Succeeded})
+	d.opengrepDoc = st.Doc([]any{st.M{"ruleId": "rules.org.other", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}}})
+	j = newJob(sha, "opengrep")
+	j.OrgRules = map[string]OrgRules{"opengrep": {Config: []byte("x"), Severity: map[string]severity.Severity{"org.k": severity.Info}}}
+	out, err = Execute(context.Background(), j, d)
+	if err != nil || out.Status != Failed || out.Runs[0].Status != sandbox.Failed {
+		t.Fatalf("%v %+v", err, out)
 	}
 }

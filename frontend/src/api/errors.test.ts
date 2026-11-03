@@ -7,6 +7,7 @@ import {
   isNotFound,
   isToastedActionError,
   leftoverFieldErrors,
+  ruleProblems,
   supportReference,
   waitText,
 } from "./errors";
@@ -44,6 +45,37 @@ describe("error code → message", () => {
     // Shown where the problem is (ActionError in the dialog), not as a toast.
     expect(isToastedActionError(limit)).toBe(false);
     expect(isToastedActionError(noKey)).toBe(false);
+  });
+
+  it("v0.6: RULE_INVALID has its own sentence; its problems are read from metadata.problems, checked", () => {
+    const e = err(422, "RULE_INVALID", {
+      metadata: {
+        problems: [
+          { line: 4, column: 3, message: "allowlists are not allowed: org rules only add findings" },
+          { line: null, column: null, message: "exactly one rule" },
+          { line: -2, column: "x", message: "bad position" },
+          { line: 7, message: 42 },
+          "not an object",
+          null,
+          { line: 9, column: null, message: "   " },
+        ],
+      },
+    });
+    expect(errorMessage(e)).toBe("Warden can't use this rule. Fix the problems shown at their lines, then try again.");
+    expect(isToastedActionError(e)).toBe(false);
+    expect(ruleProblems(e)).toEqual([
+      { line: 4, column: 3, message: "allowlists are not allowed: org rules only add findings" },
+      { line: null, column: null, message: "exactly one rule" },
+      { line: null, column: null, message: "bad position" },
+    ]);
+    // Not a RULE_INVALID error, or no problems: nothing.
+    expect(ruleProblems(err(422, "VALIDATION_FAILED", { metadata: { problems: [{ line: 1, message: "x" }] } }))).toEqual([]);
+    expect(ruleProblems(err(422, "RULE_INVALID"))).toEqual([]);
+    expect(ruleProblems(new Error("x"))).toEqual([]);
+    // At most 100, each message at most 500 characters.
+    const many = err(422, "RULE_INVALID", { metadata: { problems: Array.from({ length: 150 }, (_, i) => ({ line: i + 1, column: null, message: "m".repeat(600) })) } });
+    expect(ruleProblems(many)).toHaveLength(100);
+    expect(ruleProblems(many)[0]!.message).toHaveLength(500);
   });
 
   it("lets a screen override a code", () => {

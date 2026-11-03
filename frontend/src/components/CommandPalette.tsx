@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { useIssues } from "../api/hooks/issues";
 import { useProjects } from "../api/hooks/projects";
 import { ISSUE_STATUSES } from "../api/types";
+import type { OrgRole } from "../api/types";
 import { flattenPages } from "../api/paging";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { can } from "../lib/permissions";
@@ -11,13 +12,40 @@ import { ProjectDot } from "./Avatar";
 import { SeverityMark } from "./Badges";
 import { SearchIcon } from "./Icons";
 
-interface Item {
+export interface Item {
   id: string;
   group: "Issues" | "Projects" | "Pages";
   label: string;
   hint?: string;
   to: string;
   render?: () => React.ReactNode;
+}
+
+/** The palette's page entries for a role (exported for the tests): pages the role can't use
+ *  aren't offered. */
+export function pageItems(base: string, role: OrgRole): Item[] {
+  return [
+    { id: "p-projects", group: "Pages", label: "Projects", to: `${base}/projects` },
+    { id: "p-issues", group: "Pages", label: "Issues", to: `${base}/issues` },
+    { id: "p-mine", group: "Pages", label: "Issues assigned to me", to: `${base}/issues?assignee=me` },
+    { id: "p-sla", group: "Pages", label: "Issues past SLA", to: `${base}/issues?past_sla=true` },
+    { id: "p-components", group: "Pages", label: "Components", to: `${base}/components` },
+    { id: "p-malicious", group: "Pages", label: "Malicious packages", to: `${base}/issues?kind=malicious` },
+    { id: "p-exceptions", group: "Pages", label: "Exceptions", to: `${base}/exceptions` },
+    { id: "p-members", group: "Pages", label: "Members", to: `${base}/members` },
+    ...(can("view_audit_log", role) ? [{ id: "p-audit", group: "Pages" as const, label: "Audit log", to: `${base}/audit-log` }] : []),
+    ...(can("manage_integrations", role)
+      ? [{ id: "p-integrations", group: "Pages" as const, label: "Integrations (webhooks and Slack)", to: `${base}/integrations` }]
+      : []),
+    // v0.6: the org's own Opengrep and Gitleaks rules.
+    { id: "p-scan-rules", group: "Pages", label: "Scan rules (Opengrep and Gitleaks)", to: `${base}/settings/scan-rules` },
+    ...(can("manage_rules", role)
+      ? [
+          { id: "p-new-opengrep", group: "Pages" as const, label: "New Opengrep rule", to: `${base}/settings/scan-rules/new?tool=opengrep` },
+          { id: "p-new-gitleaks", group: "Pages" as const, label: "New Gitleaks rule", to: `${base}/settings/scan-rules/new?tool=gitleaks` },
+        ]
+      : []),
+  ];
 }
 
 /** ⌘K / Ctrl+K: jump to an issue by key or title, a project, or a page. A modal <dialog> with a
@@ -83,20 +111,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   const term = q.trim().toLowerCase();
   const base = `/orgs/${orgId}`;
   const items: Item[] = useMemo(() => {
-    const pages: Item[] = [
-      { id: "p-projects", group: "Pages", label: "Projects", to: `${base}/projects` },
-      { id: "p-issues", group: "Pages", label: "Issues", to: `${base}/issues` },
-      { id: "p-mine", group: "Pages", label: "Issues assigned to me", to: `${base}/issues?assignee=me` },
-      { id: "p-sla", group: "Pages", label: "Issues past SLA", to: `${base}/issues?past_sla=true` },
-      { id: "p-components", group: "Pages", label: "Components", to: `${base}/components` },
-      { id: "p-malicious", group: "Pages", label: "Malicious packages", to: `${base}/issues?kind=malicious` },
-      { id: "p-exceptions", group: "Pages", label: "Exceptions", to: `${base}/exceptions` },
-      { id: "p-members", group: "Pages", label: "Members", to: `${base}/members` },
-      ...(can("view_audit_log", org.role) ? [{ id: "p-audit", group: "Pages" as const, label: "Audit log", to: `${base}/audit-log` }] : []),
-      ...(can("manage_integrations", org.role)
-        ? [{ id: "p-integrations", group: "Pages" as const, label: "Integrations (webhooks and Slack)", to: `${base}/integrations` }]
-        : []),
-    ];
+    const pages = pageItems(base, org.role);
     const found: Item[] = searchIssues
       ? flattenPages(issues.data?.pages).map((i) => ({
           id: `i-${i.id}`,
