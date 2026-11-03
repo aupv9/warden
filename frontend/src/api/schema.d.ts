@@ -1227,7 +1227,7 @@ export interface paths {
         };
         /**
          * The issue list as CSV (same filters and visibility)
-         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. If the server fails after the first row was sent, the download ends early (over HTTP/1.1 the connection is reset; over HTTP/2 the response may simply end): a file with fewer data rows than the export's audit entry is incomplete.
+         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.
          */
         get: operations["exportIssuesCSV"];
         put?: never;
@@ -2514,6 +2514,11 @@ export interface components {
             tool: components["schemas"]["ScanRuleTool"];
             version: number;
             sha256: string;
+            /**
+             * Format: uuid
+             * @description The rule that ran (its id survives a delete and re-add of the same key). Null on scans recorded before v0.7.
+             */
+            scan_rule_id: string | null;
         };
     };
     responses: never;
