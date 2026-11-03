@@ -121,6 +121,8 @@ func Run(opts Options, w io.Writer) (int, error) {
 	}
 	threshold := severity.Rank(failOn)
 
+	// The scan rates Checkov findings by the same table, so the gate blocks on what the issue list shows.
+	checkov := severity.CheckovTable()
 	counts := map[severity.Severity]int{}
 	report := []Row{}
 	blocking := 0
@@ -129,7 +131,8 @@ func Run(opts Options, w io.Writer) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		findings, err := sarif.Parse(doc, in.Tool, sarif.Options{SourceRoot: opts.SourceRoot, History: opts.History})
+		findings, err := sarif.Parse(doc, in.Tool, sarif.Options{SourceRoot: opts.SourceRoot, History: opts.History,
+			CheckovTable: checkov})
 		if err != nil {
 			return 2, err
 		}
