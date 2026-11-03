@@ -15,6 +15,15 @@ export function MaliciousTag() {
 }
 
 /** v0.4 wave 2: a secret found in git history (a history scan), beside the issue title. */
+/** v0.6: an issue found by one of the org's own scan rules. */
+export function OrgRuleTag() {
+  return (
+    <span className="tag org-rule-tag" title="Found by one of your org's own scan rules">
+      Org rule
+    </span>
+  );
+}
+
 export function HistoryTag() {
   return (
     <span className="tag history-tag" title="Found in git history (a history scan)">

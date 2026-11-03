@@ -4,7 +4,7 @@
 //
 // Try: append ?mock_error=CODE to any page URL (e.g. VERSION_CONFLICT, RATE_LIMITED, NOT_FOUND)
 // to make the next write fail with that code.
-import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SEVERITIES, TOOLS, WEBHOOK_EVENT_TYPES } from "../types";
+import { ACTIVE_STATUSES, LICENSE_ACTIONS, LICENSE_CATEGORIES, METRICS_DAYS, NOTIFICATION_TYPES, ORG_ROLES, SCAN_RULE_TOOLS, SEVERITIES, TOOLS, WEBHOOK_EVENT_TYPES } from "../types";
 import type {
   ApiToken,
   AssignRule,
@@ -22,13 +22,18 @@ import type {
   Project,
   ProjectComponent,
   ProjectTarget,
+  RuleTest,
   Scan,
+  ScanRule,
+  ScanRuleTool,
+  ScanRuleVersion,
   SeverityCounts,
   UpdatePolicyBody,
   Webhook,
   WebhookDelivery,
 } from "../types";
 import * as db from "./fixtures";
+import { fakeTest, parseRule } from "./rules";
 
 const LATENCY = import.meta.env.MODE === "test" ? 0 : 250;
 const PAGE = 50;
@@ -39,6 +44,8 @@ class Fail {
     readonly status: number,
     readonly code: string,
     readonly fields?: Record<string, string>,
+    /** v0.6: other metadata, such as RULE_INVALID's problems. */
+    readonly metadata?: Record<string, unknown>,
   ) {}
 }
 
@@ -364,6 +371,68 @@ function projectComponents(orgId: string, p: Project, url: URL) {
   return { items: pageItems.map(({ id: _id, ...c }) => c), next_cursor };
 }
 
+// ---- v0.6 wave 1: the org's own scan rules ----
+
+/** view_results: anyone in the org reads the rules. */
+function rulesOf(orgId: string): ScanRule[] {
+  if (callerRole(orgId) === "none") throw NOT_FOUND();
+  return (db.scanRules[orgId] ??= []);
+}
+
+/** manage_rules: org admins and security leads. */
+function requireRules(orgId: string): ScanRule[] {
+  const role = callerRole(orgId);
+  if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+  return rulesOf(orgId);
+}
+
+function findRule(orgId: string, id: string): ScanRule {
+  const r = rulesOf(orgId).find((x) => x.id === id);
+  if (!r) throw NOT_FOUND();
+  return r;
+}
+
+function checkRuleFields(orgId: string, b: Record<string, unknown>, fields: Record<string, string>) {
+  if ("name" in b && (typeof b.name !== "string" || b.name.trim().length < 1 || b.name.length > 200)) fields.name = "1 to 200 characters";
+  if ("body" in b && (typeof b.body !== "string" || b.body.length < 1 || b.body.length > 65536)) fields.body = "1 to 65536 characters";
+  if ("project_ids" in b && b.project_ids !== null) {
+    const ids = b.project_ids;
+    if (!Array.isArray(ids) || ids.length > 200) fields.project_ids = "at most 200 projects";
+    else
+      ids.forEach((id, i) => {
+        if (typeof id !== "string" || !db.projects.some((p) => p.id === id && inOrg(orgId, p.id))) fields[`project_ids[${i}]`] = "not a project in this org";
+      });
+  }
+}
+
+function versionOf(r: ScanRule): ScanRuleVersion {
+  return { version: r.version, body: r.body, sha256: r.sha256, name: r.name, enabled: r.enabled, project_ids: r.project_ids, created_by: r.updated_by, created_at: r.updated_at };
+}
+
+/** A test is queued for 1.5 s, runs until 4 s, then shows its outcome. */
+function advanceRuleTest(t: db.MockRuleTest): db.MockRuleTest {
+  if (t._t === undefined || t.state === "done" || t.state === "failed") return t;
+  const elapsed = db.now() - t._t;
+  if (elapsed >= 4000 && t._outcome) {
+    t.state = t._outcome.error ? "failed" : "done";
+    t.error = t._outcome.error;
+    t.findings = t._outcome.findings;
+    t.finished_at = new Date().toISOString();
+  } else if (elapsed >= 1500) t.state = "running";
+  return t;
+}
+
+function ruleTestView({ _t: _a, _outcome: _b, _by: _c, ...t }: db.MockRuleTest): RuleTest {
+  return t;
+}
+
+/** The org rules a new scan of `p` runs: the enabled ones whose scope has the project. */
+function orgRulesFor(p: Project, tools: Scan["tools"]): Scan["org_rules"] {
+  return (db.scanRules[db.orgOfProject(p.id)] ?? [])
+    .filter((r) => r.enabled && tools.includes(r.tool) && (r.project_ids === null || r.project_ids.includes(p.id)))
+    .map((r) => ({ rule_id: r.rule_id, tool: r.tool, version: r.version, sha256: r.sha256 }));
+}
+
 // ---- v0.4 wave 2: webhooks and Slack ----
 
 /** manage_integrations: org admins and security leads. */
@@ -680,6 +749,190 @@ const routes: [string, RegExp, Handler][] = [
   ],
   // v0.5 wave 2: the ecosystems in the visible inventory, most components first.
   ["GET", new RegExp(`^${O}/components/ecosystems$`), (m) => componentEcosystems(m[1]!)],
+  // ---- v0.6 wave 1: the org's own scan rules ----
+  [
+    "GET",
+    new RegExp(`^${O}/scan-rules$`),
+    (m, url) => {
+      const list = rulesOf(m[1]!);
+      const tool = url.searchParams.get("tool");
+      if (tool !== null && !SCAN_RULE_TOOLS.includes(tool as ScanRuleTool)) throw new Fail(422, "VALIDATION_FAILED", { tool: "opengrep or gitleaks" });
+      return { items: list.filter((r) => !tool || r.tool === tool) };
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/scan-rules$`),
+    (m, _u, body) => {
+      const list = requireRules(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["tool", "name", "body", "enabled", "project_ids"].includes(k)) fields[k] = "unknown field";
+      const tool = SCAN_RULE_TOOLS.includes(b.tool as ScanRuleTool) ? (b.tool as ScanRuleTool) : null;
+      if (!tool) fields.tool = "opengrep or gitleaks";
+      for (const k of ["name", "body"]) if (!(k in b)) fields[k] = "required";
+      checkRuleFields(m[1]!, b, fields);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const parsed = parseRule(tool!, b.body as string);
+      if (parsed.problems.length) throw new Fail(422, "RULE_INVALID", undefined, { problems: parsed.problems });
+      if (list.some((r) => r.tool === tool && r.key === parsed.key) || list.filter((r) => r.tool === tool).length >= 200) throw new Fail(409, "CONFLICT");
+      const at = new Date().toISOString();
+      const r: ScanRule = {
+        id: db.uuid(),
+        tool: tool!,
+        key: parsed.key!,
+        rule_id: `org.${parsed.key}`,
+        name: (b.name as string).trim(),
+        body: parsed.canonical!,
+        sha256: db.mockBodySha(parsed.canonical!),
+        version: 1,
+        enabled: b.enabled !== false,
+        severity: parsed.severity!,
+        project_ids: (b.project_ids as string[] | null | undefined) ?? null,
+        created_by: meRef(),
+        updated_by: meRef(),
+        created_at: at,
+        updated_at: at,
+      };
+      list.unshift(r);
+      db.scanRuleVersions[r.id] = [versionOf(r)];
+      audit("scan_rule.created", "scan_rule", r.id, { tool: r.tool, key: r.key, sha256: r.sha256 });
+      return [201, r];
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/scan-rules/validate$`),
+    (m, _u, body) => {
+      requireRules(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const tool = SCAN_RULE_TOOLS.includes(b.tool as ScanRuleTool) ? (b.tool as ScanRuleTool) : null;
+      if (!tool || typeof b.body !== "string") throw new Fail(422, "VALIDATION_FAILED", { ...(tool ? {} : { tool: "opengrep or gitleaks" }), ...(typeof b.body === "string" ? {} : { body: "required" }) });
+      const parsed = parseRule(tool, b.body);
+      return { ok: parsed.problems.length === 0, key: parsed.key, severity: parsed.severity, body: parsed.canonical, problems: parsed.problems };
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/scan-rules/tests$`),
+    (m, _u, body) => {
+      requireRules(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      const tool = SCAN_RULE_TOOLS.includes(b.tool as ScanRuleTool) ? (b.tool as ScanRuleTool) : null;
+      if (!tool) fields.tool = "opengrep or gitleaks";
+      if (typeof b.body !== "string" || !b.body) fields.body = "required";
+      if (typeof b.filename !== "string" || !/^[A-Za-z0-9._-]{1,255}$/.test(b.filename)) fields.filename = "letters, digits, '.', '_' and '-' only";
+      if (typeof b.snippet !== "string") fields.snippet = "required";
+      else if (new TextEncoder().encode(b.snippet).length > 65536) fields.snippet = "at most 64 KiB";
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const hourAgo = new Date(db.now() - 3_600_000).toISOString();
+      if (Object.values(db.ruleTests).filter((t) => t._by === db.me.id && t.created_at >= hourAgo && t._t !== undefined).length >= 20) {
+        throw new Fail(429, "RATE_LIMITED");
+      }
+      const parsed = parseRule(tool!, b.body as string);
+      if (parsed.problems.length) throw new Fail(422, "RULE_INVALID", undefined, { problems: parsed.problems });
+      // Like the server: the outcome is all that is kept; the snippet is dropped here.
+      const outcome = fakeTest(parsed, b.filename as string, b.snippet as string);
+      const t: db.MockRuleTest = { id: db.uuid(), state: "queued", findings: [], error: null, created_at: new Date().toISOString(), finished_at: null, _t: db.now(), _outcome: outcome, _by: db.me.id };
+      db.ruleTests[t.id] = t;
+      return [202, ruleTestView(t)];
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/scan-rules/tests/([^/]+)$`),
+    (m) => {
+      requireRules(m[1]!);
+      const t = db.ruleTests[m[2]!];
+      // Its creator only; anyone else gets the same 404 as for a missing test.
+      if (!t || t._by !== db.me.id) throw NOT_FOUND();
+      return ruleTestView(advanceRuleTest(t));
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/scan-rules/([^/]+)$`),
+    (m) => {
+      const r = findRule(m[1]!, m[2]!);
+      const view = { ...r };
+      // mock: "Unsafe YAML load" is changed by Huy right after someone first opens it.
+      if (db.raceOnce.delete(r.id)) {
+        r.project_ids = null;
+        r.version += 1;
+        r.updated_by = db.users.huy;
+        r.updated_at = new Date().toISOString();
+        db.scanRuleVersions[r.id]!.unshift(versionOf(r));
+      }
+      return view;
+    },
+  ],
+  [
+    "PATCH",
+    new RegExp(`^${O}/scan-rules/([^/]+)$`),
+    (m, _u, body) => {
+      requireRules(m[1]!);
+      const r = findRule(m[1]!, m[2]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      const keys = Object.keys(b).filter((k) => k !== "version");
+      for (const k of keys) if (!["name", "body", "enabled", "project_ids"].includes(k)) fields[k] = "unknown field";
+      if (typeof b.version !== "number") fields.version = "required";
+      if (keys.length === 0) fields.body = "nothing to change";
+      if ("enabled" in b && typeof b.enabled !== "boolean") fields.enabled = "true or false";
+      checkRuleFields(m[1]!, b, fields);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (b.version !== r.version) throw new Fail(409, "VERSION_CONFLICT");
+      if (typeof b.body === "string") {
+        const parsed = parseRule(r.tool, b.body);
+        if (parsed.problems.length) throw new Fail(422, "RULE_INVALID", undefined, { problems: parsed.problems });
+        if (parsed.key !== r.key && rulesOf(m[1]!).some((x) => x.tool === r.tool && x.key === parsed.key)) throw new Fail(409, "CONFLICT");
+        r.key = parsed.key!;
+        r.rule_id = `org.${parsed.key}`;
+        r.body = parsed.canonical!;
+        r.sha256 = db.mockBodySha(r.body);
+        r.severity = parsed.severity!;
+      }
+      if (typeof b.name === "string") r.name = b.name.trim();
+      if ("project_ids" in b) r.project_ids = (b.project_ids as string[] | null) ?? null;
+      const toggled = typeof b.enabled === "boolean" && b.enabled !== r.enabled;
+      if (typeof b.enabled === "boolean") r.enabled = b.enabled;
+      r.version += 1;
+      r.updated_by = meRef();
+      r.updated_at = new Date().toISOString();
+      db.scanRuleVersions[r.id]!.unshift(versionOf(r));
+      audit(toggled && keys.length === 1 ? (r.enabled ? "scan_rule.enabled" : "scan_rule.disabled") : "scan_rule.updated", "scan_rule", r.id, { tool: r.tool, key: r.key, sha256: r.sha256 });
+      return r;
+    },
+  ],
+  [
+    "DELETE",
+    new RegExp(`^${O}/scan-rules/([^/]+)$`),
+    (m, url) => {
+      requireRules(m[1]!);
+      const r = findRule(m[1]!, m[2]!);
+      const version = Number(url.searchParams.get("version"));
+      if (!Number.isInteger(version) || version < 1) throw new Fail(422, "VALIDATION_FAILED", { version: "required" });
+      if (version !== r.version) throw new Fail(409, "VERSION_CONFLICT");
+      const list = rulesOf(m[1]!);
+      list.splice(list.indexOf(r), 1);
+      // Its issues stay as they are; they only lose the rule's name and id.
+      for (const i of db.issues) if (i.org_rule?.scan_rule_id === r.id) i.org_rule = { rule_id: i.org_rule.rule_id, name: null, scan_rule_id: null };
+      audit("scan_rule.deleted", "scan_rule", r.id, { tool: r.tool, key: r.key, sha256: r.sha256 });
+      return [204, null];
+    },
+  ],
+  [
+    "GET",
+    new RegExp(`^${O}/scan-rules/([^/]+)/versions$`),
+    (m, url) => {
+      const r = findRule(m[1]!, m[2]!);
+      const all = db.scanRuleVersions[r.id] ?? [];
+      const limit = Math.min(Number(url.searchParams.get("limit")) || PAGE, 200);
+      const start = Number(url.searchParams.get("cursor") ?? 0) || 0;
+      return { items: all.slice(start, start + limit), next_cursor: start + limit < all.length ? String(start + limit) : null };
+    },
+  ],
   // ---- v0.4 wave 2: webhooks and Slack (manage_integrations) ----
   ["GET", new RegExp(`^${O}/webhooks$`), (m) => ({ items: requireIntegrations(m[1]!), available: !db.mockFlags.integrationsUnavailable })],
   [
@@ -1153,6 +1406,7 @@ const routes: [string, RegExp, Handler][] = [
         image_ref: kind === "image" ? (b.image_ref ?? null) : null,
         sbom: null,
         history: null,
+        org_rules: kind === "image" ? [] : orgRulesFor(p, tools),
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
@@ -1482,7 +1736,7 @@ function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
 }
 
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, ...rest } = i;
   return rest;
 }
 
@@ -1492,7 +1746,7 @@ function nextForcedError(method: string): string | null {
   return code && /^[A-Z_]+$/.test(code) ? code : null;
 }
 
-const STATUS: Record<string, number> = { WEBHOOK_LIMIT: 409, SECRETS_KEY_MISSING: 409, MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
+const STATUS: Record<string, number> = { RULE_INVALID: 422, WEBHOOK_LIMIT: 409, SECRETS_KEY_MISSING: 409, MFA_NOT_ENABLED: 409, MFA_REQUIRED: 403, TOKEN_SCOPE: 403, PROJECT_ARCHIVED: 409, VERSION_CONFLICT: 409, CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, RATE_LIMITED: 429, INVALID_TRANSITION: 422, VALIDATION_FAILED: 422, UNAUTHORIZED: 401 };
 
 export const mockFetch: typeof fetch = async (input, init) => {
   await new Promise((r) => setTimeout(r, LATENCY));
@@ -1519,7 +1773,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
       return envelope(200, out, null);
     } catch (e) {
       if (e instanceof Fail) {
-        return envelope(e.status, null, { code: e.code, message: e.code.toLowerCase(), ...(e.fields ? { metadata: { fields: e.fields } } : {}) }, e.status === 429 ? { "Retry-After": "300" } : {});
+        return envelope(e.status, null, { code: e.code, message: e.code.toLowerCase(), ...(e.fields || e.metadata ? { metadata: { ...(e.fields ? { fields: e.fields } : {}), ...e.metadata } } : {}) }, e.status === 429 ? { "Retry-After": "300" } : {});
       }
       return envelope(500, null, { code: "INTERNAL", message: "mock error" });
     }
