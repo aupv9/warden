@@ -33,6 +33,12 @@ func TestRuntimeClass(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// GKE Sandbox's handler.
+	c = newCluster(t, runtimeClass("gvisor", "gvisor"))
+	if st, err := c.b.RuntimeClass(ctx); st != RuntimeClassGVisor || err != nil {
+		t.Fatalf("gke: %v %v", st, err)
+	}
+
 	c = newCluster(t, runtimeClass("gvisor", "runc"))
 	if st, err := c.b.RuntimeClass(ctx); st != RuntimeClassBad || !strings.Contains(err.Error(), `handler "runc"`) {
 		t.Fatalf("runc: %v %v", st, err)
@@ -129,7 +135,7 @@ func TestCanary(t *testing.T) {
 						ContainerStatuses: []corev1.ContainerStatus{terminated(containerCanary, c.code, "", c.msg)}}
 				}
 			}
-			res, err := cl.b.Canary(ctx, []string{"10.96.0.10:53"})
+			res, err := cl.b.Canary(ctx)
 			if c.errHas != "" {
 				if err == nil || !strings.Contains(err.Error(), c.errHas) {
 					t.Fatalf("err %v", err)
@@ -148,7 +154,7 @@ func TestCanary(t *testing.T) {
 	cl.onCreate = func(p *corev1.Pod) {
 		p.Status.ContainerStatuses = []corev1.ContainerStatus{waiting(containerCanary, "ImagePullBackOff")}
 	}
-	if _, err := cl.b.Canary(ctx, nil); err == nil || !strings.Contains(err.Error(), "ImagePullBackOff") {
+	if _, err := cl.b.Canary(ctx); err == nil || !strings.Contains(err.Error(), "ImagePullBackOff") {
 		t.Fatalf("image: %v", err)
 	}
 }

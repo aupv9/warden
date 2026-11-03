@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,14 +23,16 @@ import (
 	"github.com/aupv9/warden/backend/internal/scan/sandbox/sandboxio"
 )
 
-// GVisorHandler is the containerd runtime handler of gVisor.
-const GVisorHandler = "runsc"
+// GVisorHandlers are the runtime handler names gVisor goes by: "runsc"
+// (gVisor's own containerd setup) and "gvisor" (GKE Sandbox). The contract
+// named runsc only; GKE's name was added once the chart met it.
+var GVisorHandlers = []string{"runsc", "gvisor"}
 
 // RuntimeClassState is what the API says of scan.kube.runtime_class.
 type RuntimeClassState int
 
 const (
-	// RuntimeClassGVisor: it exists with handler runsc.
+	// RuntimeClassGVisor: it exists with a gVisor handler (GVisorHandlers).
 	RuntimeClassGVisor RuntimeClassState = iota
 	// RuntimeClassUnknown: the worker may not read RuntimeClasses (they are
 	// cluster-scoped; the chart's Role is namespaced). The canary then
@@ -55,8 +58,8 @@ func (b *Backend) RuntimeClass(ctx context.Context) (RuntimeClassState, error) {
 		return RuntimeClassUnknown, fmt.Errorf("may not read RuntimeClass %q: %w", b.Config.RuntimeClass, err)
 	case err != nil:
 		return RuntimeClassUnknown, fmt.Errorf("reading RuntimeClass %q: %w", b.Config.RuntimeClass, err)
-	case rc.Handler != GVisorHandler:
-		return RuntimeClassBad, fmt.Errorf("RuntimeClass %q has handler %q, not %q (gVisor)", rc.Name, rc.Handler, GVisorHandler)
+	case !slices.Contains(GVisorHandlers, rc.Handler):
+		return RuntimeClassBad, fmt.Errorf("RuntimeClass %q has handler %q, not one of gVisor's (%s)", rc.Name, rc.Handler, strings.Join(GVisorHandlers, ", "))
 	}
 	return RuntimeClassGVisor, nil
 }
@@ -114,21 +117,27 @@ type CanaryResult struct {
 	// namespace's traffic is not denied.
 	Reached []string
 	Tried   []string
+	// Early are targets reached before the network was cut off: the
+	// NetworkPolicy took effect only after the Pod started (scanner Pods
+	// wait for it, see scannerPod).
+	Early []string
 	// GVisor: it ran on gVisor's kernel.
 	GVisor bool
 }
 
 // Canary runs a Pod with the io image and every scanner Pod's settings that
-// tries to reach the internet (1.1.1.1:443), the API server's service and
-// extra targets, and reports whether it runs on gVisor. A canary that can't
+// tries to reach Targets in rounds until none connects (for at most
+// canaryWithin: a NetworkPolicy may apply only after the Pod started), and
+// reports whether it runs on gVisor. Isolated means the last round reached
+// nothing. A canary that can't
 // run or report is an error: isolation is unknown. Leftover canaries (of a
 // crashed start) are removed first.
-func (b *Backend) Canary(ctx context.Context, extra []string) (CanaryResult, error) {
+func (b *Backend) Canary(ctx context.Context) (CanaryResult, error) {
 	var res CanaryResult
 	b.removeCanaries(ctx)
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	pod := canaryPod(b.Config, "warden-canary-"+hex.EncodeToString(suffix), extra)
+	pod := canaryPod(b.Config, "warden-canary-"+hex.EncodeToString(suffix), b.Targets())
 	ctx, cancel := context.WithTimeout(ctx, canaryTimeout+workerGrace)
 	defer cancel()
 	created, err := b.Client.CoreV1().Pods(b.Namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -137,6 +146,12 @@ func (b *Backend) Canary(ctx context.Context, extra []string) (CanaryResult, err
 	}
 	defer b.remove(pod.Name, created.UID)
 	done, err := b.waitFor(ctx, pod.Name, created.UID, func(p *corev1.Pod) (bool, error) {
+		if p.Status.Reason == "DeadlineExceeded" {
+			if why := describePending(p); why != "" {
+				return false, failed("timeout (%s)", why)
+			}
+			return false, failed("timeout")
+		}
 		if t := containerStatus(p.Status.ContainerStatuses, containerCanary).State.Terminated; t != nil {
 			return true, nil
 		}
@@ -153,7 +168,7 @@ func (b *Backend) Canary(ctx context.Context, extra []string) (CanaryResult, err
 	if len(t.Message) > 4096 || json.Unmarshal([]byte(t.Message), &r) != nil {
 		return res, fmt.Errorf("canary exited %d without a readable report", t.ExitCode)
 	}
-	res = CanaryResult{Reached: r.Reached, Tried: r.Tried, GVisor: r.GVisor}
+	res = CanaryResult{Reached: r.Reached, Tried: r.Tried, Early: r.Early, GVisor: r.GVisor}
 	if (t.ExitCode == sandboxio.ExitOK) != (len(r.Reached) == 0 && r.GVisor) {
 		return res, fmt.Errorf("canary exit %d disagrees with its report", t.ExitCode)
 	}
@@ -173,6 +188,16 @@ func (b *Backend) removeCanaries(ctx context.Context) {
 			_ = b.deletePod(ctx, p.Name, nil)
 		}
 	}
+}
+
+// Targets are what no sandboxed Pod may reach: ProbeTargets and, when the
+// worker runs in the cluster, the cluster DNS.
+func (b *Backend) Targets() []string {
+	t := slices.Clone(ProbeTargets)
+	if dns := b.ClusterDNS(); dns != "" {
+		t = append(t, dns)
+	}
+	return t
 }
 
 // ClusterDNS is the worker's first nameserver as host:53, when the worker

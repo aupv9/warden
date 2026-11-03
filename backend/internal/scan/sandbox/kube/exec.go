@@ -38,7 +38,11 @@ func ExitCode(err error) int {
 }
 
 // RemoteExecer is the Execer of a real cluster: WebSocket (RemoteCommand
-// v5), falling back to SPDY on servers without it, as kubectl does.
+// v5), falling back to SPDY, as kubectl does. The worker's Role grants
+// pods/exec "create" only: the WebSocket upgrade is a GET, which API servers
+// before 1.35 authorize as "get" and refuse (403, a failed upgrade); the
+// SPDY retry is a POST, authorized as "create" (TestRemoteExecFallsBackToPOST).
+// From 1.35 the upgrade itself is checked against "create".
 type RemoteExecer struct {
 	Config *rest.Config
 	Client kubernetes.Interface

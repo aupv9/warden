@@ -66,7 +66,15 @@
           "/usr/local/bin/warden-sandbox-io",
           "wait",
           "-marker",
-          "/ctl/ready"
+          "/ctl/ready",
+          "-within",
+          "1m0s",
+          "-connect",
+          "1.1.1.1:443",
+          "-connect",
+          "$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT",
+          "-connect",
+          "10.96.0.10:53"
         ],
         "resources": {
           "limits": {
@@ -98,7 +106,7 @@
             "mountPath": "/in/rules"
           }
         ],
-        "terminationMessagePolicy": "File",
+        "terminationMessagePolicy": "FallbackToLogsOnError",
         "imagePullPolicy": "IfNotPresent",
         "securityContext": {
           "capabilities": {

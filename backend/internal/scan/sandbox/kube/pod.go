@@ -304,13 +304,24 @@ func scannerPod(spec sandbox.ToolSpec, c sandbox.RunConfig, cfg Config, in input
 		msgPolicy = corev1.TerminationMessageReadFile
 	}
 	inEphemeral := in.srcDisk + in.rulesBytes + ioEphemeral
+	// io-in exits, and so lets the scanner start, only once the input is
+	// sealed and (with IsolationTargets) none of the targets connects from
+	// this Pod: a NetworkPolicy may take effect only after a Pod started.
+	inCmd := []string{ioBinary, "wait", "-marker", readyMarker}
+	if len(cfg.IsolationTargets) > 0 {
+		inCmd = append(inCmd, "-within", isolationWithin.String())
+		for _, t := range cfg.IsolationTargets {
+			inCmd = append(inCmd, "-connect", t)
+		}
+	}
 	p.Spec.InitContainers = []corev1.Container{{
 		Name: containerIn, Image: cfg.IOImage, ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:                  []string{ioBinary, "wait", "-marker", readyMarker},
-		VolumeMounts:             inMounts,
-		Resources:                ioResources(inEphemeral),
-		SecurityContext:          containerSecurity(),
-		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+		Command:         inCmd,
+		VolumeMounts:    inMounts,
+		Resources:       ioResources(inEphemeral),
+		SecurityContext: containerSecurity(),
+		// Only warden-sandbox-io's own messages ("still reaches …").
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 	}}
 	scanRes := corev1.ResourceList{
 		corev1.ResourceCPU:    cpu,
@@ -366,15 +377,26 @@ func sendCmd(caps map[string]int64) []string {
 	return cmd
 }
 
+// ProbeTargets are what a sandboxed Pod must not reach: the internet and the
+// API server's service (KUBERNETES_SERVICE_HOST/PORT, which the kubelet sets
+// even without service links). The cluster DNS is added when the worker
+// knows it (Backend.ClusterDNS).
+var ProbeTargets = []string{"1.1.1.1:443", "$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT"}
+
+// isolationWithin: how long a new Pod's network may take to be cut off.
+// canaryWithin is shorter: the canary only proves the policy works.
+const (
+	isolationWithin = time.Minute
+	canaryWithin    = 30 * time.Second
+)
+
 // canaryPod is the preflight's probe: the io image with every scanner Pod's
-// settings, trying TCP connections to the internet, the API server's
-// service (KUBERNETES_SERVICE_HOST/PORT, which the kubelet sets even without
-// service links) and extra (the cluster DNS when the worker knows it).
-func canaryPod(cfg Config, name string, extra []string) *corev1.Pod {
+// settings, trying TCP connections to targets in rounds until none connects
+// (for at most canaryWithin), and checking it runs on gVisor.
+func canaryPod(cfg Config, name string, targets []string) *corev1.Pod {
 	p := podShell(cfg, name, map[string]string{LabelRole: "canary", labelManagedBy: managedBy}, canaryTimeout)
-	args := []string{"probe", "-timeout", "5s",
-		"-connect", "1.1.1.1:443", "-connect", "$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT"}
-	for _, t := range extra {
+	args := []string{"probe", "-timeout", "3s", "-within", canaryWithin.String()}
+	for _, t := range targets {
 		args = append(args, "-connect", t)
 	}
 	args = append(args, "-report", corev1.TerminationMessagePathDefault)

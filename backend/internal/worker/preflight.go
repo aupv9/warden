@@ -127,17 +127,24 @@ func (e *Env) preflightKube(ctx context.Context, strict bool) error {
 
 	e.cleanup(ctx, func(ctx context.Context, active map[string]bool) { e.removePods(ctx, active) })
 
-	var extra []string
-	if dns := k.ClusterDNS(); dns != "" {
-		extra = append(extra, dns)
-	}
-	res, err := k.Canary(ctx, extra)
+	res, err := k.Canary(ctx)
 	switch {
 	case err != nil:
 		problem(fmt.Errorf("network canary in %s: %w; the sandbox's isolation is unknown", k.Namespace, err))
 	case len(res.Reached) > 0:
 		problem(fmt.Errorf("sandbox namespace %s is not isolated: a canary pod connected to %s (it needs a default-deny NetworkPolicy and a CNI that enforces it)",
 			k.Namespace, strings.Join(res.Reached, ", ")))
+		if !strict {
+			// Development only: every scanner pod would wait for a network
+			// cut-off that never comes. Scanners get the network instead.
+			e.Log.Warn("worker preflight: scanner pods will run WITH network access; acceptable for local development only")
+			k.IsolationTargets = nil
+		}
+	case len(res.Early) > 0:
+		// The policy applies only after a Pod started; scanner Pods wait
+		// for the cut-off before the scanner starts (kube.scannerPod).
+		e.Log.Warn("worker preflight: a new pod reaches the network until the NetworkPolicy takes effect",
+			"namespace", k.Namespace, "reached_first", res.Early)
 	}
 	if err == nil && !res.GVisor {
 		if rc == kube.RuntimeClassGVisor {

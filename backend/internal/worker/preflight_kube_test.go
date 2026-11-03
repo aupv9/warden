@@ -42,7 +42,8 @@ func kubeEnv(t *testing.T, active []uuid.UUID, code int32, report string, objs .
 		}
 		return false, nil, nil
 	})
-	env.Kube = &kube.Backend{Client: cs, Config: kube.Config{Namespace: sandboxNS, RuntimeClass: "gvisor", MirrorPVC: "m", IOImage: ioImage}, Log: quietLog()}
+	env.Kube = &kube.Backend{Client: cs, Config: kube.Config{Namespace: sandboxNS, RuntimeClass: "gvisor", MirrorPVC: "m", IOImage: ioImage,
+		IsolationTargets: kube.ProbeTargets}, Log: quietLog()}
 	env.Sandbox = env.Kube
 	return env, cs
 }
@@ -118,5 +119,35 @@ func TestPreflightKubeTrustsAVerifiedRuntimeClass(t *testing.T) {
 	env, _ := kubeEnv(t, nil, 10, `{"tried":["1.1.1.1:443"],"reached":[],"gvisor":false}`, gvisorRC)
 	if err := env.Preflight(context.Background(), nil, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A policy that applies only after a pod started (k3s) passes once the
+// canary is cut off; GKE Sandbox's handler is "gvisor".
+func TestPreflightKubeLatePolicyAndGKE(t *testing.T) {
+	gke := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "gvisor"}, Handler: "gvisor"}
+	env, _ := kubeEnv(t, nil, 0, `{"tried":["1.1.1.1:443"],"reached":[],"early":["1.1.1.1:443"],"gvisor":true}`, gke)
+	if err := env.Preflight(context.Background(), nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Kube.IsolationTargets) == 0 {
+		t.Fatal("scanner pods lost their isolation gate")
+	}
+}
+
+// In development an open namespace only warns, and scanner pods then don't
+// wait for a cut-off that would never come; in prod the gate stays.
+func TestPreflightKubeOpenNamespace(t *testing.T) {
+	open := `{"tried":["1.1.1.1:443"],"reached":["1.1.1.1:443"],"gvisor":true}`
+	env, _ := kubeEnv(t, nil, 10, open, gvisorRC)
+	if err := env.Preflight(context.Background(), nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if env.Kube.IsolationTargets != nil {
+		t.Fatal("gate kept in development")
+	}
+	env, _ = kubeEnv(t, nil, 10, open, gvisorRC)
+	if err := env.Preflight(context.Background(), nil, true); err == nil || len(env.Kube.IsolationTargets) == 0 {
+		t.Fatal("prod: open namespace accepted or gate removed:", err)
 	}
 }

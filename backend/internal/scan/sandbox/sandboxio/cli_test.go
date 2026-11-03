@@ -10,9 +10,71 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// A NetworkPolicy may take effect only after a Pod started: wait -connect
+// lets the scanner start only once nothing connects, and probe -within
+// retries until the network is cut off.
+func TestCLINetworkGate(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := ln.Addr().String()
+	var mu sync.Mutex
+	accepted := 0
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+			mu.Lock()
+			accepted++
+			mu.Unlock()
+		}
+	}()
+	marker := filepath.Join(t.TempDir(), "ready")
+	must(t, os.WriteFile(marker, nil, 0o444))
+
+	// Still open after the window: refused, so io-in fails and the scanner never starts.
+	code, _, msg := run(t, context.Background(), nil, "wait", "-marker", marker, "-connect", open, "-within", "1s", "-timeout", "500ms")
+	if code != ExitError || !strings.Contains(msg, "still reaches "+open) {
+		t.Fatalf("open network: exit %d: %s", code, msg)
+	}
+
+	// Cut off after the first round (the policy applied late): accepted.
+	mu.Lock()
+	accepted = 0
+	mu.Unlock()
+	go func() {
+		for {
+			mu.Lock()
+			n := accepted
+			mu.Unlock()
+			if n > 0 {
+				ln.Close()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	code, out, _ := run(t, context.Background(), nil, "probe", "-connect", open, "-within", "10s", "-timeout", "500ms")
+	var r ProbeReport
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Reached) != 0 || len(r.Early) != 1 || r.Early[0] != open {
+		t.Fatalf("report %+v (exit %d)", r, code)
+	}
+	if code, _, msg := run(t, context.Background(), nil, "wait", "-marker", marker, "-connect", open, "-within", "5s", "-timeout", "500ms"); code != ExitOK {
+		t.Fatalf("closed network: exit %d: %s", code, msg)
+	}
+}
 
 func run(t *testing.T, ctx context.Context, stdin []byte, args ...string) (int, string, string) {
 	t.Helper()
