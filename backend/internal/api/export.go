@@ -34,11 +34,21 @@ func issueFilter(c *gin.Context) service.IssueFilter {
 	}
 }
 
+// exportEndLine is the last line of a complete export: one cell, N being the
+// data rows above it. A file without it, or with another N, is incomplete:
+// over HTTP/2 a failure mid-stream may just end the response, so the client
+// can't tell otherwise. No data row can forge it: every row has all columns
+// (so its line holds commas), csvCell keeps each on one line, and the first
+// cell is the server's issue key (exportRecord).
+func exportEndLine(rows int) string { return "#warden:end rows=" + strconv.Itoa(rows) }
+
 // exportIssues streams the issue list as CSV. The service validates, rate
 // limits and audits before start is called; rows are written as they are read
-// (encoding/csv over the response, through a small buffer).
+// (encoding/csv over the response, through a small buffer). The end line is
+// written only once the last row was.
 func (h handlers) exportIssues(c *gin.Context) {
 	var w *csv.Writer
+	rows := 0
 	err := h.svc.ExportIssues(c.Request.Context(), actor(c), issueFilter(c),
 		func(ex service.IssueExport) error {
 			hd := c.Writer.Header()
@@ -57,7 +67,11 @@ func (h handlers) exportIssues(c *gin.Context) {
 		},
 		func(r service.IssueExportRow) error {
 			_ = w.Write(exportRecord(r))
-			return w.Error() // the client went away: stop reading rows
+			if err := w.Error(); err != nil {
+				return err // the client went away: stop reading rows
+			}
+			rows++
+			return nil
 		})
 	switch {
 	case err != nil && !c.Writer.Written():
@@ -69,6 +83,7 @@ func (h handlers) exportIssues(c *gin.Context) {
 		logger.FromContext(c.Request.Context()).Warn("issue export broken off", slog.Any("error", err))
 		abortStream(c)
 	default:
+		_ = w.Write([]string{exportEndLine(rows)})
 		if w.Flush(); w.Error() != nil {
 			abortStream(c)
 		}
@@ -126,6 +141,12 @@ func exportRecord(r service.IssueExportRow) []string {
 		r.Target, strings.Join(r.CVE, " "), strconv.FormatBool(r.KEV), epss, opt(r.Assignee), at(r.DueAt), at(&r.CreatedAt), at(&r.UpdatedAt)}
 	for k, v := range rec {
 		rec[k] = csvCell(v)
+	}
+	// The key is the project's key ([A-Z][A-Z0-9]{1,9}, checked by the
+	// database too) and the issue number, never scanned text, so a row can't
+	// start with the end line's "#". Kept so even if that ever changed.
+	if strings.HasPrefix(rec[0], "#") {
+		rec[0] = "'" + rec[0]
 	}
 	return rec
 }
