@@ -1,6 +1,7 @@
 import { useId, useRef, useState } from "react";
-import type { DragEvent, RefObject } from "react";
+import type { DragEvent, FormEvent, ReactNode, RefObject } from "react";
 import { errorMessage, fieldErrors, waitText } from "../api/errors";
+import { usePullScan } from "../api/hooks/registries";
 import { useUploadScan } from "../api/hooks/scans";
 import { isApiError } from "../api/client";
 import { TOOLS } from "../api/types";
@@ -12,6 +13,8 @@ import { AlertIcon, FileIcon, UploadIcon } from "../components/Icons";
 import { ActionError, Banner } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { formatBytes, formatMb, TOOL_KIND, TOOL_LABELS } from "../lib/format";
+import { can } from "../lib/permissions";
+import { PULL_REF_EXAMPLE, PULL_REF_MAX, validatePullRef } from "../lib/registries";
 import { withDefaults } from "../lib/scanErrors";
 import { IMAGE_REF_MAX, isImageTarget, splitImageRef } from "../lib/intel";
 import { validateArchive, validateImageArchive, validateImageRef, validateImageTarget } from "../lib/upload";
@@ -24,28 +27,49 @@ export function useLimits(): Limits {
 
 export const KIND_LABELS: Record<ScanKind, string> = { source: "Source code", image: "Container image", history: "Git history" };
 
+/** v0.7 wave 2: what the New scan card makes: an upload (source .zip, image .tar) or a scan of an
+ *  image the worker pulls from its registry by digest. */
+export type NewScanMode = UploadKind | "pull";
+const MODE_LABELS: Record<NewScanMode, string> = { source: "Source code", image: "Container image", pull: "Image from a registry" };
+/** The scanners an image scan runs: Trivy for packages, Gitleaks for secrets in the layers. */
+export const IMAGE_TOOLS: Tool[] = ["trivy", "gitleaks"];
+const IMAGE_TOOL_KIND: Partial<Record<Tool, string>> = { trivy: "packages", gitleaks: "secrets in every layer" };
+
 /** What the file picker accepts per kind (the checks in lib/upload.ts decide). History scans
  *  (a git bundle) come only from the CLI: a browser can't build a bundle. */
 const ACCEPT: Record<UploadKind, string> = { source: ".zip,application/zip", image: ".tar,application/x-tar" };
 
-function ToolChecks({ tools, setTools, disabled }: { tools: Tool[]; setTools: (t: Tool[]) => void; disabled?: boolean }) {
+function ToolChecks({
+  tools,
+  setTools,
+  disabled,
+  choices = TOOLS,
+  note = "(project defaults)",
+}: {
+  tools: Tool[];
+  setTools: (t: Tool[]) => void;
+  disabled?: boolean;
+  choices?: Tool[];
+  note?: string;
+}) {
+  const image = choices !== TOOLS;
   return (
     <fieldset disabled={disabled}>
       <legend>
-        Scanners <span className="muted" style={{ fontWeight: 400 }}>(project defaults)</span>
+        Scanners <span className="muted" style={{ fontWeight: 400 }}>{note}</span>
       </legend>
       <div className="checks-grid">
-        {TOOLS.map((t) => (
+        {choices.map((t) => (
           <label key={t} className="checkbox-card">
             <input
               type="checkbox"
               checked={tools.includes(t)}
               onChange={(e) =>
-                setTools(e.target.checked ? TOOLS.filter((x) => x === t || tools.includes(x)) : tools.filter((x) => x !== t))
+                setTools(e.target.checked ? choices.filter((x) => x === t || tools.includes(x)) : tools.filter((x) => x !== t))
               }
             />
             <span>
-              <strong>{TOOL_LABELS[t]}</strong> <span className="muted">{TOOL_KIND[t]}</span>
+              <strong>{TOOL_LABELS[t]}</strong> <span className="muted">{(image && IMAGE_TOOL_KIND[t]) || TOOL_KIND[t]}</span>
             </span>
           </label>
         ))}
@@ -88,27 +112,81 @@ function Command({ text, label }: { text: string; label: string }) {
 
 /**
  * The New scan card. v0.3 adds a Source code / Container image switch: an image scan uploads
- * the .tar that `docker save` writes, names the repository its issues are tracked under, and
- * always runs Trivy only. Warden never pulls from a registry, so no registry credentials exist.
+ * the .tar that `docker save` writes and names the repository its issues are tracked under.
+ * v0.7 wave 2: image scans run Trivy and Gitleaks (secrets in the layers), and "Image from a
+ * registry" has the worker pull an image by digest (PullScanForm); nothing is uploaded then.
  */
 export function NewScan({
   pickerRef,
-  kind,
+  kind: mode,
   setKind,
+  onStarted,
+  pullSeed,
+}: {
+  pickerRef: RefObject<HTMLInputElement | null>;
+  kind: NewScanMode;
+  setKind: (k: NewScanMode) => void;
+  onStarted: (scan: Scan) => void;
+  /** A reference to pull again (from a failed pulled scan); `n` changes on every request. */
+  pullSeed?: { ref: string; n: number } | null;
+}) {
+  const { orgId } = useOrgCtx();
+  const project = useProjectCtx();
+  const upload = useUploadScan(orgId, project.id);
+  const locked = upload.busy || upload.state.phase === "upload_failed";
+  const switcher = (
+    <div className="segmented kind-switch" role="group" aria-label="What to scan">
+      {(["source", "image", "pull"] as const).map((k) => (
+        <button
+          key={k}
+          type="button"
+          aria-pressed={mode === k}
+          disabled={locked && mode !== k}
+          onClick={() => {
+            if (k === mode || locked) return;
+            upload.reset();
+            setKind(k);
+          }}
+        >
+          {MODE_LABELS[k]}
+        </button>
+      ))}
+    </div>
+  );
+  if (mode === "pull") {
+    return (
+      <Card title="New scan" titleId="new-scan-h">
+        <div className="stack" style={{ gap: 16 }}>
+          {switcher}
+          <PullScanForm key={pullSeed?.n ?? 0} initialRef={pullSeed?.ref ?? ""} onStarted={onStarted} />
+        </div>
+      </Card>
+    );
+  }
+  // Keyed by kind, so switching starts with no file and no field errors.
+  return <UploadScan key={mode} pickerRef={pickerRef} kind={mode} upload={upload} switcher={switcher} onStarted={onStarted} />;
+}
+
+function UploadScan({
+  pickerRef,
+  kind,
+  upload,
+  switcher,
   onStarted,
 }: {
   pickerRef: RefObject<HTMLInputElement | null>;
   kind: UploadKind;
-  setKind: (k: UploadKind) => void;
+  upload: ReturnType<typeof useUploadScan>;
+  switcher: ReactNode;
   onStarted: (scan: Scan) => void;
 }) {
   const { orgId } = useOrgCtx();
   const project = useProjectCtx();
   const limits = useLimits();
-  const upload = useUploadScan(orgId, project.id);
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [tools, setTools] = useState<Tool[]>(project.default_tools);
+  const [imageTools, setImageTools] = useState<Tool[]>(IMAGE_TOOLS);
   const [dragging, setDragging] = useState(false);
   const [target, setTarget] = useState("");
   const [imageRef, setImageRef] = useState("");
@@ -123,15 +201,6 @@ export function NewScan({
   const server = s.phase === "error" ? fieldErrors(s.error) : {};
   const targetError = (showErrors ? validateImageTarget(target) : null) ?? server.target;
   const refError = validateImageRef(imageRef) ?? server.image_ref;
-
-  function switchKind(next: UploadKind) {
-    if (next === kind || locked) return;
-    upload.reset();
-    setFile(null);
-    setFileError(null);
-    setShowErrors(false);
-    setKind(next);
-  }
 
   function choose(f: File | undefined) {
     if (!f) return;
@@ -167,8 +236,10 @@ export function NewScan({
         requestAnimationFrame(() => targetRef.current?.focus());
         return;
       }
-    } else if (tools.length === 0) return;
-    const scan = await upload.start(file, image ? ["trivy"] : tools, image ? { kind: "image", target: target.trim(), imageRef: imageRef.trim() } : undefined);
+    }
+    const chosen = image ? imageTools : tools;
+    if (chosen.length === 0) return;
+    const scan = await upload.start(file, chosen, image ? { kind: "image", target: target.trim(), imageRef: imageRef.trim() } : undefined);
     if (scan) {
       setFile(null);
       setShowErrors(false);
@@ -204,13 +275,7 @@ export function NewScan({
         <span className="visually-hidden" role="status" aria-live="polite">
           {announce}
         </span>
-        <div className="segmented kind-switch" role="group" aria-label="What to scan">
-          {(["source", "image"] as const).map((k) => (
-            <button key={k} type="button" aria-pressed={kind === k} disabled={locked && kind !== k} onClick={() => switchKind(k)}>
-              {KIND_LABELS[k]}
-            </button>
-          ))}
-        </div>
+        {switcher}
 
         {!file ? (
           <div
@@ -315,8 +380,8 @@ export function NewScan({
               <p className="small text-2">Or let the CLI save and upload it (from a terminal or CI):</p>
               <Command text="warden scan --image IMAGE" label="warden CLI command" />
               <p className="faint small">
-                Warden doesn't pull from registries and keeps no registry credentials. It looks for vulnerable and
-                license-restricted packages in the image; secrets inside images aren't scanned.
+                Trivy looks for vulnerable and license-restricted packages; Gitleaks reads every layer for secrets, also files a
+                later layer deletes. To scan an image without saving it, choose Image from a registry.
               </p>
             </div>
           </div>
@@ -394,9 +459,7 @@ export function NewScan({
 
         {!locked &&
           (image ? (
-            <p className="small text-2 image-tool">
-              <strong>Scanner:</strong> Trivy <span className="muted">(OS and application packages: vulnerabilities and licenses)</span>
-            </p>
+            <ToolChecks tools={imageTools} setTools={setImageTools} choices={IMAGE_TOOLS} note="(for images)" />
           ) : (
             <ToolChecks tools={tools} setTools={setTools} disabled={locked} />
           ))}
@@ -438,7 +501,7 @@ export function NewScan({
               <Button
                 variant="primary"
                 onClick={() => void start()}
-                disabled={!file || (!image && tools.length === 0) || s.phase === "rate_limited"}
+                disabled={!file || (image ? imageTools : tools).length === 0 || s.phase === "rate_limited"}
                 busy={upload.busy}
               >
                 {image ? "Scan image" : "Start scan"}
@@ -454,5 +517,120 @@ export function NewScan({
         </p>
       </div>
     </Card>
+  );
+}
+
+/** v0.7 wave 2: New scan › Image from a registry. The worker pulls the image itself, by digest
+ *  only (validatePullRef checks the contract's pattern before anything is sent), with the org's
+ *  credentials for its host or anonymously. Nothing is uploaded from the browser. */
+function PullScanForm({ initialRef, onStarted }: { initialRef: string; onStarted: (scan: Scan) => void }) {
+  const { orgId, org } = useOrgCtx();
+  const project = useProjectCtx();
+  const limits = useLimits();
+  const pull = usePullScan(orgId, project.id);
+  const [ref, setRef] = useState(initialRef);
+  const [tools, setTools] = useState<Tool[]>(IMAGE_TOOLS);
+  const [touched, setTouched] = useState(!!initialRef);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const id = useId();
+
+  const server = fieldErrors(pull.error);
+  const refError = (touched ? validatePullRef(ref) : null) ?? server.image_ref;
+  const rateLimited = isApiError(pull.error, "RATE_LIMITED");
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setTouched(true);
+    if (validatePullRef(ref)) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return;
+    }
+    if (tools.length === 0) return;
+    pull.mutate(
+      { image_ref: ref.trim(), tools },
+      {
+        onSuccess: (scan) => {
+          setRef("");
+          setTouched(false);
+          onStarted(scan);
+        },
+        onError: (err) => {
+          if (fieldErrors(err).image_ref) requestAnimationFrame(() => inputRef.current?.focus());
+        },
+      },
+    );
+  };
+
+  return (
+    <form className="pull-fields" onSubmit={submit} noValidate>
+      <div className="field">
+        <label htmlFor={`${id}-ref`}>Image reference</label>
+        <input
+          id={`${id}-ref`}
+          ref={inputRef}
+          className="input mono"
+          value={ref}
+          placeholder={PULL_REF_EXAMPLE}
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          maxLength={PULL_REF_MAX + 20}
+          required
+          aria-invalid={refError ? true : undefined}
+          aria-describedby={`${id}-ref-h${refError ? ` ${id}-ref-e` : ""}`}
+          onChange={(e) => setRef(e.target.value)}
+          onBlur={() => ref.trim() && setTouched(true)}
+        />
+        <span id={`${id}-ref-h`} className="hint">
+          Pin by digest: registry/repo@sha256:…. Warden never pulls by tag, because a tag can point to another image tomorrow.
+        </span>
+        {refError && (
+          <span id={`${id}-ref-e`} className="error">
+            <AlertIcon size={14} /> {refError}
+          </span>
+        )}
+      </div>
+      <div className="image-howto">
+        <p className="small text-2">Print the digest of an image you have pulled or pushed:</p>
+        <Command text="docker inspect --format '{{index .RepoDigests 0}}' IMAGE" label="docker inspect command" />
+      </div>
+      <ToolChecks tools={tools} setTools={setTools} choices={IMAGE_TOOLS} note="(for images)" disabled={pull.isPending} />
+      <p className="faint small">
+        Warden pulls the image itself and signs in with your org's credentials for its host, if an org admin or security lead added them
+        {can("manage_registries", org.role) ? (
+          <>
+            {" "}
+            under <Link to={`/orgs/${orgId}/settings/registries`}>Registries</Link>
+          </>
+        ) : (
+          " under Registries"
+        )}
+        ; otherwise it pulls anonymously. Hosts that resolve to private or internal addresses are refused.
+      </p>
+      {rateLimited ? (
+        <Banner tone="warning" title="You've reached the scan limit for this hour.">
+          Nothing was pulled.{" "}
+          {isApiError(pull.error) && pull.error.retryAfter !== undefined ? `Try again in ${waitText(pull.error.retryAfter)}` : "Try again later"}; the limit
+          is {limits.scans_per_hour} scans per hour, per person.
+        </Banner>
+      ) : (
+        <ActionError
+          always
+          error={pull.error}
+          overrides={{
+            VALIDATION_FAILED: server.image_ref ? "The server refused the image reference. Check the field above." : "The server refused this scan. Check the reference and the scanners.",
+            FORBIDDEN: "You don't have permission to run scans in this project.",
+          }}
+        />
+      )}
+      <div className="row-between">
+        <span className="muted" style={{ fontSize: 13 }}>
+          Nothing is uploaded from this browser. The image is deleted as soon as the scan ends.
+        </span>
+        <Button type="submit" variant="primary" busy={pull.isPending} disabled={tools.length === 0}>
+          Pull and scan
+        </Button>
+      </div>
+    </form>
   );
 }

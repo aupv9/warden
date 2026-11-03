@@ -209,3 +209,118 @@ describe("v0.7 wave 2: Registries", () => {
     }
   });
 });
+
+describe("v0.7 wave 2: scans of pulled images", () => {
+  const web = () => db.projects[0]!;
+  const pay = () => db.projects[1]!;
+  const scansOf = (p: { id: string }) => `${org()}/projects/${p.id}/scans`;
+
+  it("New scan › Image from a registry: the digest rule, Trivy and Gitleaks, the credentials note", async () => {
+    const { html } = await render(`${scansOf(web())}?new=pull`);
+    const t = text(html);
+    expect(html).toMatch(/<button type="button" aria-pressed="true">Image from a registry<\/button>/);
+    expect(html).toMatch(/<button type="button" aria-pressed="false">Container image<\/button>/);
+    expect(t).toContain("Image reference");
+    expect(html).toContain('placeholder="ghcr.io/acme/api@sha256:…"');
+    expect(t).toContain("Pin by digest: registry/repo@sha256:…. Warden never pulls by tag");
+    expect(t).toContain("docker inspect --format '{{index .RepoDigests 0}}' IMAGE");
+    expect(t).toMatch(/Trivy packages/);
+    expect(t).toMatch(/Gitleaks secrets in every layer/);
+    expect(t).not.toContain("Opengrep");
+    expect(t).toContain("Pull and scan");
+    expect(t).toContain("otherwise it pulls anonymously");
+    // A security lead may manage registries: the note links there. No file picker in this mode.
+    expect(html).toContain(`href="/orgs/${db.ORG_ID}/settings/registries"`);
+    expect(html).not.toContain('type="file"');
+
+    // A project owner who isn't an org admin or security lead: no link, the same words.
+    const owner = await render(`${scansOf(web())}?new=pull`, (qc) => qc.setQueryData(qk.me, asRole("member")));
+    expect(text(owner.html)).toContain("Pull and scan");
+    expect(owner.html).not.toContain("/settings/registries");
+  });
+
+  it("Container image uploads run Trivy and Gitleaks too, and point at the registry mode", async () => {
+    const t = text((await render(`${scansOf(web())}?new=image`)).html);
+    expect(t).toMatch(/Trivy packages/);
+    expect(t).toMatch(/Gitleaks secrets in every layer/);
+    expect(t).toContain("To scan an image without saving it, choose Image from a registry.");
+    expect(t).not.toContain("secrets inside images aren't scanned");
+  });
+
+  it("history and panel: Pulled from <host> with the digest reference; no file name", async () => {
+    const pulled = db.PULLED_SCAN;
+    const t = text((await render(scansOf(web()))).html);
+    expect(t).toContain(pulled.image_ref!);
+    expect(t).toContain("Pulled from ghcr.io");
+    const panel = text((await render(`${scansOf(web())}?scan=${pulled.id}`)).html);
+    expect(panel).toMatch(/Pulled from ghcr\.io · 191 MB/);
+    expect(panel).toContain("Issues tracked under ghcr.io/acme/api");
+    expect(panel).not.toContain("api.tar");
+    expect(panel).toContain("View issues");
+  });
+
+  it("each PULL_* failure: Failed in the history, Pull failed with what to do in the panel, Pull again", async () => {
+    const history = text((await render(scansOf(pay()))).html);
+    for (const short of ["registry refused access", "image not found", "image too large to pull", "registry address blocked", "no image for this platform", "pull failed"]) {
+      expect(history).toContain(short);
+    }
+    const words: Record<string, RegExp> = {
+      PULL_UNAUTHORIZED: /The registry refused to give Warden this image ?\..*Registries/,
+      PULL_NOT_FOUND: /The registry has no image with this digest ?\./,
+      PULL_TOO_LARGE: /The image is larger than this server pulls ?\./,
+      PULL_BLOCKED: /private or internal address/,
+      PULL_PLATFORM: /linux\/amd64 unless your operator changed it/,
+      PULL_FAILED: /If it keeps happening, tell your operator\./,
+    };
+    for (const s of db.PULL_FAILURES) {
+      const p = text((await render(`${scansOf(pay())}?scan=${s.id}`)).html);
+      expect(p).toContain("Pull failed");
+      expect(p).not.toContain("Rejected");
+      expect(p).toMatch(words[s.error_code!]!);
+      expect(p).toContain(s.error_code!);
+      expect(p).toContain("Nothing was scanned and no issues changed.");
+      expect(p).toContain("Pull again");
+      expect(p).not.toContain("Upload a new .tar");
+      expect(p).toContain("Pulled from ghcr.io");
+    }
+  });
+
+  it("mock API: digest only, Trivy and Gitleaks only, queued at once; a failure per word in the reference", async () => {
+    const path = `/orgs/${db.ORG_ID}/projects/${web().id}/scans/pull`;
+    const digest = db.fakeDigest(9901);
+    const tag = await call("POST", path, { image_ref: "ghcr.io/acme/api:1.4.2" });
+    expect(tag.status).toBe(422);
+    expect(tag.json.error?.metadata?.fields?.image_ref).toBeDefined();
+    expect((await call("POST", path, { image_ref: `ghcr.io/acme/api@${digest}`, tools: ["opengrep"] })).json.error?.metadata?.fields?.tools).toBeDefined();
+    expect((await call("POST", path, { image_ref: `ghcr.io/acme/api@${digest}`, tools: [] })).status).toBe(422);
+
+    const ghcr = db.registries[db.ORG_ID]!.find((c) => c.host === "ghcr.io")!;
+    const usedBefore = ghcr.last_used_at;
+    const made: string[] = [];
+    try {
+      const ok = await call("POST", path, { image_ref: `ghcr.io/acme/api@${digest}` });
+      expect(ok.status).toBe(201);
+      const scan = ok.json.data as Record<string, unknown> & { id: string };
+      made.push(scan.id);
+      expect(scan).toMatchObject({ pulled: true, kind: "image", status: "queued", target: "ghcr.io/acme/api", tools: ["trivy", "gitleaks"] });
+      expect(scan).not.toHaveProperty("_t");
+      expect(ghcr.last_used_at).not.toBe(usedBefore);
+
+      const missing = await call("POST", path, { image_ref: `ghcr.io/acme/missing@${digest}`, tools: ["gitleaks"] });
+      const id = (missing.json.data as { id: string }).id;
+      made.push(id);
+      // The worker picks it up after a few seconds in the mock: move its clock back.
+      Object.assign(db.scans.find((s) => s.id === id)!, { _t: Date.now() - 10_000 });
+      expect((await call("GET", `/orgs/${db.ORG_ID}/scans/${id}`)).json.data).toMatchObject({ status: "failed", error_code: "PULL_NOT_FOUND", tool_runs: [] });
+    } finally {
+      for (const id of made) db.scans.splice(db.scans.findIndex((s) => s.id === id), 1);
+      ghcr.last_used_at = usedBefore;
+    }
+  });
+
+  it("CI setup has no pull snippet: the CLI's --image-ref only labels an uploaded .tar", async () => {
+    const t = text((await render(`${org()}/projects/${web().id}/settings`)).html);
+    expect(t).not.toContain("--image-ref");
+    expect(t).not.toContain("scans/pull");
+  });
+});
