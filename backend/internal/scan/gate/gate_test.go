@@ -45,7 +45,7 @@ func writeBaseline(t *testing.T, entries map[string]any) string {
 
 func TestGateBlocksAndBaselineAccepts(t *testing.T) {
 	f := writeSarif(t, "error")
-	code, out := run(t, Options{Inputs: []Input{{"opengrep", f}}, FailOn: severity.High})
+	code, out := run(t, Options{Inputs: []Input{{Tool: "opengrep", File: f}}, FailOn: severity.High})
 	if code != 1 {
 		t.Fatalf("code %d\n%s", code, out)
 	}
@@ -59,7 +59,7 @@ func TestGateBlocksAndBaselineAccepts(t *testing.T) {
 	bl := writeBaseline(t, map[string]any{fp: map[string]string{
 		"reason": "test fixture, not production code", "expires": today.AddDate(0, 0, 30).Format(time.DateOnly),
 	}})
-	if code, out := run(t, Options{Inputs: []Input{{"opengrep", f}}, FailOn: severity.High, Baseline: bl}); code != 0 {
+	if code, out := run(t, Options{Inputs: []Input{{Tool: "opengrep", File: f}}, FailOn: severity.High, Baseline: bl}); code != 0 {
 		t.Fatalf("code %d\n%s", code, out)
 	}
 }
@@ -67,7 +67,7 @@ func TestGateBlocksAndBaselineAccepts(t *testing.T) {
 func fingerprintOf(t *testing.T, f string) string {
 	t.Helper()
 	report := filepath.Join(t.TempDir(), "r.json")
-	run(t, Options{Inputs: []Input{{"opengrep", f}}, JSONOut: report})
+	run(t, Options{Inputs: []Input{{Tool: "opengrep", File: f}}, JSONOut: report})
 	var rows []Row
 	b, _ := os.ReadFile(report)
 	if err := json.Unmarshal(b, &rows); err != nil || len(rows) != 1 {
@@ -87,7 +87,7 @@ func TestGateIgnoresInvalidBaselineEntries(t *testing.T) {
 		"bad date":    map[string]string{"reason": "long enough reason here....", "expires": "soon"},
 		"wrong type":  []string{"x"},
 	} {
-		code, out := run(t, Options{Inputs: []Input{{"opengrep", f}}, FailOn: severity.High, Baseline: writeBaseline(t, map[string]any{fp: entry})})
+		code, out := run(t, Options{Inputs: []Input{{Tool: "opengrep", File: f}}, FailOn: severity.High, Baseline: writeBaseline(t, map[string]any{fp: entry})})
 		if code != 1 || !strings.Contains(out, "baseline:") {
 			t.Errorf("%s: code %d\n%s", name, code, out)
 		}
@@ -95,7 +95,7 @@ func TestGateIgnoresInvalidBaselineEntries(t *testing.T) {
 }
 
 func TestGatePassesBelowThreshold(t *testing.T) {
-	if code, out := run(t, Options{Inputs: []Input{{"opengrep", writeSarif(t, "warning")}}}); code != 0 {
+	if code, out := run(t, Options{Inputs: []Input{{Tool: "opengrep", File: writeSarif(t, "warning")}}}); code != 0 {
 		t.Fatalf("code %d\n%s", code, out)
 	}
 }
