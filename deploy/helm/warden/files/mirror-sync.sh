@@ -3,11 +3,9 @@
 # unchanged, so the Kubernetes mirror holds exactly what `make mirror` and the
 # Compose mirror job write (Opengrep rules, Gitleaks config, KEV/EPSS/OSV).
 #
-# Its one Docker step, `docker run <pinned trivy> image --download-db-only`,
-# has already been done by this Pod's trivy-db init container, which runs the
-# same pinned Trivy image without Docker. The `docker` on PATH here
-# (docker-shim) only acknowledges that step after checking the DB is there,
-# and fails anything else.
+# Its one Docker step, the Trivy DB download, has already been done by this
+# Pod's trivy-db init container (the same pinned Trivy image, without Docker),
+# so sync-mirror.sh skips it (WARDEN_MIRROR_SKIP_TRIVY=1) once the DB is there.
 set -euo pipefail
 : "${MIRROR:?MIRROR is not set}"
 SYNC=/opt/warden/scripts/sync-mirror.sh
@@ -19,5 +17,6 @@ if [ ! -s "$MIRROR/trivy/db/trivy.db" ] || [ ! -s "$MIRROR/trivy/db/metadata.jso
   echo "mirror: no Trivy DB under $MIRROR/trivy: the trivy-db init container should have fetched it" >&2
   exit 1
 fi
-export PATH="/opt/warden-helm/bin:$PATH"
+echo "    Trivy DB: fetched by the trivy-db init container"
+export WARDEN_MIRROR_SKIP_TRIVY=1
 exec "$SYNC"

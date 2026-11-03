@@ -2,12 +2,17 @@
 set -euo pipefail
 
 # Usage: sync-mirror.sh [intel]   ("intel" refreshes only the KEV/EPSS/OSV feeds)
+# WARDEN_MIRROR_SKIP_TRIVY=1 skips the Trivy DB (the one step that needs
+# Docker), for a caller that fetches it itself: the Helm chart's mirror
+# CronJob runs the pinned Trivy image as an init container for it.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MIRROR="${MIRROR:-$ROOT/.cache/mirror}"
 LOCK="$ROOT/scanners/images.lock.json"
 lock() { jq -er ".$1" "$LOCK"; }
 ONLY="${1:-}"
 case "$ONLY" in ""|intel) ;; *) echo "usage: $0 [intel]" >&2; exit 2 ;; esac
+SKIP_TRIVY="${WARDEN_MIRROR_SKIP_TRIVY:-0}"
+case "$SKIP_TRIVY" in 0|1) ;; *) echo "WARDEN_MIRROR_SKIP_TRIVY must be 0 or 1" >&2; exit 2 ;; esac
 
 KEV_URL="${WARDEN_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"
 # CISA's own mirror of the same catalog on GitHub, tried when the primary
@@ -25,14 +30,18 @@ mkdir -p "$MIRROR"/{trivy,opengrep,gitleaks,checkov,intel,intel/osv}
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
 if [ -z "$ONLY" ]; then
-TRIVY_IMAGE="$(lock trivy.upstream)"
 RULES_REPO="$(lock opengrep.rules.repo)"
 RULES_COMMIT="$(lock opengrep.rules.commit)"
 
-echo "==> Trivy DB"
-# Run as the caller so the DB isn't root-owned on Linux (the chmod below would fail).
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$MIRROR/trivy:/data" "$TRIVY_IMAGE" \
-  --cache-dir /data image --download-db-only --no-progress
+if [ "$SKIP_TRIVY" = 1 ]; then
+  echo "==> Trivy DB: skipped (WARDEN_MIRROR_SKIP_TRIVY=1)"
+else
+  echo "==> Trivy DB"
+  TRIVY_IMAGE="$(lock trivy.upstream)"
+  # Run as the caller so the DB isn't root-owned on Linux (the chmod below would fail).
+  docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$MIRROR/trivy:/data" "$TRIVY_IMAGE" \
+    --cache-dir /data image --download-db-only --no-progress
+fi
 
 echo "==> opengrep-rules @ ${RULES_COMMIT:0:12}"
 curl -fsSL "${RULES_REPO}/archive/${RULES_COMMIT}.tar.gz" | tar -xz -C "$tmp"

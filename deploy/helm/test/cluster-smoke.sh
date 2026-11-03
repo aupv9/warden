@@ -197,7 +197,7 @@ if [ -n "${MIRROR_IMAGE:-}" ]; then
   kubectl -n "$NS" create job --from="cronjob/$REL-warden-mirror" mirror-once >/dev/null
   kubectl -n "$NS" wait --for=condition=complete job/mirror-once --timeout=15m >/dev/null || {
     kubectl -n "$NS" logs job/mirror-once --all-containers --tail=40 >&2; fail "mirror job"; }
-  kubectl -n "$NS" logs job/mirror-once -c sync | grep -q "Trivy DB: fetched by the trivy-db init container" || fail "mirror: the docker shim wasn't used"
+  kubectl -n "$NS" logs job/mirror-once -c sync | grep -qF "Trivy DB: skipped (WARDEN_MIRROR_SKIP_TRIVY=1)" || fail "mirror: sync-mirror.sh didn't leave the Trivy DB to the init container"
   kubectl -n "$NS" logs job/mirror-once -c sync | grep -q "mirror ready at /mirror" || fail "mirror: sync-mirror.sh didn't finish"
   ok "mirror filled"
 fi
