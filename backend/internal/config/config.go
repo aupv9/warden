@@ -150,6 +150,26 @@ func (l *List) UnmarshalText(b []byte) error {
 	return nil
 }
 
+// KubeSection configures the kubernetes sandbox backend. The worker may only
+// create, watch, exec into and delete Pods in Namespace (a Role, nothing
+// cluster-wide); every scanner Pod runs with RuntimeClass, no service
+// account token and no network (the namespace's NetworkPolicy denies all).
+type KubeSection struct {
+	Namespace string `koanf:"namespace"`
+	// RuntimeClass must name a RuntimeClass whose handler is runsc (gVisor);
+	// the worker checks at startup.
+	RuntimeClass string `koanf:"runtime_class"`
+	// MirrorPVC: the claim holding the offline scanner data (the mirror),
+	// mounted read-only into Trivy's and Opengrep's Pods.
+	MirrorPVC string `koanf:"mirror_pvc"`
+	// IOImage carries warden-sandbox-io, which moves input into and reports out
+	// of a scanner Pod over the exec API (normally the warden image itself);
+	// pinned by digest like the scanner images.
+	IOImage string `koanf:"io_image"`
+	// Kubeconfig is for development only; empty means in-cluster credentials.
+	Kubeconfig string `koanf:"kubeconfig"`
+}
+
 // MigrateSection: only warden-migrate connects as the schema owner.
 type MigrateSection struct {
 	DSN Secret `koanf:"dsn"`
@@ -182,14 +202,19 @@ type SMTPSection struct {
 }
 
 type ScanSection struct {
-	UploadMaxMB         int               `koanf:"upload_max_mb" validate:"min=1"`
-	UnzipMaxMB          int               `koanf:"unzip_max_mb" validate:"min=1"`
-	UnzipMaxFiles       int               `koanf:"unzip_max_files" validate:"min=1"`
-	Timeout             time.Duration     `koanf:"timeout" validate:"min=1m"`
-	SlotsPerNode        int               `koanf:"slots_per_node" validate:"min=1"`
-	ScratchDir          string            `koanf:"scratch_dir" validate:"required"`
-	MirrorDir           string            `koanf:"mirror_dir" validate:"required"`
-	SandboxRuntime      string            `koanf:"sandbox_runtime" validate:"oneof=runsc runc"`
+	UploadMaxMB    int           `koanf:"upload_max_mb" validate:"min=1"`
+	UnzipMaxMB     int           `koanf:"unzip_max_mb" validate:"min=1"`
+	UnzipMaxFiles  int           `koanf:"unzip_max_files" validate:"min=1"`
+	Timeout        time.Duration `koanf:"timeout" validate:"min=1m"`
+	SlotsPerNode   int           `koanf:"slots_per_node" validate:"min=1"`
+	ScratchDir     string        `koanf:"scratch_dir" validate:"required"`
+	MirrorDir      string        `koanf:"mirror_dir" validate:"required"`
+	SandboxRuntime string        `koanf:"sandbox_runtime" validate:"oneof=runsc runc"`
+	// SandboxBackend: "docker" runs each scanner with the host's Docker
+	// daemon (the worker holds its socket); "kubernetes" runs each scanner
+	// as a gVisor Pod in Kube.Namespace and needs no socket (sandbox/kube).
+	SandboxBackend      string            `koanf:"sandbox_backend" validate:"oneof=docker kubernetes"`
+	Kube                KubeSection       `koanf:"kube"`
 	Images              map[string]string `koanf:"images"`
 	HMACKey             Secret            `koanf:"hmac_key"`
 	SourceRetention     time.Duration     `koanf:"source_retention"`
@@ -248,6 +273,8 @@ func settingsDefaults() *Settings {
 			ScratchDir:          "/scratch",
 			MirrorDir:           "/mirror",
 			SandboxRuntime:      "runsc",
+			SandboxBackend:      "docker",
+			Kube:                KubeSection{Namespace: "warden-sandbox", RuntimeClass: "gvisor"},
 			Images:              map[string]string{},
 			SourceRetention:     time.Hour,
 			RateLimitPerHour:    10,
