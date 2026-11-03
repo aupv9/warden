@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -40,8 +41,8 @@ func (c *Config) checkProdServer() error {
 	var errs []error
 	fail := func(msg string) { errs = append(errs, errors.New("config: app.env=prod: "+msg)) }
 
-	if c.Scan.SandboxRuntime != "runsc" {
-		fail("scan.sandbox_runtime must be runsc (gVisor); runc is for local development only")
+	for _, msg := range c.sandboxProblems() {
+		fail(msg)
 	}
 	if !isHTTPS(c.OIDC.Issuer) {
 		fail("oidc.issuer must be an https URL")
@@ -57,6 +58,51 @@ func (c *Config) checkProdServer() error {
 		fail("storage.endpoint must be an https URL, or http to a host name without a dot (an internal network name)")
 	}
 	return errors.Join(errs...)
+}
+
+// registryPinned is digestPinned without the local image ID: a kubelet pulls
+// scanner images from a registry and has no image a worker built.
+var registryPinned = regexp.MustCompile(`^[a-z0-9.\-]+(:\d+)?(/[a-z0-9._\-]+)+(:[A-Za-z0-9_][A-Za-z0-9._\-]{0,127})?@sha256:[0-9a-f]{64}$`)
+
+// sandboxProblems: the scanner sandbox must be gVisor. With the docker
+// backend that is scan.sandbox_runtime; with the kubernetes backend, scanner
+// Pods run with scan.kube.runtime_class (the worker checks its handler is
+// runsc at startup), read the mirror from scan.kube.mirror_pvc, and every
+// image a kubelet pulls is pinned by digest. The worker's kubeconfig is for
+// development: in production it uses its service account (the Role in the
+// sandbox namespace).
+func (c *Config) sandboxProblems() []string {
+	s := c.Scan
+	if s.SandboxBackend != "kubernetes" {
+		if s.SandboxRuntime != "runsc" {
+			return []string{"scan.sandbox_runtime must be runsc (gVisor); runc is for local development only"}
+		}
+		return nil
+	}
+	var out []string
+	if strings.TrimSpace(s.Kube.RuntimeClass) == "" {
+		out = append(out, "scan.kube.runtime_class must name the gVisor (runsc) RuntimeClass")
+	}
+	if strings.TrimSpace(s.Kube.MirrorPVC) == "" {
+		out = append(out, "scan.kube.mirror_pvc must name the claim holding the scanner mirror")
+	}
+	if !registryPinned.MatchString(s.Kube.IOImage) {
+		out = append(out, "scan.kube.io_image must be a registry image pinned by digest (name@sha256:…)")
+	}
+	if s.Kube.Kubeconfig != "" {
+		out = append(out, "scan.kube.kubeconfig is for development only; in prod the worker uses its in-cluster service account")
+	}
+	tools := make([]string, 0, len(s.Images))
+	for t := range s.Images {
+		tools = append(tools, t)
+	}
+	slices.Sort(tools)
+	for _, t := range tools {
+		if ref := s.Images[t]; ref != "" && !registryPinned.MatchString(ref) {
+			out = append(out, "scan.images."+t+" must be a registry image pinned by digest for the kubernetes backend (a local image ID can't be pulled by a kubelet)")
+		}
+	}
+	return out
 }
 
 // checkProdSecrets: no secret that is set may still hold a placeholder.
