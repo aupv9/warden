@@ -35,16 +35,15 @@ func Mask(secret string) string {
 	return string(r[:visiblePrefix]) + "****"
 }
 
-type replacement struct{ secret, masked string }
+// replacement is a secret, its mask, and its folded form for matching
+// decoded views (see normalize).
+type replacement struct{ secret, masked, norm string }
 
 // scrub replaces every secret in every string of v, object keys included.
 func scrub(v any, reps []replacement) any {
 	switch t := v.(type) {
 	case string:
-		for _, r := range reps {
-			t = strings.ReplaceAll(t, r.secret, r.masked)
-		}
-		return t
+		return scrubString(t, reps)
 	case []any:
 		for i := range t {
 			t[i] = scrub(t[i], reps)
@@ -104,7 +103,8 @@ func dropCommitDetails(result map[string]any) {
 }
 
 // Doc redacts the whole document: every secret found in any result is masked
-// everywhere (another result's message, invocations, keys), commit details
+// everywhere (another result's message, invocations, keys), also where a
+// string only becomes the secret once decoded (scrubString), commit details
 // other than the sha and date are dropped, and each result gets the HMAC of
 // its own secret as properties["warden.contentKey"]. A result that isn't an
 // object can't be checked, and masking that would rename the keys the parser
@@ -145,7 +145,7 @@ func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 			rid, _ := m["ruleId"].(string)
 			if !seen[secret] {
 				seen[secret] = true
-				reps = append(reps, replacement{secret, Mask(secret)})
+				reps = append(reps, replacement{secret, Mask(secret), string(normalize(identity(secret)).b)})
 			}
 			if strings.HasPrefix(rid, OrgRulePrefix) {
 				for k := range reps {

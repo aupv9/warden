@@ -35,6 +35,7 @@ var (
 
 // orgRule is an enabled rule as it runs in one scan.
 type orgRule struct {
+	id       uuid.UUID // scan_rule.id
 	rule     rules.Rule
 	severity severity.Severity
 	version  int
@@ -96,7 +97,7 @@ func loadOrgRules(ctx context.Context, db DB, org, project uuid.UUID, tools []st
 			skip("invalid severity")
 			continue
 		}
-		out[x.tool] = append(out[x.tool], orgRule{rule: r, severity: sev, version: x.version, sha256: x.hash})
+		out[x.tool] = append(out[x.tool], orgRule{id: x.id, rule: r, severity: sev, version: x.version, sha256: x.hash})
 	}
 	return out, nil
 }
@@ -128,7 +129,7 @@ func (s scanOrgRules) render(log *slog.Logger) (map[string]orchestrator.OrgRules
 		sev := make(map[string]severity.Severity, len(rs))
 		for _, r := range rs {
 			sev[r.rule.ID()] = r.severity
-			refs = append(refs, results.OrgRuleRef{RuleID: r.rule.ID(), Tool: string(t), Version: r.version, SHA256: r.sha256})
+			refs = append(refs, results.OrgRuleRef{RuleID: r.rule.ID(), Tool: string(t), Version: r.version, SHA256: r.sha256, ScanRuleID: r.id})
 		}
 		jobRules[string(t)] = orchestrator.OrgRules{Config: config, Severity: sev}
 	}
