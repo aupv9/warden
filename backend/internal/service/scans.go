@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aupv9/warden/backend/internal/domain/rbac"
+	"github.com/aupv9/warden/backend/internal/domain/registry"
 	"github.com/aupv9/warden/backend/internal/ids"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/worker"
@@ -112,10 +115,8 @@ func (s *Service) validateScanInput(in CreateScanInput) fieldErrors {
 		}
 		return fe
 	}
-	// Images are scanned by Trivy alone: the other scanners read source code,
-	// and only Gitleaks output is redacted (secrets in images aren't scanned).
-	if in.Tools != nil && (len(*in.Tools) != 1 || (*in.Tools)[0] != "trivy") {
-		fe.add("tools", "image scans run trivy only")
+	if in.Tools != nil && !validImageTools(*in.Tools) {
+		fe.add("tools", imageToolsMsg)
 	}
 	if in.Target == nil || len(*in.Target) > maxTarget || !ImageTarget.MatchString(*in.Target) {
 		fe.add("target", "must be an image repository without tag or digest, such as ghcr.io/acme/api")
@@ -127,6 +128,43 @@ func (s *Service) validateScanInput(in CreateScanInput) fieldErrors {
 }
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
+
+// Image scans run Trivy (packages) and Gitleaks (secrets in the layers, read
+// inside its sandbox); the other scanners read source code.
+const imageToolsMsg = "image scans run trivy and/or gitleaks"
+
+var defaultImageTools = []string{"trivy", "gitleaks"}
+
+func validImageTools(tools []string) bool {
+	return validTools(tools) && !slices.ContainsFunc(tools, func(t string) bool { return !slices.Contains(defaultImageTools, t) })
+}
+
+// imageTools is the tools asked for, else both.
+func imageTools(tools *[]string) []string {
+	if tools == nil {
+		return slices.Clone(defaultImageTools)
+	}
+	return *tools
+}
+
+// checkScanRate holds the per-user hourly scan limit (uploads and pulls alike).
+func (s *Service) checkScanRate(ctx context.Context, r Repo, a *Actor) error {
+	if s.cfg.RateLimitPerHour <= 0 {
+		return nil
+	}
+	if err := r.LockScanRate(ctx, a.UserID); err != nil {
+		return err
+	}
+	now := s.now()
+	n, oldest, err := r.ScansSince(ctx, a.UserID, now.Add(-oneHour))
+	if err != nil {
+		return err
+	}
+	if n >= s.cfg.RateLimitPerHour {
+		return errRateLimited(oldest.Add(oneHour).Sub(now))
+	}
+	return nil
+}
 
 // CreateScan records a scan in pending_upload and returns a presigned PUT URL
 // for the archive. The API never receives the archive itself.
@@ -158,22 +196,12 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		kind, target := KindSource, ""
 		switch in.Kind {
 		case KindImage:
-			kind, target, tools = KindImage, *in.Target, []string{"trivy"}
+			kind, target, tools = KindImage, *in.Target, imageTools(in.Tools)
 		case KindHistory:
 			kind, target, tools = KindHistory, HistoryTarget, []string{"gitleaks"}
 		}
-		if s.cfg.RateLimitPerHour > 0 {
-			if err := r.LockScanRate(ctx, a.UserID); err != nil {
-				return err
-			}
-			now := s.now()
-			n, oldest, err := r.ScansSince(ctx, a.UserID, now.Add(-oneHour))
-			if err != nil {
-				return err
-			}
-			if n >= s.cfg.RateLimitPerHour {
-				return errRateLimited(oldest.Add(oneHour).Sub(now))
-			}
+		if err := s.checkScanRate(ctx, r, a); err != nil {
+			return err
 		}
 		id := ids.New()
 		key := ObjectKey(a.OrgID, id)
@@ -217,6 +245,80 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		}
 		out = CreatedScan{Scan: scan, Upload: Upload{Method: "PUT", URL: url, Headers: headers, ExpiresAt: Time(expires)}}
 		return nil
+	})
+	return out, err
+}
+
+// PullScanInput is POST …/scans/pull: an image Warden pulls itself.
+type PullScanInput struct {
+	ImageRef string    `json:"image_ref"`
+	Tools    *[]string `json:"tools"`
+}
+
+// CreatePullScan queues an image scan with no upload: the worker pulls
+// image_ref (pinned by digest) with the org's credentials for its host, else
+// anonymously, and scans it like an uploaded tarball (it branches on
+// scan.pulled). The scan's target is the repository. It counts against the
+// hourly scan limit, and the River job is inserted in the same transaction as
+// the scan, which is queued at once.
+func (s *Service) CreatePullScan(ctx context.Context, a *Actor, projectID uuid.UUID, in PullScanInput) (Scan, error) {
+	fe := fieldErrors{}
+	ref, err := registry.ParseRef(in.ImageRef, s.pullHostAllowed)
+	if err != nil {
+		fe.add("image_ref", err.Error())
+	} else if !ImageTarget.MatchString(ref.Name()) {
+		fe.add("image_ref", registry.ErrRefFormat.Error())
+	}
+	if in.Tools != nil && !validImageTools(*in.Tools) {
+		fe.add("tools", imageToolsMsg)
+	}
+	var out Scan
+	err = s.inOrg(ctx, a, func(r Repo) error {
+		role, err := projectAccess(ctx, r, a, projectID)
+		if err != nil {
+			return err
+		}
+		if !rbac.Can(rbac.RunScan, a.OrgRole, role, false) {
+			return errForbidden()
+		}
+		if err := fe.err(); err != nil {
+			return err
+		}
+		if err := requireNotArchived(ctx, r, projectID); err != nil {
+			return err
+		}
+		if err := s.checkScanRate(ctx, r, a); err != nil {
+			return err
+		}
+		id, tools, target, imageRef := ids.New(), imageTools(in.Tools), ref.Name(), ref.String()
+		// The worker stores the tarball it builds where an upload would be,
+		// so it is cleaned up like one.
+		ns := NewScan{
+			ID: id, OrgID: a.OrgID, ProjectID: projectID, CreatedBy: a.UserID,
+			FileName: path.Base(ref.Repository) + ".tar", ObjectKey: ImageObjectKey(a.OrgID, id), Tools: tools,
+			Kind: KindImage, Target: target, ImageRef: &imageRef, Pulled: true,
+		}
+		if a.Token != nil {
+			ns.ViaToken = &a.Token.ID
+		}
+		if err := r.InsertScan(ctx, ns); err != nil {
+			return err
+		}
+		if err := r.MarkScanQueued(ctx, id); err != nil {
+			return err
+		}
+		if err := r.EnqueueScan(ctx, worker.ScanArgs{Job: orchestrator.Job{
+			ScanID: id.String(), OrgID: a.OrgID.String(), ProjectID: projectID.String(),
+			ObjectKey: ns.ObjectKey, Tools: tools,
+		}}); err != nil {
+			return err
+		}
+		if out, err = r.Scan(ctx, id, false); err != nil {
+			return err
+		}
+		return s.audit(ctx, r, a, "scan.created", "scan", id.String(), map[string]any{
+			"project_id": projectID.String(), "kind": KindImage, "target": target, "image_ref": imageRef, "pulled": true,
+		})
 	})
 	return out, err
 }
