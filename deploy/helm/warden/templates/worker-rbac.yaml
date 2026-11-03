@@ -1,0 +1,70 @@
+{{- $c := dict "ctx" . "component" "worker" -}}
+# The worker's rights: Pods in the sandbox namespace, nothing else. It creates
+# one Pod per scanner, watches it, streams input and results through
+# warden-sandbox-io over exec, and deletes it (and leftovers of finished scans).
+# No Secrets, no other namespaces, no pods/attach, pods/log, portforward or
+# ephemeral containers, nothing that changes a running Pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "warden.fullname" . }}-worker
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "warden.fullname" . }}-worker
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "warden.fullname" . }}-worker
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "warden.fullname" . }}-worker
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.sandbox.readRuntimeClass }}
+---
+# The worker refuses to start unless the RuntimeClass it puts on every
+# scanner Pod has handler runsc: a RuntimeClass silently pointing at runc
+# would run hostile input without gVisor. RuntimeClasses are cluster-scoped,
+# so reading one takes a ClusterRole; this one can get that single object by
+# name and nothing else (no list, no watch, no other kind).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "warden.clusterName" . }}-runtimeclass
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+rules:
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    resourceNames: [{{ .Values.sandbox.runtimeClassName | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "warden.clusterName" . }}-runtimeclass
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "warden.clusterName" . }}-runtimeclass
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "warden.fullname" . }}-worker
+    namespace: {{ .Release.Namespace }}
+{{- end }}

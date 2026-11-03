@@ -43,6 +43,10 @@ go under `[Unreleased]` in `CHANGELOG.md`.
 - The web UI ships inside `warden-api` (`-tags webui`, `internal/webui`); its OIDC settings come
   from `GET /web-config` at run time, never from build-time env. HTML CSP sources are origins.
 - Metrics (`internal/metrics`) never carry org, project, user or other unbounded labels.
+- Sandbox backends: `docker` (sandbox.Run) and `kubernetes` (`sandbox/kube`) implement the same
+  worker.Sandbox; a new ToolSpec field must work in both (PodSpec golden test). Scanner Pods keep
+  every hardening field; the worker's Role stays Pods + pods/exec in the sandbox namespace.
+  Anything crossing `warden-sandbox-io` is hostile. Chart changes: `deploy/helm/test/run.sh`.
 - Org scan rules (`internal/rules`): only ever accept a subset that adds findings (never allowlists,
   ignores, paths, fixes); a scanner only sees what `rules.Render` produced from parsed rules; ids are
   `org.<key>`; an `org.*` issue is auto-fixed only by a scan whose `org_rules` lists that rule.

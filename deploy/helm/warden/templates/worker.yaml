@@ -1,0 +1,131 @@
+{{- $c := dict "ctx" . "component" "worker" -}}
+# The worker runs each scanner as a gVisor Pod in the sandbox namespace and
+# moves files in and out over pods/exec: no Docker socket, no host path. Its
+# token's only rights are the Role in the sandbox namespace (worker-rbac.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "warden.fullname" . }}-worker
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+# Only the worker's Pod mounts the token (it sets automountServiceAccountToken).
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "warden.fullname" . }}-worker
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "warden.selectorLabels" $c | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "warden.componentLabels" $c | nindent 8 }}
+      annotations:
+        checksum/env: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "warden.fullname" . }}-worker
+      # The one Pod with a token: it talks to the Kubernetes API.
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        {{- include "warden.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Running scans finish on stop (they always delete their source): at
+      # least scan.timeout + 10 minutes.
+      terminationGracePeriodSeconds: {{ include "warden.workerGraceSeconds" . }}
+      containers:
+        - name: worker
+          image: {{ include "warden.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/warden-worker"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "warden.fullname" . }}-env
+          env:
+            {{- range $k, $val := include "warden.workerEnv" . | fromYaml }}
+            - name: {{ $k }}
+              value: {{ $val | quote }}
+            {{- end }}
+            {{- include "warden.secretEnv" $c | trim | nindent 12 }}
+          ports:
+            - name: admin
+              containerPort: {{ .Values.admin.port }}
+              protocol: TCP
+          # The worker has no other HTTP server: probes use the admin listener.
+          startupProbe:
+            httpGet: { path: /healthz, port: admin }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /healthz, port: admin }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: admin }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            {{- include "warden.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/warden
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+            # The intel feeds (KEV, EPSS, OSV); scanner Pods mount the
+            # sandbox namespace's claim on the same files.
+            - name: mirror
+              mountPath: /mirror
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- include "warden.secretVolume" $c | nindent 8 }}
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.worker.scratch.sizeLimit }}
+        - name: mirror
+          persistentVolumeClaim:
+            claimName: {{ include "warden.mirrorClaim" . }}
+            readOnly: true
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

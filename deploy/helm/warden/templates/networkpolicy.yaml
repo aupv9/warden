@@ -1,0 +1,111 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $e := $np.egress }}
+{{- $admin := int .Values.admin.port }}
+# Every Pod of this release: nothing in or out unless a policy below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "warden.fullname" . }}-default-deny
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "warden.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+---
+# api: HTTP from the ingress controller / Gateway only; the admin port from
+# the metrics scrapers. Out: DNS, database, object store, the identity
+# provider, SMTP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "warden.fullname" . }}-api
+  labels:
+    {{- include "warden.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 8000, protocol: TCP }]
+      from:
+        {{- required "networkPolicy.ingressFrom: who may reach the API (your ingress controller or Gateway)" $np.ingressFrom | toYaml | nindent 8 }}
+    {{- with $np.metricsFrom }}
+    - ports: [{ port: {{ $admin }}, protocol: TCP }]
+      from:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+  egress:
+    {{- include "warden.egressRule" $e.dns | nindent 4 }}
+    {{- include "warden.egressRule" $e.database | nindent 4 }}
+    {{- include "warden.egressRule" $e.storage | nindent 4 }}
+    {{- include "warden.egressRule" $e.oidc | nindent 4 }}
+    {{- include "warden.egressRule" $e.smtp | nindent 4 }}
+---
+# worker: no HTTP in but the admin port from the metrics scrapers. Out: DNS,
+# database, object store, the Kubernetes API (scanner Pods and exec), SMTP,
+# webhooks and Slack.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "warden.fullname" . }}-worker
+  labels:
+    {{- include "warden.componentLabels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  {{- with $np.metricsFrom }}
+  ingress:
+    - ports: [{ port: {{ $admin }}, protocol: TCP }]
+      from:
+        {{- toYaml . | nindent 8 }}
+  {{- end }}
+  egress:
+    {{- include "warden.egressRule" $e.dns | nindent 4 }}
+    {{- include "warden.egressRule" $e.database | nindent 4 }}
+    {{- include "warden.egressRule" $e.storage | nindent 4 }}
+    {{- include "warden.egressRule" $e.kubeAPI | nindent 4 }}
+    {{- include "warden.egressRule" $e.smtp | nindent 4 }}
+    {{- include "warden.egressRule" $e.webhooks | nindent 4 }}
+---
+# migrate: DNS and the database. (On the first install the hook runs before
+# any policy exists; on upgrades this one applies.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "warden.fullname" . }}-migrate
+  labels:
+    {{- include "warden.componentLabels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "ctx" . "component" "migrate") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  egress:
+    {{- include "warden.egressRule" $e.dns | nindent 4 }}
+    {{- include "warden.egressRule" $e.database | nindent 4 }}
+{{- if .Values.mirror.cronjob.enabled }}
+---
+# mirror: DNS and the public feeds and registries it downloads from.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "warden.fullname" . }}-mirror
+  labels:
+    {{- include "warden.componentLabels" (dict "ctx" . "component" "mirror") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "warden.selectorLabels" (dict "ctx" . "component" "mirror") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  egress:
+    {{- include "warden.egressRule" $e.dns | nindent 4 }}
+    {{- include "warden.egressRule" $e.mirror | nindent 4 }}
+{{- end }}
+{{- end }}

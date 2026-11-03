@@ -1,0 +1,70 @@
+{{- $c := dict "ctx" . "component" "migrate" -}}
+# Schema migrations as the owner role, before every install and upgrade. The
+# api and worker never get the owner DSN; they refuse a newer schema and wait
+# for an older one to be migrated.
+#
+# A pre-install hook runs before the release's other objects exist, so this
+# Job references none of them: the namespace's default ServiceAccount (no
+# token mounted) and existingSecret, which you create beforehand.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "warden.fullname" . }}-migrate
+  labels:
+    {{- include "warden.componentLabels" $c | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "warden.componentLabels" $c | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- include "warden.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "warden.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/warden-migrate"]
+          args: ["up"]
+          env:
+            - name: WARDEN_APP__ENV
+              value: prod
+            - name: WARDEN_LOG__FORMAT
+              value: json
+            {{- include "warden.secretEnv" $c | trim | nindent 12 }}
+          securityContext:
+            {{- include "warden.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/warden
+              readOnly: true
+      volumes:
+        {{- include "warden.secretVolume" $c | nindent 8 }}
+      {{- with .Values.migrate.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrate.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrate.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -281,6 +281,21 @@ func (s ToolSpec) okExit(code int) bool {
 	return slices.Contains(s.OKExitCodes, code)
 }
 
+// The accessors below are for other sandbox backends (sandbox/kube), which
+// must treat a tool exactly as Run does.
+
+// TmpSize is the size of the tool's /tmp, in docker's units ("256m").
+func (s ToolSpec) TmpSize() string { return s.tmpfsSize() }
+
+// SarifFile is the name of the SARIF the tool writes to /out.
+func (s ToolSpec) SarifFile() string { return s.sarifName() }
+
+// OKExit reports whether the tool's exit code means it ran to completion.
+func (s ToolSpec) OKExit(code int) bool { return s.okExit(code) }
+
+// CollectArtifacts is what Run reports as the tool's artifacts under outDir.
+func CollectArtifacts(spec ToolSpec, outDir string) map[string]string { return artifacts(spec, outDir) }
+
 type ToolStatus string
 
 const (
