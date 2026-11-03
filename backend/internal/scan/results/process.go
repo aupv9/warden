@@ -76,6 +76,33 @@ type Input struct {
 	SBOM *SBOM
 	// History is recorded on a history scan: the commits Gitleaks read.
 	History *History
+	// OrgRules are the org rules the scan ran (scan.org_rules). Only those
+	// of tools that succeeded are recorded, and only their issues may be
+	// auto-fixed (PlanInput.OrgRulesRun).
+	OrgRules []OrgRuleRef
+}
+
+// OrgRuleRef is one org rule a scan ran: its id ("org.<key>"), tool, and the
+// version and body hash that ran (scan.org_rules, API ScanRuleRef).
+type OrgRuleRef struct {
+	RuleID  string `json:"rule_id"`
+	Tool    string `json:"tool"`
+	Version int    `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
+// orgRulesRun are in's org rules of tools that succeeded.
+func orgRulesRun(in Input) ([]OrgRuleRef, map[RuleRun]bool) {
+	ok := SucceededTools(in.Runs)
+	refs := []OrgRuleRef{}
+	run := map[RuleRun]bool{}
+	for _, r := range in.OrgRules {
+		if ok[r.Tool] {
+			refs = append(refs, r)
+			run[RuleRun{r.Tool, r.RuleID}] = true
+		}
+	}
+	return refs, run
 }
 
 // History is a history scan's scan.history_commits and history_truncated.
@@ -173,10 +200,13 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	plan, err := BuildPlan(PlanInput{ScanID: in.ScanID, Runs: in.Runs, Findings: findings, Existing: existing, GuardRatio: in.GuardRatio})
+	refs, ran := orgRulesRun(in)
+	plan, err := BuildPlan(PlanInput{ScanID: in.ScanID, Runs: in.Runs, Findings: findings, Existing: existing, GuardRatio: in.GuardRatio,
+		OrgRulesRun: ran})
 	if err != nil {
 		return Plan{}, err
 	}
+	plan.OrgRules = refs
 	a := applier{db: db, in: in, sla: sla}
 	if len(plan.New) > 0 {
 		if a.rules, a.eligible, err = loadAssignRules(ctx, db, in.ProjectID); err != nil {
@@ -195,7 +225,7 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 }
 
 func loadIssues(ctx context.Context, db DB, projectID uuid.UUID, target string) ([]ExistingIssue, error) {
-	rows, err := db.Query(ctx, `SELECT id, fingerprint, tool, status, severity, severity_overridden, last_seen_scan_id
+	rows, err := db.Query(ctx, `SELECT id, fingerprint, tool, rule_id, status, severity, severity_overridden, last_seen_scan_id
 		FROM issue WHERE project_id = $1 AND target = $2`, projectID, target)
 	if err != nil {
 		return nil, fmt.Errorf("load issues: %w", err)
@@ -203,7 +233,7 @@ func loadIssues(ctx context.Context, db DB, projectID uuid.UUID, target string) 
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (ExistingIssue, error) {
 		var e ExistingIssue
 		var st, sev string
-		err := r.Scan(&e.ID, &e.Fingerprint, &e.Tool, &st, &sev, &e.SeverityOverridden, &e.LastSeenScanID)
+		err := r.Scan(&e.ID, &e.Fingerprint, &e.Tool, &e.RuleID, &st, &sev, &e.SeverityOverridden, &e.LastSeenScanID)
 		e.Status, e.Severity = issuestate.Status(st), severity.Severity(sev)
 		return e, err
 	})
@@ -325,8 +355,16 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 		}
 	}
 	stats, _ := json.Marshal(p.Stats)
-	if _, err := a.db.Exec(ctx, `UPDATE scan SET status = $2, error_code = NULL, stats = $3, needs_confirmation = $4, finished_at = $5
-		WHERE id = $1`, a.in.ScanID, a.in.Status, stats, p.NeedsConfirmation, now); err != nil {
+	orgRules := p.OrgRules
+	if orgRules == nil {
+		orgRules = []OrgRuleRef{}
+	}
+	refs, err := json.Marshal(orgRules)
+	if err != nil {
+		return err
+	}
+	if _, err := a.db.Exec(ctx, `UPDATE scan SET status = $2, error_code = NULL, stats = $3, needs_confirmation = $4, finished_at = $5,
+		org_rules = $6 WHERE id = $1`, a.in.ScanID, a.in.Status, stats, p.NeedsConfirmation, now, refs); err != nil {
 		return fmt.Errorf("finish scan: %w", err)
 	}
 	if s := a.in.SBOM; s != nil {

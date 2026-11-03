@@ -171,3 +171,24 @@ func TestContentKeyDependsOnOrgKey(t *testing.T) {
 		t.Fatal("content key ignores the org key")
 	}
 }
+
+// An org rule picks its own secretGroup, so shifted rules could each show a
+// different 4-character prefix of one key: whatever an org rule found is
+// masked whole, also when a built-in rule found the same secret.
+func TestRedactMasksOrgRuleSecretsWhole(t *testing.T) {
+	other := "ghp_" + strings.Repeat("Z", 36)
+	doc := st.GitleaksDoc() // a built-in finding of st.FakeSecret
+	run := doc["runs"].([]any)[0].(st.M)
+	run["results"] = append(run["results"].([]any),
+		st.M{"ruleId": "org.acme", "message": st.M{"text": "m"}, "locations": []any{st.Loc("b.py", 1, other)}},
+		st.M{"ruleId": "org.shifted", "message": st.M{"text": "m"}, "locations": []any{st.Loc("a.py", 1, st.FakeSecret)}},
+	)
+	out, err := redact.Doc(st.RoundTrip(doc), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := blob(t, out)
+	if strings.Contains(s, other) || strings.Contains(s, st.FakeSecret) || strings.Contains(s, "ghp_****") || strings.Contains(s, "AKIA****") {
+		t.Fatal(s)
+	}
+}

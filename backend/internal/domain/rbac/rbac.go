@@ -37,12 +37,15 @@ const (
 	ViewAuditLog         Perm = "view_audit_log"
 	// ManageIntegrations: webhooks and Slack, which send org data out of Warden.
 	ManageIntegrations Perm = "manage_integrations"
+	// ManageRules: the org's own Opengrep and Gitleaks rules (internal/rules),
+	// which decide what every scan of the org looks for.
+	ManageRules Perm = "manage_rules"
 )
 
 var AllPerms = []Perm{
 	ManageUsers, CreateArchiveProject, ManageProjectMembers, RunScan, ViewResults, AssignIssue,
 	UpdateIssue, ProposeException, DecideException, ConfigurePolicy, ViewDashboard, ViewAuditLog,
-	ManageIntegrations,
+	ManageIntegrations, ManageRules,
 }
 
 var Matrix = map[Perm][]Role{
@@ -59,6 +62,7 @@ var Matrix = map[Perm][]Role{
 	ViewDashboard:        {OrgAdmin, SecurityLead, Owner, Developer, Viewer},
 	ViewAuditLog:         {OrgAdmin, SecurityLead},
 	ManageIntegrations:   {OrgAdmin, SecurityLead},
+	ManageRules:          {OrgAdmin, SecurityLead},
 }
 
 // ownIssueOnlyForDeveloper: developers may only update issues assigned to them.

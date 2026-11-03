@@ -42,9 +42,9 @@ func newWorld() world {
 			{Prefix: "SELECT issue_seq FROM project WHERE id = $1 FOR UPDATE", Rows: row(7)},
 			{Prefix: "SELECT sla_days, license_policy FROM organization", Rows: row([]byte(`{"critical":7,"high":30,"medium":90,"low":180}`), []byte(`{}`))},
 			{Prefix: "SELECT id, fingerprint", Rows: [][]any{
-				{uuid.New(), fpOf(a), "opengrep", "open", "low", false, prev},
-				{uuid.New(), fpOf(b), "opengrep", "fixed", "high", false, prev},
-				{uuid.New(), fpOf(c), "opengrep", "in_progress", "high", false, prev},
+				{uuid.New(), fpOf(a), "opengrep", a.RuleID, "open", "low", false, prev},
+				{uuid.New(), fpOf(b), "opengrep", b.RuleID, "fixed", "high", false, prev},
+				{uuid.New(), fpOf(c), "opengrep", c.RuleID, "in_progress", "high", false, prev},
 			}},
 			{Prefix: "SELECT assign_rules FROM project", Rows: row([]byte(`[]`))},
 			{Prefix: "UPDATE project SET issue_seq = issue_seq + $2", Rows: row(8), Args: func(args []any) error {
@@ -83,8 +83,9 @@ func newWorld() world {
 			{Prefix: "INSERT INTO issue_event", Affected: 1, Args: eventType(EventStatusChanged)},
 			{Prefix: "UPDATE scan_tool_run SET findings_count", Affected: 1},
 			{Prefix: "UPDATE scan SET status = $2, error_code = NULL", Affected: 1, Args: func(args []any) error {
-				if args[1] != "partial" || string(args[2].([]byte)) != `{"new":1,"fixed":1,"reopened":1,"total":3}` {
-					return fmt.Errorf("%v %s", args[1], args[2])
+				if args[1] != "partial" || string(args[2].([]byte)) != `{"new":1,"fixed":1,"reopened":1,"total":3}` ||
+					string(args[5].([]byte)) != `[]` {
+					return fmt.Errorf("%v %s %s", args[1], args[2], args[5])
 				}
 				return nil
 			}},

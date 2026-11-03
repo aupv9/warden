@@ -8,6 +8,22 @@ All notable changes to Warden are listed here. The format follows
 
 ### Added
 
+- An organization's own scan rules (`/orgs/{org_id}/scan-rules`, *Settings → Scan rules*):
+  Opengrep and Gitleaks rules parsed into a subset that can only add findings and rendered again
+  before a scanner sees them (`internal/rules`, fuzzed), per org or per project, versioned
+  (append-only), audited without their bodies, closed to API tokens. Findings and issues carry
+  `org.<key>`; scans record the org rules they ran (`Scan.org_rules`) and only those can fix
+  their issues. `Issue.org_rule`, an Org rule tag and card. Rule check (`validate`) and *Test on a
+  snippet* (job `test_rules`, the draft rule alone in the sandbox, snippet deleted afterwards).
+  Error code `RULE_INVALID`; permission `manage_rules` (org admins, security leads); migration
+  00014. Org rules can't carry a secret out of the sandbox: Opengrep messages can't use
+  metavariables, an org Opengrep finding takes its title from the rule and keeps no source
+  snippet, and secrets org Gitleaks rules find are masked whole.
+
+## [0.5.0-alpha.2] - 2026-11-02
+
+### Added
+
 - `GET …/issues/export.csv`: the issue list as CSV with its filters and visibility, fixed
   columns without descriptions or snippets, at most 50,000 rows, 30 per user per hour, audited
   (`issues.exported`), spreadsheet formulas defused; an Export CSV button on the issue list.
@@ -223,7 +239,8 @@ Tagged, but the release workflow failed, so no binaries or image were published 
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
 
-[Unreleased]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...HEAD
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.2...HEAD
+[0.5.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
 [0.5.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.2...v0.5.0-alpha.1
 [0.4.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.1...v0.4.0-alpha.2
 [0.4.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
