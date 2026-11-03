@@ -1,0 +1,270 @@
+{
+  "metadata": {
+    "name": "warden-0b6f1a52-6c9e-4c52-9a7e-3f0f8c1d2e4a-gitleaks",
+    "namespace": "warden-sandbox",
+    "labels": {
+      "app.kubernetes.io/managed-by": "warden-worker",
+      "warden.role": "scanner",
+      "warden.scan": "0b6f1a52-6c9e-4c52-9a7e-3f0f8c1d2e4a",
+      "warden.tool": "gitleaks"
+    }
+  },
+  "spec": {
+    "volumes": [
+      {
+        "name": "src",
+        "emptyDir": {
+          "sizeLimit": "65576Ki"
+        }
+      },
+      {
+        "name": "out",
+        "emptyDir": {
+          "sizeLimit": "320Mi"
+        }
+      },
+      {
+        "name": "tmp",
+        "emptyDir": {
+          "medium": "Memory",
+          "sizeLimit": "256Mi"
+        }
+      },
+      {
+        "name": "ctl",
+        "emptyDir": {
+          "medium": "Memory",
+          "sizeLimit": "1Mi"
+        }
+      },
+      {
+        "name": "data",
+        "persistentVolumeClaim": {
+          "claimName": "warden-mirror",
+          "readOnly": true
+        }
+      },
+      {
+        "name": "secrets",
+        "emptyDir": {
+          "medium": "Memory",
+          "sizeLimit": "1Mi"
+        }
+      },
+      {
+        "name": "rules",
+        "emptyDir": {
+          "sizeLimit": "1048876"
+        }
+      }
+    ],
+    "initContainers": [
+      {
+        "name": "io-in",
+        "image": "ghcr.io/aupv9/warden:0.6.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "command": [
+          "/usr/local/bin/warden-sandbox-io",
+          "wait",
+          "-marker",
+          "/ctl/ready"
+        ],
+        "resources": {
+          "limits": {
+            "cpu": "100m",
+            "ephemeral-storage": "16818476",
+            "memory": "64Mi"
+          },
+          "requests": {
+            "cpu": "100m",
+            "ephemeral-storage": "16818476",
+            "memory": "64Mi"
+          }
+        },
+        "volumeMounts": [
+          {
+            "name": "src",
+            "mountPath": "/in/src"
+          },
+          {
+            "name": "ctl",
+            "mountPath": "/ctl"
+          },
+          {
+            "name": "secrets",
+            "mountPath": "/in/secrets"
+          },
+          {
+            "name": "rules",
+            "mountPath": "/in/rules"
+          }
+        ],
+        "terminationMessagePolicy": "File",
+        "imagePullPolicy": "IfNotPresent",
+        "securityContext": {
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "privileged": false,
+          "runAsUser": 65532,
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "readOnlyRootFilesystem": true,
+          "allowPrivilegeEscalation": false,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        }
+      }
+    ],
+    "containers": [
+      {
+        "name": "scanner",
+        "image": "registry.example/warden-gitleaks:8.30@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "command": [
+          "warden-gitleaks"
+        ],
+        "args": [
+          "org-rules"
+        ],
+        "workingDir": "/tmp",
+        "env": [
+          {
+            "name": "HOME",
+            "value": "/tmp"
+          }
+        ],
+        "resources": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "403743020",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "250m",
+            "ephemeral-storage": "403743020",
+            "memory": "512Mi"
+          }
+        },
+        "volumeMounts": [
+          {
+            "name": "src",
+            "readOnly": true,
+            "mountPath": "/src"
+          },
+          {
+            "name": "out",
+            "mountPath": "/out"
+          },
+          {
+            "name": "tmp",
+            "mountPath": "/tmp"
+          },
+          {
+            "name": "data",
+            "readOnly": true,
+            "mountPath": "/data",
+            "subPath": "gitleaks"
+          },
+          {
+            "name": "secrets",
+            "readOnly": true,
+            "mountPath": "/run/warden"
+          },
+          {
+            "name": "rules",
+            "readOnly": true,
+            "mountPath": "/rules"
+          }
+        ],
+        "terminationMessagePolicy": "File",
+        "imagePullPolicy": "IfNotPresent",
+        "securityContext": {
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "privileged": false,
+          "runAsUser": 65532,
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "readOnlyRootFilesystem": true,
+          "allowPrivilegeEscalation": false,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        }
+      },
+      {
+        "name": "io-out",
+        "image": "ghcr.io/aupv9/warden:0.6.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "command": [
+          "/usr/local/bin/warden-sandbox-io",
+          "hold"
+        ],
+        "resources": {
+          "limits": {
+            "cpu": "100m",
+            "ephemeral-storage": "16Mi",
+            "memory": "64Mi"
+          },
+          "requests": {
+            "cpu": "100m",
+            "ephemeral-storage": "16Mi",
+            "memory": "64Mi"
+          }
+        },
+        "volumeMounts": [
+          {
+            "name": "out",
+            "readOnly": true,
+            "mountPath": "/out"
+          }
+        ],
+        "terminationMessagePolicy": "File",
+        "imagePullPolicy": "IfNotPresent",
+        "securityContext": {
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "privileged": false,
+          "runAsUser": 65532,
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "readOnlyRootFilesystem": true,
+          "allowPrivilegeEscalation": false,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        }
+      }
+    ],
+    "restartPolicy": "Never",
+    "terminationGracePeriodSeconds": 1,
+    "activeDeadlineSeconds": 300,
+    "dnsPolicy": "None",
+    "automountServiceAccountToken": false,
+    "shareProcessNamespace": false,
+    "securityContext": {
+      "runAsUser": 65532,
+      "runAsGroup": 65532,
+      "runAsNonRoot": true,
+      "fsGroup": 65532,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "dnsConfig": {
+      "nameservers": [
+        "127.0.0.1"
+      ]
+    },
+    "runtimeClassName": "gvisor",
+    "enableServiceLinks": false
+  },
+  "status": {}
+}
