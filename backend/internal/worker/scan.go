@@ -106,9 +106,16 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		return river.JobCancel(fmt.Errorf("bad job ids: %w", err))
 	}
 	var sc scanRow
+	var orgRules scanOrgRules
+	log := e.Log.With("scan_id", scanID, "org_id", org, "attempt", attempt)
 	err := e.Tx(ctx, org, func(db DB) error {
 		var err error
-		sc, err = loadScan(ctx, db, scanID)
+		if sc, err = loadScan(ctx, db, scanID); err != nil {
+			return err
+		}
+		if sc.Status == string(orchestrator.Queued) || sc.Status == string(orchestrator.Running) {
+			orgRules, err = loadOrgRules(ctx, db, org, sc.ProjectID, sc.Tools, log)
+		}
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -117,7 +124,6 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	if err != nil {
 		return err // database unavailable: retry
 	}
-	log := e.Log.With("scan_id", scanID, "org_id", org, "attempt", attempt)
 
 	done := func(st orchestrator.ScanStatus, err error) error { return scanDone(sc.Kind, st, started, err) }
 
@@ -136,13 +142,16 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	// The database is the source of truth; the job only points at the scan.
 	job.ProjectID, job.ObjectKey, job.SHA256, job.Tools, job.Attempt = sc.ProjectID.String(), *sc.ObjectKey, *sc.SHA256, sc.Tools, attempt
 	job.ProjectKey, job.Kind, job.Target = sc.ProjectKey, sc.Kind, sc.Target
+	var ruleRefs []results.OrgRuleRef
+	job.OrgRules, ruleRefs = orgRules.render(log)
 	// A crashed attempt may have left its scratch directory behind.
 	if err := zipcheck.RemoveAll(filepath.Join(e.ScratchDir, scanID.String())); err != nil {
 		return err
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, e.ScanTimeout)
-	out, err := orchestrator.Execute(execCtx, job, &liveDeps{env: e, org: org, scan: scanID, attempt: attempt, kind: sc.Kind})
+	out, err := orchestrator.Execute(execCtx, job, &liveDeps{env: e, org: org, scan: scanID, attempt: attempt, kind: sc.Kind,
+		orgRules: job.OrgRules})
 	timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 	cancel()
 
@@ -172,7 +181,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		plan, err = results.Process(fin, db, results.Input{
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
 			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, Packages: out.Packages, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
-			SBOM: stored, History: history(out.History),
+			SBOM: stored, History: history(out.History), OrgRules: ruleRefs,
 		})
 		if err != nil {
 			return err
