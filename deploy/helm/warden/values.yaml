@@ -210,10 +210,12 @@ sandbox:
   resourceQuota:
     enabled: true
     hard:
+      # Sized for scan.slots_per_node 7 on one worker: a source scan's Pods take
+      # about 2.75 CPU and 6.5 GiB (Checkov 1 CPU / 3 GiB), requests = limits.
       pods: "64"
-      requests.cpu: "16"
+      requests.cpu: "24"
       limits.cpu: "32"
-      requests.memory: 48Gi
+      requests.memory: 64Gi
       limits.memory: 64Gi
       requests.ephemeral-storage: 64Gi
       limits.ephemeral-storage: 128Gi

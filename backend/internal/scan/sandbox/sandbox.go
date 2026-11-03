@@ -107,8 +107,11 @@ var Tools = map[string]ToolSpec{
 		Artifacts: trivyArtifacts,
 	},
 	"checkov": {
-		// 512m and 1g were SIGKILLed under gVisor, which accounts sentry memory to the container.
-		Name: "checkov", Timeout: 10 * time.Minute, CPUs: "0.25", Memory: "2g",
+		// 512m and 1g were SIGKILLed under gVisor, which accounts sentry memory to
+		// the container; so was 2g on Warden's own repository (exit 137 in CI, once
+		// it held a Helm chart), and at a quarter CPU the same scan took 535 s of
+		// a 600 s timeout. A real repository of that size would fail the same way.
+		Name: "checkov", Timeout: 15 * time.Minute, CPUs: "1", Memory: "3g",
 		Command: []string{
 			"checkov", "-d", "/src", "--output", "sarif", "--output-file-path", "/out",
 			"--skip-download", "--skip-framework", "secrets", "sca_package", "sca_image", // Gitleaks is the only secret scanner: only its output is redacted
