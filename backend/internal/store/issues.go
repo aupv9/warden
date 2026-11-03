@@ -267,7 +267,8 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 			fs.id, fs.created_at, ls.id, ls.created_at,
 			(SELECT count(*) FROM occurrence o WHERE o.issue_id = i.id), i.version, i.assignee_id, i.number, p.key,
 			vi.epss_percentile, to_char(vi.kev_added, 'YYYY-MM-DD'), coalesce(vi.kev_ransomware, false),
-			i.commit_sha, i.committed_at, i.commit_count, orl.id, orl.name` +
+			i.commit_sha, i.committed_at, i.commit_count, orl.id, orl.name,
+			i.image_layer_digest, i.image_layer_index, i.image_layer_count` +
 		issueFrom + ` JOIN scan fs ON fs.id = i.first_seen_scan_id JOIN scan ls ON ls.id = i.last_seen_scan_id` +
 		orgRuleJoin + ` WHERE i.id = $1`
 	if forUpdate {
@@ -282,13 +283,16 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 		commitCount   *int
 		orgRuleID     *uuid.UUID
 		orgRuleName   *string
+		layerDigest   *string
+		layerIndex    *int
+		layerCount    *int
 	)
 	dest := append(summaryDest(&iss.IssueSummary, &aID, &aEmail, &aName),
 		&iss.Description, &iss.Remediation, &iss.Snippet, &iss.EndLine, &iss.CWE, &iss.CVE,
 		&iss.FirstSeenScan.ID, &iss.FirstSeenScan.CreatedAt, &iss.LastSeenScan.ID, &iss.LastSeenScan.CreatedAt,
 		&iss.Occurrences, &iss.Version, &iss.AssigneeID, &iss.Number, &iss.ProjectKey,
 		&iss.EPSSPercentile, &iss.KEVAdded, &iss.KEVRansomware, &commitSHA, &committedAt, &commitCount,
-		&orgRuleID, &orgRuleName)
+		&orgRuleID, &orgRuleName, &layerDigest, &layerIndex, &layerCount)
 	err := r.tx.QueryRow(ctx, q, issueID, now).Scan(dest...)
 	if isOrgRule(iss.Tool, iss.RuleID) {
 		iss.OrgRule = &service.IssueOrgRule{RuleID: iss.RuleID, Name: orgRuleName, ScanRuleID: orgRuleID}
@@ -296,6 +300,10 @@ func (r *Repo) Issue(ctx context.Context, issueID uuid.UUID, forUpdate bool, now
 	iss.Assignee = userRef(aID, aEmail, aName)
 	if commitSHA != nil && commitCount != nil {
 		iss.Commit = &service.IssueCommit{SHA: *commitSHA, CommittedAt: committedAt, Count: *commitCount}
+	}
+	// All three or none (issue_image_layer_all_or_none).
+	if layerDigest != nil && layerIndex != nil && layerCount != nil {
+		iss.ImageLayer = &service.IssueImageLayer{Digest: *layerDigest, Index: *layerIndex, Count: *layerCount}
 	}
 	return iss, mapErr(err)
 }

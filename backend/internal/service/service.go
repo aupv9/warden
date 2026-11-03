@@ -41,6 +41,9 @@ type Config struct {
 	SignIn SignInConfig
 	// Webhooks: secrets.key and the URL checks (webhooks.go).
 	Webhooks WebhookConfig
+	// Registries: secrets.key, registry.allow_hosts and the credential test
+	// (registries.go).
+	Registries RegistryConfig
 	// ParseRule parses org scan rules; nil is rules.Parse (tests replace it).
 	ParseRule RuleParser
 }
