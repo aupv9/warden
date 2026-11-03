@@ -8,6 +8,17 @@ All notable changes to Warden are listed here. The format follows
 
 ### Added
 
+- A Kubernetes sandbox backend (`WARDEN_SCAN__SANDBOX_BACKEND=kubernetes`, `WARDEN_SCAN__KUBE__*`):
+  each scanner runs as a hardened gVisor Pod in a sandbox namespace, with no service-account
+  token and no network (a startup canary and a per-Pod gate check it); source and reports move
+  only through `warden-sandbox-io` over the exec API (checked like hostile archives, fuzzed);
+  the worker needs no Docker socket and only a Role in that namespace. Readiness check
+  `sandbox` replaces `docker`.
+- Helm chart `deploy/helm/warden`: API, migrate hook, worker, sandbox namespace (Pod Security
+  restricted, default-deny NetworkPolicy, quota), minimal RBAC, secrets from an existing Secret
+  mounted per Pod, mirror claims and CronJob without Docker, optional ServiceMonitor, a strict
+  values schema; CI jobs `helm` (lint, kubeconform, security properties) and `kube` (kind with
+  gVisor).
 - An organization's own scan rules (`/orgs/{org_id}/scan-rules`, *Settings → Scan rules*):
   Opengrep and Gitleaks rules parsed into a subset that can only add findings and rendered again
   before a scanner sees them (`internal/rules`, fuzzed), per org or per project, versioned
