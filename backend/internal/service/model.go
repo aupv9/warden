@@ -214,6 +214,8 @@ type Scan struct {
 	// History is set on history scans that finished: the commits Gitleaks
 	// read, and whether scan.history_max_commits cut the history short.
 	History *ScanHistory `json:"history"`
+	// OrgRules are the org rules the scan ran (scan.org_rules, scanrules.go).
+	OrgRules ScanRuleRefs `json:"org_rules"`
 
 	OrgID     uuid.UUID `json:"-"`
 	ObjectKey string    `json:"-"`
@@ -316,6 +318,8 @@ type Issue struct {
 	// Commit: for a secret in git history, the oldest commit that added it
 	// (file_path and start_line are from it) and how many commits did.
 	Commit *IssueCommit `json:"commit"`
+	// OrgRule: the issue comes from an org rule (scanrules.go).
+	OrgRule *IssueOrgRule `json:"org_rule"`
 }
 
 type IssueCommit struct {

@@ -112,6 +112,7 @@ type state struct {
 	nextID     int64
 	ext        extState     // v0.2 tables (v02.go)
 	hooks      webhookState // v0.4 wave 2 (webhooks.go)
+	rules      ruleState    // v0.6 (scanrules.go)
 }
 
 func (s *state) clone() *state {
@@ -136,6 +137,7 @@ func (s *state) clone() *state {
 	c.VulnSrc = slices.Clone(s.VulnSrc)
 	c.ext = s.ext.clone()
 	c.hooks = s.hooks.clone()
+	c.rules = s.rules.clone()
 	return &c
 }
 
@@ -899,7 +901,7 @@ func (f *Fake) Issue(_ context.Context, id uuid.UUID, _ bool, now time.Time) (se
 	in := f.intel(i.CVE)
 	out := service.Issue{IssueSummary: f.summary(id, now), CWE: i.CWE, CVE: i.CVE, FirstSeenScan: scan, LastSeenScan: scan,
 		Occurrences: 1, Version: i.Version, AssigneeID: i.AssigneeID, Number: i.Number, ProjectKey: f.st.Projects[i.ProjectID].Key,
-		EPSSPercentile: in.Percentile, KEVRansomware: in.Ransomware}
+		EPSSPercentile: in.Percentile, KEVRansomware: in.Ransomware, OrgRule: f.orgRule(i)}
 	if in.KEVAdded != nil {
 		d := in.KEVAdded.Format(time.DateOnly)
 		out.KEVAdded = &d
