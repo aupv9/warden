@@ -34,7 +34,23 @@ const (
 	SnippetContext    = 3
 	RedactedKeyProp   = "warden.contentKey"
 	opengrepRulePref  = "data.rules."
+	// opengrepOrgPref: Opengrep names a rule after its config's directory,
+	// and the org's rules are mounted at /rules/opengrep.yml
+	// (sandbox.WithOrgRules), so "org.<key>" comes out as "rules.org.<key>".
+	opengrepOrgPref = "rules."
+	// OrgRulePrefix starts the id of every org rule (rules.Prefix; the worker's
+	// tests keep them equal). The namespace is the org's alone: a Warden rule
+	// that would land in it keeps its unstripped id.
+	OrgRulePrefix = "org."
 )
+
+// orgRuleTools take org rules (sandbox.OrgRulesFile).
+var orgRuleTools = []string{"opengrep", "gitleaks"}
+
+// IsOrgRule reports whether tool's ruleID is an org rule's.
+func IsOrgRule(tool, ruleID string) bool {
+	return strings.HasPrefix(ruleID, OrgRulePrefix) && slices.Contains(orgRuleTools, tool)
+}
 
 // Tools whose URIs are relative to the scan target rather than under /src.
 var targetRelativeTools = []string{"trivy"}
@@ -72,8 +88,12 @@ type Finding struct {
 	// (results.LicenseFindings); never set from SARIF.
 	LicenseCategory string `json:"license_category,omitempty"`
 	// Commit is set on Gitleaks findings of history scans (Options.History).
-	Commit *Commit        `json:"commit,omitempty"`
-	Raw    map[string]any `json:"-"`
+	Commit *Commit `json:"commit,omitempty"`
+	// RuleDescription is the rule's own text from the SARIF rule metadata
+	// (full description, else a non-generic short one), never the result's
+	// message, which Opengrep fills with matched code ($X). Rule tests show it.
+	RuleDescription string         `json:"-"`
+	Raw             map[string]any `json:"-"`
 }
 
 // Commit is the commit a secret was found in. After CollapseHistory it is the
@@ -323,6 +343,10 @@ type Options struct {
 	// are relative to the repository (no /src mount, no zip root dir to strip)
 	// and every result names its commit.
 	History bool
+	// OrgRules are the org rules the tool ran, by id ("org.<key>"), with the
+	// severity each rule's findings get whatever level the SARIF claims. A
+	// result of any other org rule id is refused: the scan didn't run it.
+	OrgRules map[string]severity.Severity
 }
 
 // ImageArtifact is where an image scan's tarball is mounted (sandbox.ImageTools);
@@ -385,7 +409,22 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 	}
 	rule := rules[ruleID]
 	if tool == "opengrep" {
-		ruleID = strings.TrimPrefix(ruleID, opengrepRulePref)
+		switch {
+		case strings.HasPrefix(ruleID, opengrepRulePref):
+			if id := strings.TrimPrefix(ruleID, opengrepRulePref); !strings.HasPrefix(id, OrgRulePrefix) {
+				ruleID = id
+			}
+		case strings.HasPrefix(ruleID, opengrepOrgPref+OrgRulePrefix):
+			ruleID = strings.TrimPrefix(ruleID, opengrepOrgPref)
+		}
+	}
+	var orgSeverity severity.Severity
+	if IsOrgRule(tool, ruleID) {
+		sev, ok := opts.OrgRules[ruleID]
+		if !ok || severity.Rank(sev) == len(severity.All) {
+			return nil, sarifErr("%s reported org rule %q, which this scan didn't run", tool, truncRunes(ruleID, 80))
+		}
+		orgSeverity = sev
 	}
 	props := obj(rule["properties"])
 	var tags []string
@@ -433,6 +472,10 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		title = ruleID
 	}
 	description := text(rule["fullDescription"])
+	ruleText := description
+	if ruleText == "" {
+		ruleText = short
+	}
 	if description == "" {
 		description = message
 	}
@@ -450,6 +493,8 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		Snippet:     snippet,
 		CWE:         cwes(tags),
 		Raw:         result,
+
+		RuleDescription: ruleText,
 	}
 
 	switch tool {
@@ -510,6 +555,9 @@ func parseResult(result map[string]any, rules map[string]map[string]any, tool st
 		} else {
 			f.Severity = severity.Checkov(ruleID, opts.CheckovTable)
 		}
+	}
+	if orgSeverity != "" {
+		f.Severity = orgSeverity
 	}
 	return f, nil
 }
