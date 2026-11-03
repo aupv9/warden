@@ -1,0 +1,41 @@
+# On top of required.yaml: the other branches of the templates (Gateway API,
+# CSI mirror volumes, an existing sandbox namespace, ServiceMonitor, optional
+# secret keys, extra settings, an explicit grace period).
+existingSecretOptional:
+  smtpPassword: true
+  secretsOldKeys: true
+gateway:
+  enabled: true
+  parentRefs:
+    - { name: public, namespace: gateway-system, sectionName: https }
+sandbox:
+  namespace: scans
+  createNamespace: false
+  runtimeClassName: gvisor-runsc
+  ioImage: registry.example.com/warden/warden@sha256:5555555555555555555555555555555555555555555555555555555555555555
+mirror:
+  storage:
+    type: csi
+    claimName: mirror-rw
+    sandboxClaimName: mirror-ro
+    csi:
+      driver: efs.csi.aws.com
+      volumeHandle: fs-0123456789abcdef0::fsap-0123456789abcdef0
+  cronjob:
+    trivyDBRepositories: [registry.example.com/mirror/trivy-db:2, ghcr.io/aquasecurity/trivy-db:2]
+    feeds:
+      osvEcosystems: npm PyPI Go
+scan:
+  timeout: 1h
+worker:
+  terminationGracePeriodSeconds: 4500
+serviceMonitor:
+  enabled: true
+  labels: { release: prometheus }
+extraEnv:
+  WARDEN_SCAN__UPLOAD_MAX_MB: "500"
+  WARDEN_OTEL__ENABLED: "false"
+oidc:
+  algorithms: [RS256, ES256]
+  mfaAcr: [phr, phrh]
+  requireMfaRoles: []
