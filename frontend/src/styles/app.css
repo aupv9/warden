@@ -5030,10 +5030,18 @@ dialog.dialog.rule-test-dialog {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
+  margin: 0;
 }
 .layer-line > svg {
-  color: var(--faint);
+  color: var(--muted);
+}
+.layer-line > span:first-of-type {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .layer-digest {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--hover);
   overflow-wrap: anywhere;
 }
