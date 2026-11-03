@@ -182,8 +182,11 @@ func TestPathTooLongForFileSystem(t *testing.T) {
 	for i := range parts {
 		parts[i] = part
 	}
-	base := filepath.Join(t.TempDir(), strings.Repeat("d", 200))
-	if err := os.Mkdir(base, 0o755); err != nil {
+	// The entry is about 3.8 KB: three 200-byte directories above dest take the
+	// whole path past PATH_MAX on Linux (4096) as well as on macOS (1024).
+	d := strings.Repeat("d", 200)
+	base := filepath.Join(t.TempDir(), d, d, d)
+	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(base, "out")
