@@ -32,20 +32,9 @@ import (
 // own text per finding, never matched text; the snippet is set to NULL and the
 // directory deleted however the run ends.
 
-// TestRulesArgs is enqueued by the API (POST /orgs/{org}/scan-rules/tests)
-// in the transaction that inserts the test. Field names and JSON are a
-// contract with the API: keep them stable.
-type TestRulesArgs struct {
-	OrgID  uuid.UUID `json:"org_id"`
-	TestID uuid.UUID `json:"test_id"`
-}
-
-func (TestRulesArgs) Kind() string { return "test_rules" }
-
-// A worker that dies mid-run gets one more attempt; the test is still running
-// with its snippet, and the next attempt runs it again.
-func (TestRulesArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{MaxAttempts: 2} }
-
+// TestRulesWorker runs TestRulesArgs (ruletest_args.go: the scan queue, so a
+// test takes a sandbox slot like a scan; one attempt). A test whose job dies
+// is failed by prune_rule_tests.
 type TestRulesWorker struct {
 	river.WorkerDefaults[TestRulesArgs]
 	Env *Env
@@ -79,9 +68,11 @@ type RuleTestFinding struct {
 }
 
 const (
-	// maxRuleTestFindings caps what one test keeps; a snippet is small.
+	// maxRuleTestFindings caps what one test keeps (a snippet is small), and
+	// maxRuleTestBytes their JSON (scan_rule_test.findings allows 256 KiB).
 	maxRuleTestFindings = 200
 	maxRuleTestMessage  = 1000
+	maxRuleTestBytes    = 192 << 10
 	// ruleTestRetention: tests (their results) are deleted a day after they
 	// were made (prune_rule_tests); ruleTestStale: a test still queued or
 	// running this long after it was made lost its job, and gives up its
@@ -230,8 +221,9 @@ func (e *Env) ruleTest(ctx context.Context, id uuid.UUID, t ruleTestRow, attempt
 // rule's own text.
 func ruleTestFindings(fs []sarif.Finding, r rules.Rule) []RuleTestFinding {
 	out := []RuleTestFinding{}
+	size := 2 // []
 	for _, f := range fs {
-		if len(out) == maxRuleTestFindings {
+		if len(out) == maxRuleTestFindings || size > maxRuleTestBytes {
 			break
 		}
 		if f.RuleID != r.ID() || f.StartLine == nil {
@@ -246,7 +238,12 @@ func ruleTestFindings(fs []sarif.Finding, r rules.Rule) []RuleTestFinding {
 			e := *f.EndLine
 			end = &e
 		}
-		out = append(out, RuleTestFinding{Line: *f.StartLine, EndLine: end, Message: truncate(msg, maxRuleTestMessage)})
+		rf := RuleTestFinding{Line: *f.StartLine, EndLine: end, Message: truncate(msg, maxRuleTestMessage)}
+		raw, _ := json.Marshal(rf)
+		if size += len(raw) + 1; size > maxRuleTestBytes {
+			break
+		}
+		out = append(out, rf)
 	}
 	return out
 }

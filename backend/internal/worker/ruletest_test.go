@@ -11,12 +11,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 
 	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
+	"github.com/aupv9/warden/backend/internal/scan/sarif"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
 	"github.com/aupv9/warden/backend/internal/worker/dbtest"
 )
@@ -240,6 +242,23 @@ func TestRuleTestNotRunnable(t *testing.T) {
 	var cancel *river.JobCancelError
 	if err := h.run(1); !errors.As(err, &cancel) {
 		t.Fatal(err)
+	}
+}
+
+// Findings stay under scan_rule_test.findings' 256 KiB, however many there are.
+func TestRuleTestFindingsAreCapped(t *testing.T) {
+	fakeRules(t)
+	r, _ := parseRule("opengrep", []byte("k:high"))
+	var fs []sarif.Finding
+	for i := range 1000 {
+		n := i + 1
+		fs = append(fs, sarif.Finding{RuleID: "org.k", StartLine: &n, RuleDescription: strings.Repeat("\u0001界", 600)})
+	}
+	out := ruleTestFindings(fs, r)
+	raw, _ := json.Marshal(out)
+	if len(out) == 0 || len(out) > maxRuleTestFindings || len(raw) > 256<<10 ||
+		utf8.RuneCountInString(out[0].Message) != maxRuleTestMessage {
+		t.Fatal(len(out), len(raw))
 	}
 }
 
