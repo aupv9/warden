@@ -67,7 +67,7 @@ func StampSPDX(raw []byte, name, scanID string) (*Stamped, error) {
 			if err != nil {
 				return nil, err
 			}
-			pkg["name"], _ = json.Marshal(name)
+			setFold(pkg, "name", name)
 			if packages[i], err = json.Marshal(pkg); err != nil {
 				return nil, sbomErr("package: %v", err)
 			}
@@ -84,12 +84,15 @@ func StampSPDX(raw []byte, name, scanID string) (*Stamped, error) {
 		}
 	}
 	// The comment is replaced, not appended to: only Warden writes warden:scan_id.
-	info["comment"], _ = json.Marshal(SPDXScanIDPrefix + scanID)
-	if doc["creationInfo"], err = json.Marshal(info); err != nil {
+	setFold(info, "comment", SPDXScanIDPrefix+scanID)
+	ci, err := json.Marshal(info)
+	if err != nil {
 		return nil, sbomErr("creationInfo: %v", err)
 	}
-	doc["name"], _ = json.Marshal(name)
-	doc["documentNamespace"], _ = json.Marshal("urn:uuid:" + scanID)
+	dropFold(doc, "creationInfo")
+	doc["creationInfo"] = ci
+	setFold(doc, "name", name)
+	setFold(doc, "documentNamespace", "urn:uuid:"+scanID)
 	// Marshal re-validates and compacts every raw value (and escapes <, >, &).
 	out, err := json.Marshal(doc)
 	if err != nil {
@@ -97,4 +100,21 @@ func StampSPDX(raw []byte, name, scanID string) (*Stamped, error) {
 	}
 	sum := sha256.Sum256(out)
 	return &Stamped{Data: out, SHA256: hex.EncodeToString(sum[:]), Components: len(packages)}, nil
+}
+
+// setFold sets key to the JSON string v after removing every key that equals
+// it ignoring case. encoding/json matches field names case-insensitively, so
+// a document holding both "documentNamespace" and "docUmentNamespace" would
+// keep the forged one for some readers (found by FuzzStampSPDX).
+func setFold(o object, key, v string) {
+	dropFold(o, key)
+	o[key], _ = json.Marshal(v)
+}
+
+func dropFold(o object, key string) {
+	for k := range o {
+		if strings.EqualFold(k, key) {
+			delete(o, k)
+		}
+	}
 }
