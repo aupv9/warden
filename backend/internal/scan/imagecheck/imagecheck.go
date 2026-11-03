@@ -65,6 +65,10 @@ type Limits struct {
 type Result struct {
 	Layout string // "docker" or "oci"
 	Layers int
+	// LayerFiles are the tarball's layer entries in the image's order (the
+	// base layer first), as cleaned names; one entry may be listed twice.
+	// warden-layers reads them in the Gitleaks sandbox (internal/scan/layerscan).
+	LayerFiles []string
 }
 
 var digest = regexp.MustCompile(`^sha256:([0-9a-f]{64})$`)
@@ -210,12 +214,15 @@ func checkDocker(raw []byte, files map[string]entry) (*Result, error) {
 	if err := checkLayers(len(m.Layers)); err != nil {
 		return nil, err
 	}
+	var names []string
 	for _, l := range m.Layers {
 		if err := present(files, l, "layer"); err != nil {
 			return nil, err
 		}
+		parts, _ := archpath.Clean(l) // present checked it
+		names = append(names, path.Join(parts...))
 	}
-	return &Result{Layout: "docker", Layers: len(m.Layers)}, nil
+	return &Result{Layout: "docker", Layers: len(m.Layers), LayerFiles: names}, nil
 }
 
 func checkLayers(n int) error {
@@ -305,6 +312,7 @@ func checkOCI(p string, raw []byte, files map[string]entry) (*Result, error) {
 	if err := checkLayers(len(doc.Layers)); err != nil {
 		return nil, err
 	}
+	var names []string
 	for _, l := range doc.Layers {
 		bp, ok := blobPath(l)
 		if !ok {
@@ -313,6 +321,7 @@ func checkOCI(p string, raw []byte, files map[string]entry) (*Result, error) {
 		if err := present(files, bp, "layer"); err != nil {
 			return nil, err
 		}
+		names = append(names, bp)
 	}
-	return &Result{Layout: "oci", Layers: len(doc.Layers)}, nil
+	return &Result{Layout: "oci", Layers: len(doc.Layers), LayerFiles: names}, nil
 }

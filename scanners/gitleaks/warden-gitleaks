@@ -6,6 +6,9 @@
 #   warden-gitleaks [RULES]              source scans: the files under /src
 #   warden-gitleaks [RULES] history MAX  history scans: the newest MAX commits of the
 #                                        bundle /src/repo.bundle (checked by bundlecheck)
+#   warden-gitleaks [RULES] image MAX    image scans: every layer of the docker save
+#                                        tarball /src/image.tar (checked by imagecheck),
+#                                        at most MAX uncompressed bytes in all
 #
 # RULES picks the config:
 #
@@ -23,6 +26,9 @@
 # Exit 3: the bundle's history is incomplete (a shallow clone's bundle, which
 # has no prerequisites but lacks the boundary's parents); exit 4: git refused
 # the bundle. The worker reports them as BUNDLE_INCOMPLETE and BUNDLE_INVALID.
+# Exit 5: the image's layers expand past MAX (or hold too many entries); exit
+# 6: a layer can't be read. The worker reports them as IMAGE_TOO_LARGE and
+# IMAGE_INVALID.
 set -eu
 
 config=/data/gitleaks.toml
@@ -97,6 +103,20 @@ history)
   # git log's default order is newest first, so a cut keeps the newest commits.
   leaks git "$repo" --log-opts="--all --max-count=$max"
   printf '{"commits":%d,"truncated":%s}\n' "$scanned" "$truncated" >/out/history.json
+  ;;
+image)
+  max=${2:-}
+  case "$max" in '' | *[!0-9]*) echo "warden-gitleaks: bad size limit" >&2; exit 2 ;; esac
+  # warden-layers (Go, internal/scan/layerscan) unpacks the layers a batch at
+  # a time under /tmp/layers/<layer>/: regular files only, nothing deleted by
+  # a whiteout, no link created or followed. It runs the command after -- over
+  # each batch (appending the directory and --report-path), maps the findings
+  # back to the path in the image and the layer, and writes one raw SARIF and
+  # /out/layers.json (the layers' digests). Same flags as leaks().
+  warden-layers -image /src/image.tar -dir /tmp/layers -max-bytes "$max" \
+    -sarif /tmp/raw.sarif -report /out/layers.json -- \
+    gitleaks dir --config "$config" --gitleaks-ignore-path /opt/warden/noignore \
+    --report-format sarif --exit-code 0 --no-banner --log-level warn
   ;;
 *)
   echo "warden-gitleaks: unknown mode" >&2
