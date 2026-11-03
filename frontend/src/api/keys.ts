@@ -49,6 +49,13 @@ export const qk = {
   webhookDeliveries: (orgId: string, webhookId: string) => ["org", orgId, "webhooks", webhookId, "deliveries"] as const,
   // v0.5 wave 2: one log per state filter, under the prefix above (so a test refreshes all).
   webhookDeliveryLog: (orgId: string, webhookId: string, state: string) => ["org", orgId, "webhooks", webhookId, "deliveries", state || "all"] as const,
+  // v0.6: the org's own scan rules. No key holds a rule body or a test snippet (scanRules.test.ts):
+  // a test's result (lines and messages) is keyed by its id only.
+  scanRules: (orgId: string) => ["org", orgId, "scan-rules"] as const,
+  scanRuleList: (orgId: string) => ["org", orgId, "scan-rules", "list"] as const,
+  scanRule: (orgId: string, ruleId: string) => ["org", orgId, "scan-rules", "rule", ruleId] as const,
+  scanRuleVersions: (orgId: string, ruleId: string) => ["org", orgId, "scan-rules", "rule", ruleId, "versions"] as const,
+  ruleTest: (orgId: string, testId: string) => ["org", orgId, "rule-tests", testId] as const,
   // Notifications belong to the user, not to an org.
   notificationsAll: ["notifications"] as const,
   unreadCount: ["notifications", "unread-count"] as const,
