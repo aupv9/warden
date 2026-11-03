@@ -52,16 +52,25 @@ type Config struct {
 }
 
 type Settings struct {
-	OIDC    OIDCSection    `koanf:"oidc"`
-	Migrate MigrateSection `koanf:"migrate"`
-	Storage StorageSection `koanf:"storage"`
-	SMTP    SMTPSection    `koanf:"smtp"`
-	Scan    ScanSection    `koanf:"scan"`
-	Secrets SecretsSection `koanf:"secrets"`
-	Webhook WebhookSection `koanf:"webhook"`
-	Web     WebSection     `koanf:"web"`
-	Admin   AdminSection   `koanf:"admin"`
-	Notify  NotifySection  `koanf:"notify"`
+	OIDC     OIDCSection     `koanf:"oidc"`
+	Migrate  MigrateSection  `koanf:"migrate"`
+	Storage  StorageSection  `koanf:"storage"`
+	SMTP     SMTPSection     `koanf:"smtp"`
+	Scan     ScanSection     `koanf:"scan"`
+	Secrets  SecretsSection  `koanf:"secrets"`
+	Webhook  WebhookSection  `koanf:"webhook"`
+	Web      WebSection      `koanf:"web"`
+	Admin    AdminSection    `koanf:"admin"`
+	Notify   NotifySection   `koanf:"notify"`
+	Registry RegistrySection `koanf:"registry"`
+}
+
+// RegistrySection configures image pulls (POST …/scans/pull).
+type RegistrySection struct {
+	// AllowHosts may be pulled from over plain http and at private addresses
+	// (exact host names or IP literals, no port): development and tests only,
+	// like webhook.allow_hosts.
+	AllowHosts List `koanf:"allow_hosts"`
 }
 
 // NotifySection: how long in-app notifications are kept (job
@@ -228,6 +237,11 @@ type ScanSection struct {
 	// is how many commits one reads, the newest (the scan says when it cut).
 	HistoryUploadMaxMB int `koanf:"history_upload_max_mb" validate:"min=1"`
 	HistoryMaxCommits  int `koanf:"history_max_commits" validate:"min=1"`
+	// PullMaxMB caps an image the worker pulls from a registry (manifests and
+	// layers as sent); PullPlatform picks the image of a multi-platform
+	// manifest list ("os/arch[/variant]").
+	PullMaxMB    int    `koanf:"pull_max_mb" validate:"min=1"`
+	PullPlatform string `koanf:"pull_platform" validate:"required"`
 }
 
 func appDefaults() *cgconfig.AppConfig {
@@ -283,6 +297,8 @@ func settingsDefaults() *Settings {
 			ImageUploadMaxMB:    2048,
 			HistoryUploadMaxMB:  1024,
 			HistoryMaxCommits:   50_000,
+			PullMaxMB:           2048,
+			PullPlatform:        "linux/amd64",
 		},
 		Webhook: WebhookSection{FailureLimit: 10},
 		Web:     WebSection{OIDCClientID: "warden-web", OIDCScope: "openid profile email"},
