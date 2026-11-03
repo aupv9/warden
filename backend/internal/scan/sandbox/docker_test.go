@@ -133,7 +133,8 @@ func TestExecRunnerOnlyRunsDocker(t *testing.T) {
 
 // Other backends (sandbox/kube) treat a tool as Run does.
 func TestBackendAccessors(t *testing.T) {
-	og, tr := Tools["opengrep"], ImageTools["trivy"]
+	og := Tools["opengrep"]
+	tr, _ := ImageTool("trivy", ImageLimits{})
 	if og.TmpSize() != "256m" || tr.TmpSize() != "1g" || Tools["checkov"].SarifFile() != "results_sarif.sarif" || og.SarifFile() != "result.sarif" {
 		t.Fatal("sizes or names")
 	}

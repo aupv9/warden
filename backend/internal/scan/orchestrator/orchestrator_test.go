@@ -20,6 +20,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/domain/severity"
 	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
+	"github.com/aupv9/warden/backend/internal/scan/sarif"
 	st "github.com/aupv9/warden/backend/internal/scan/scantest"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 )
@@ -47,6 +48,8 @@ type fakeDeps struct {
 	gitleaksDoc st.M
 	historyOut  *string
 	exitCode    int
+	// Image scans: the layer report Gitleaks writes.
+	layersOut *string
 	// Org rules: the opengrep SARIF to write, and the rules files (and their
 	// modes) a tool saw.
 	opengrepDoc st.M
@@ -145,6 +148,11 @@ func (d *fakeDeps) RunTool(_ context.Context, tool, _, scanDir string) sandbox.T
 		p := filepath.Join(out, "history.json")
 		_ = os.WriteFile(p, []byte(*d.historyOut), 0o600)
 		run.Artifacts = map[string]string{sandbox.ArtifactHistory: p}
+	}
+	if tool == "gitleaks" && d.layersOut != nil {
+		p := filepath.Join(out, "layers.json")
+		_ = os.WriteFile(p, []byte(*d.layersOut), 0o600)
+		run.Artifacts = map[string]string{sandbox.ArtifactLayers: p}
 	}
 	if tool == "trivy" {
 		run.Artifacts = map[string]string{}
@@ -430,12 +438,110 @@ func TestImageScan(t *testing.T) {
 	assertCleaned(t, d, j)
 
 	// Other tools are refused for images (the API never queues them).
-	d = newDeps(t, data, nil)
-	if _, err := Execute(context.Background(), imageJob(sha, "trivy", "gitleaks"), d); err == nil {
-		t.Fatal("gitleaks ran on an image")
+	for _, tool := range []string{"opengrep", "checkov"} {
+		d = newDeps(t, data, nil)
+		if _, err := Execute(context.Background(), imageJob(sha, "trivy", tool), d); err == nil {
+			t.Fatalf("%s ran on an image", tool)
+		}
+		if !slices.Equal(d.deleted, []string{"uploads/x.zip"}) {
+			t.Fatal("upload not deleted")
+		}
 	}
-	if !slices.Equal(d.deleted, []string{"uploads/x.zip"}) {
-		t.Fatal("upload not deleted")
+}
+
+func layersReport(layers ...string) *string {
+	b, _ := json.Marshal(map[string]any{"layers": layers, "skipped_files": 1, "whiteouts": 2, "unsafe_entries": 0})
+	s := string(b)
+	return &s
+}
+
+var (
+	digestA = "sha256:" + strings.Repeat("a", 64)
+	digestB = "sha256:" + strings.Repeat("b", 64)
+)
+
+// Gitleaks in an image scan gets the key, and its findings the layer from
+// its layer report and the image's target.
+func TestImageGitleaks(t *testing.T) {
+	data, sha := imageTar(t, `[{"Config":"c.json","Layers":["l/layer.tar","l/layer.tar"]}]`)
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Succeeded, "trivy": sandbox.Succeeded})
+	d.trivyOut = map[string]string{"trivy.json": imageReport}
+	doc, err := redact.Doc(st.RoundTrip(st.Doc([]any{st.ImageResult("aws-access-token", "/app/.env", 2, st.FakeSecret, 1)})), st.HMACKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.gitleaksDoc, d.layersOut = doc, layersReport(digestA, digestB)
+	j := imageJob(sha, "gitleaks", "trivy")
+	out, err := Execute(context.Background(), j, d)
+	if err != nil || out.Status != Completed || !d.sawImage || !d.sawKey {
+		t.Fatal(out, err, d.sawImage, d.sawKey)
+	}
+	fs := out.Findings["gitleaks"]
+	if len(fs) != 1 || fs[0].FilePath != "ghcr.io/acme/api::/app/.env" || fs[0].ImageLayer == nil ||
+		*fs[0].ImageLayer != (sarif.ImageLayer{Digest: digestB, Index: 1, Count: 1}) {
+		t.Fatalf("%+v", fs)
+	}
+	if len(out.Findings["trivy"]) != 1 {
+		t.Fatal(out.Findings)
+	}
+	assertCleaned(t, d, j)
+}
+
+// Without a well-formed layer report, with a digest for each of the
+// manifest's layers, Gitleaks' findings have no layer: the tool fails.
+func TestImageLayerReportIsChecked(t *testing.T) {
+	data, sha := imageTar(t, `[{"Config":"c.json","Layers":["l/layer.tar","l/layer.tar"]}]`)
+	doc, _ := redact.Doc(st.RoundTrip(st.Doc([]any{st.ImageResult("aws-access-token", "/app/.env", 2, st.FakeSecret, 1)})), st.HMACKey)
+	for _, report := range []*string{nil, ptr(""), layersReport(digestA), layersReport(digestA, digestB, digestA),
+		layersReport(digestA, "sha256:"+strings.Repeat("A", 64)), layersReport(digestA, "md5:x"),
+		ptr(`{"layers":["` + digestA + `","` + digestB + `"],"extra":1}`), ptr(`{"layers":["` + digestA + `","` + digestB + `"]}{}`),
+		ptr(`{"layers":["` + digestA + `","` + digestB + `"],"skipped_files":-1}`), ptr(`[]`),
+		ptr(`{"layers":["` + digestA + `","` + digestB + `"]}` + strings.Repeat(" ", 70<<10))} {
+		d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Succeeded})
+		d.gitleaksDoc, d.layersOut = doc, report
+		out, err := Execute(context.Background(), imageJob(sha, "gitleaks"), d)
+		if err != nil || out.Status != Failed || out.ErrorCode != "ALL_SCANNERS_FAILED" || out.Findings["gitleaks"] != nil ||
+			!strings.HasPrefix(out.Runs[0].Error, "SARIF:") {
+			t.Errorf("%v: %+v %v", report, out, err)
+		}
+	}
+	// A layer index past the report's: refused by the parser.
+	bad, _ := redact.Doc(st.RoundTrip(st.Doc([]any{st.ImageResult("aws-access-token", "/app/.env", 2, st.FakeSecret, 2)})), st.HMACKey)
+	d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Succeeded})
+	d.gitleaksDoc, d.layersOut = bad, layersReport(digestA, digestB)
+	if out, err := Execute(context.Background(), imageJob(sha, "gitleaks"), d); err != nil || out.Status != Failed {
+		t.Fatal(out, err)
+	}
+}
+
+// Layers warden-layers won't read (a decompression bomb, not a tar) reject
+// the image, Trivy's results too; other failures are the scanner's.
+func TestImageLayerRejections(t *testing.T) {
+	data, sha := imageTar(t, `[{"Config":"c.json","Layers":["l/layer.tar"]}]`)
+	for _, c := range []struct {
+		exitCode int
+		code     string
+	}{
+		{sandbox.ExitImageTooLarge, "IMAGE_TOO_LARGE"},
+		{sandbox.ExitImageUnreadable, "IMAGE_INVALID"},
+		{sandbox.ExitHistoryIncomplete, ""},
+		{1, ""},
+	} {
+		d := newDeps(t, data, map[string]sandbox.ToolStatus{"gitleaks": sandbox.Failed, "trivy": sandbox.Succeeded})
+		d.trivyOut = map[string]string{"trivy.json": imageReport}
+		d.exitCode = c.exitCode
+		j := imageJob(sha, "gitleaks", "trivy")
+		out, err := Execute(context.Background(), j, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.code != "" && (out.Status != Failed || out.ErrorCode != c.code || out.Findings != nil) {
+			t.Errorf("%d: %+v", c.exitCode, out)
+		}
+		if c.code == "" && (out.Status != Partial || len(out.Findings["trivy"]) != 1) {
+			t.Errorf("%d: %+v", c.exitCode, out)
+		}
+		assertCleaned(t, d, j)
 	}
 }
 
