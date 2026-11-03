@@ -76,7 +76,8 @@ export const mockFlags = {
    *  host) shows "Can't reach the server's sign-in settings". */
   webConfig: PARAMS.get("mock_web_config"),
   /** v0.5 wave 2: `?mock_export=truncated` marks the CSV as cut at 50,000 rows;
-   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. */
+   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. v0.7: `cut`
+   *  ends it without the end line, `miscount` with a row count that doesn't match. */
   export: PARAMS.get("mock_export"),
   /** v0.5 wave 2: `?mock_audit=broken` makes "Verify chain" find a changed entry. */
   auditBroken: PARAMS.get("mock_audit") === "broken",

@@ -1678,16 +1678,20 @@ function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorte
 
 const CSV_COLUMNS = ["key", "project", "title", "severity", "status", "tool", "rule_id", "file_path", "line", "target", "cve", "kev", "epss", "assignee", "due_at", "created_at", "updated_at"];
 
-/** A CSV cell as the server writes it: a spreadsheet would read a cell starting with =, +, -, @,
- *  tab or carriage return as a formula, so those get an apostrophe; then RFC 4180 quoting. */
+/** A CSV cell as the server writes it: control characters (CR and LF included) become spaces, so
+ *  every record is one line (v0.7's completeness check counts lines); a spreadsheet would read a
+ *  cell starting with =, +, -, @ as a formula, so those get an apostrophe; then RFC 4180 quoting. */
 function csvCell(v: string | number | boolean | string[] | null | undefined): string {
   let s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(" ") : String(v);
+  s = s.replace(/[\u0000-\u001f\u007f]/g, " ");
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** GET /issues/export.csv: the list's filters, fixed columns, an attachment. `?mock_export=`
- *  marks it truncated or makes it fail (fixtures.ts mockFlags). */
+/** GET /issues/export.csv: the list's filters, fixed columns, an attachment, and (v0.7) the end
+ *  line `#warden:end rows=<N>`. `?mock_export=` marks it truncated, makes it fail, or (v0.7)
+ *  cuts it short: `cut` drops the end line and the last row, `miscount` ends with a wrong N
+ *  (fixtures.ts mockFlags). */
 function exportCsv(orgId: string, url: URL): Response {
   const flag = db.mockFlags.export;
   if (flag === "rate_limited") return envelope(429, null, { code: "RATE_LIMITED", message: "rate limited" }, { "Retry-After": "120" });
@@ -1727,7 +1731,10 @@ function exportCsv(orgId: string, url: URL): Response {
     "Content-Disposition": `attachment; filename="warden-issues-${slug}-${new Date().toISOString().slice(0, 10)}.csv"`,
   };
   if (flag === "truncated") headers["X-Warden-Truncated"] = "true";
-  return new Response([CSV_COLUMNS.join(","), ...rows, ""].join("\r\n"), { status: 200, headers });
+  const lines = [CSV_COLUMNS.join(","), ...rows, `#warden:end rows=${rows.length + (flag === "miscount" ? 1 : 0)}`];
+  // A stream that broke after some rows: no end line, and the response just ends.
+  if (flag === "cut") lines.splice(rows.length > 0 ? -2 : -1);
+  return new Response([...lines, ""].join("\r\n"), { status: 200, headers });
 }
 
 /** v0.4: Trivy issues are license-policy issues, malicious packages or vulnerabilities. */
