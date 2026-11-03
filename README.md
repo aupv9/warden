@@ -154,6 +154,32 @@ service). The worker also refuses a scanner without an image, checks that Docker
 missing pinned images, and removes containers and scratch directories left by scans that are
 no longer running.
 
+**On Kubernetes** ([`deploy/helm/warden`](deploy/helm/warden)), set
+`WARDEN_SCAN__SANDBOX_BACKEND=kubernetes`: the worker holds no Docker socket and runs every
+scanner as its own gVisor Pod in a sandbox namespace (`WARDEN_SCAN__KUBE__NAMESPACE`, default
+`warden-sandbox`), where its Role allows only creating, watching, exec-ing into and deleting
+Pods. Prerequisites the chart doesn't install: a RuntimeClass with gVisor's handler (`runsc`, or
+`gvisor` on GKE Sandbox) on the scan nodes, a CNI that enforces NetworkPolicy, shared storage
+(RWX/ROX, writable by uid 65532) for the mirror, and scanner images pushed to a registry by
+digest (pre-pull them: pull time counts against each Pod's deadline).
+- *Scanner Pods*: RuntimeClass, no service-account token, no service links, DNS to 127.0.0.1,
+  user 65532, read-only root, no capabilities or privilege escalation, RuntimeDefault seccomp,
+  requests equal to limits (ephemeral storage too), a deadline from the scanner's timeout; the
+  namespace is Pod Security `restricted` with a default-deny NetworkPolicy and a quota.
+- *No shared volumes and no network*: the source, the Gitleaks key and the scanner's org rules
+  go in, and the reports come back, through `warden-sandbox-io` over the exec API (TLS through
+  the API server and kubelet), checked like hostile archives both ways; the mirror is a
+  read-only claim (`WARDEN_SCAN__KUBE__MIRROR_PVC`, one directory per scanner). A scanner starts
+  only once its Pod demonstrably can't reach the Internet, the API server or cluster DNS.
+- *At startup* the worker checks the RuntimeClass's handler and runs a canary Pod: in prod it
+  refuses to start if the canary reaches the network or isn't on gVisor. Prod also requires
+  `WARDEN_SCAN__KUBE__RUNTIME_CLASS`, `__MIRROR_PVC` and a digest-pinned `__IO_IMAGE` (the
+  warden image), and refuses `__KUBECONFIG` (in-cluster credentials only).
+- The chart takes every secret from an existing Secret (`existingSecret`; NOTES list the keys),
+  mounts in each Pod only the keys it needs, runs migrations as a pre-install/pre-upgrade hook,
+  and refreshes the mirror with a CronJob (no Docker). `helm install … -f values.yaml` with
+  image digests is the whole install; `values-prod-example.yaml` is a starting point.
+
 **Schema version.** The API and worker refuse to start on a database migrated by a newer
 Warden. On an older schema the API reports not ready and the worker takes no jobs until
 `warden-migrate` has run; `warden-migrate status` prints both versions.
@@ -161,7 +187,7 @@ Warden. On an older schema the API reports not ready and the worker takes no job
 **Health and metrics.** The API serves `/healthz` and `/readyz` (database, schema) on its
 port. `WARDEN_ADMIN__ADDR` opens an internal listener (keep it off the public network) with
 Prometheus `/metrics` on both binaries, and `/healthz` and `/readyz` (database, storage,
-schema, Docker and the runtime) on the worker; `warden-worker -healthcheck` probes it.
+schema, and the sandbox: Docker and the runtime, or the Kubernetes API and the RuntimeClass) on the worker; `warden-worker -healthcheck` probes it.
 Metrics have no org, project or user labels:
 
 | Metric | Labels |
@@ -218,7 +244,11 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_WEB__OIDC_CLIENT_ID` / `WARDEN_WEB__OIDC_SCOPE` | `warden-web` / `openid profile email` | Public client the web UI signs in with (authorization code + PKCE), served at `GET /api/v1/web-config` |
 | `WARDEN_WEB__OIDC_AUDIENCE` | | Sent as the `audience` sign-in parameter when set (Auth0) |
 | `WARDEN_OIDC__CONSOLE_URL` | | Optional link to the identity provider's admin console, shown to org admins on the Sign-in settings page (http or https; never fetched) |
-| `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development |
+| `WARDEN_SCAN__SANDBOX_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` for local development (Docker backend) |
+| `WARDEN_SCAN__SANDBOX_BACKEND` | `docker` | `docker` (the worker holds the host's Docker socket) or `kubernetes` (one gVisor Pod per scanner; see "On Kubernetes") |
+| `WARDEN_SCAN__KUBE__NAMESPACE` / `__RUNTIME_CLASS` | `warden-sandbox` / `gvisor` | Where scanner Pods run, and the RuntimeClass they use (handler `runsc` or `gvisor`) |
+| `WARDEN_SCAN__KUBE__MIRROR_PVC` / `__IO_IMAGE` | | The mirror's claim in the sandbox namespace; the image carrying `warden-sandbox-io` (the warden image, by digest) |
+| `WARDEN_SCAN__KUBE__KUBECONFIG` | | Development only (refused in prod); empty means in-cluster credentials |
 | `WARDEN_SCAN__IMAGES` | | Scanner images; must be pinned by `@sha256` digest |
 | `WARDEN_SCAN__HMAC_KEY` | | Master key for secret fingerprints, at least 32 bytes (`openssl rand -hex 32`). Each organization gets its own key derived from it, so changing it changes every secret's fingerprint |
 | `WARDEN_SCAN__TIMEOUT` / `WARDEN_SCAN__SLOTS_PER_NODE` | `30m` / `7` | Per-scan timeout, concurrent scans per worker |
@@ -830,7 +860,8 @@ backend/                 Go module
 frontend/                React + TypeScript + Vite, OIDC (PKCE); design spec in DESIGN.md
 scanners/                sandbox images and pinned digests
 rules/opengrep/          Warden's own guardrail rules, run on every self-scan
-deploy/                  Keycloak realm, Postgres role bootstrap; compose/: production Compose, Caddy, mirror timer
+deploy/                  Keycloak realm, Postgres role bootstrap; compose/: production Compose, Caddy, mirror timer;
+                         helm/: the Helm chart and its checks
 scripts/                 mirror sync, env and secret generators, image and compose smoke tests
 ```
 
@@ -881,6 +912,11 @@ Changes that weaken one of these need an explicit discussion in the pull request
   user and `--cap-drop=ALL`, with no Docker socket. Images are pinned by digest. Only the
   worker (and the mirror job) holds the Docker socket; the API never does. `app.env=prod`
   refuses `runc`, plain-http sign-in and public URLs, and placeholder secrets.
+- On Kubernetes the worker has no Docker socket and no rights outside the sandbox namespace
+  (Pods and `pods/exec` there; `get` on its one RuntimeClass); scanner Pods have no
+  service-account token, no network (checked by a canary at startup and before each scanner
+  runs) and run under gVisor; input and reports cross only through `warden-sandbox-io`, which
+  refuses links, escapes and oversized streams.
 - The admin listener (`/metrics`, worker health) is internal only, and metrics carry no
   org, project or user labels.
 - Scans, issues and the audit log are never deleted. The app role can't delete notifications or

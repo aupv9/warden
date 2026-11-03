@@ -1,0 +1,50 @@
+{{- if .Values.metrics.enabled }}
+{{- range $component := list "api" "worker" }}
+{{- $c := dict "ctx" $ "component" $component }}
+---
+# The admin port (/metrics) inside the cluster only: no Ingress or HTTPRoute
+# points here. Metrics carry no org, project or user labels.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "warden.fullname" $ }}-{{ $component }}-metrics
+  labels:
+    {{- include "warden.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: metrics
+    warden.metrics/of: {{ $component }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "warden.selectorLabels" $c | nindent 4 }}
+  ports:
+    - name: admin
+      port: {{ $.Values.admin.port }}
+      targetPort: admin
+      protocol: TCP
+{{- end }}
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "warden.fullname" . }}
+  labels:
+    {{- include "warden.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "warden.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  endpoints:
+    - port: admin
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

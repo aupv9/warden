@@ -1,0 +1,354 @@
+# Warden Helm chart. values.schema.json rejects unknown keys and unpinned images.
+#
+# The chart never creates or templates secret VALUES. Create the Secret named
+# by `existingSecret` yourself (or with External Secrets / Sealed Secrets) in
+# the release namespace, with these keys (the names are the env vars Warden
+# reads; each component mounts only the keys it uses, as files, and gets
+# WARDEN_…=file:/run/secrets/warden/<key>):
+#
+#   WARDEN_DATABASE__DSN          api, worker   postgres://warden_app:…@host:5432/warden?sslmode=verify-full
+#   WARDEN_MIGRATE__DSN           migrate only  postgres://warden_owner:…  (the schema owner)
+#   WARDEN_STORAGE__ACCESS_KEY    api, worker   object read/write/delete on the bucket only
+#   WARDEN_STORAGE__SECRET_KEY    api, worker
+#   WARDEN_SECRETS__KEY           api, worker   <key id>:<base64 of 32 bytes>
+#   WARDEN_SCAN__HMAC_KEY         worker        at least 32 bytes (openssl rand -hex 32)
+#   WARDEN_SMTP__PASSWORD         api, worker   only with existingSecretOptional.smtpPassword
+#   WARDEN_SECRETS__OLD_KEYS      api, worker   only with existingSecretOptional.secretsOldKeys
+#
+# Secrets are read at startup: after changing one, `kubectl rollout restart`
+# the api and worker Deployments.
+existingSecret: ""
+existingSecretOptional:
+  smtpPassword: false
+  secretsOldKeys: false
+
+nameOverride: ""
+fullnameOverride: ""
+# Added to every object.
+commonLabels: {}
+
+# The Warden image (warden-api, warden-worker, warden-migrate,
+# warden-sandbox-io). Pinned by digest only: take it from the release notes.
+image:
+  repository: ghcr.io/aupv9/warden
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Scanner images, each a registry reference pinned by @sha256 digest (a tag may
+# precede the digest). Trivy and Checkov are the upstream pins of
+# scanners/images.lock.json for this release; Gitleaks and Opengrep are built
+# from scanners/ (scripts/scanner-images.sh builds them locally) and must be
+# pushed to a registry the cluster pulls from. They run in the sandbox
+# namespace (see sandbox.namespace for pull credentials).
+scannerImages:
+  gitleaks: ""
+  opengrep: ""
+  trivy: docker.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+  checkov: docker.io/bridgecrew/checkov:3.3.22@sha256:617c76e3f9b1f7907ebca9abb6b9d746844edcb48e9bd775e4692c69c1c6ac47
+
+# Public host name of the web UI and API. Email links are https://<domain>.
+domain: ""
+
+# Exactly one of ingress or gateway (or neither, to route to the
+# <release>-warden-api Service yourself). Only the API's HTTP port is routed;
+# the admin port (/metrics) never is.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  tls:
+    # An existing kubernetes.io/tls Secret in the release namespace…
+    secretName: ""
+    # …or let cert-manager issue <fullname>-tls (sets the cert-manager.io
+    # annotation; give one of the two).
+    certManager:
+      clusterIssuer: ""
+      issuer: ""
+gateway:
+  enabled: false
+  # Gateway API HTTPRoute parents, e.g. [{name: public, namespace: gateway, sectionName: https}].
+  # TLS terminates at that Gateway's listener.
+  parentRefs: []
+  annotations: {}
+
+# The Warden settings below map to WARDEN_* variables (README "Configuration").
+logLevel: info
+
+oidc:
+  # https only (app.env=prod refuses http).
+  issuer: ""
+  audience: warden-api
+  jwksUrl: ""
+  algorithms: [RS256]
+  requireMfaRoles: [org_admin, security_lead]
+  # Empty: Warden's defaults (amr otp, mfa, hwk, webauthn).
+  mfaAmr: []
+  mfaAcr: []
+  consoleUrl: ""
+
+web:
+  oidcClientId: warden-web
+  oidcScope: openid profile email
+  oidcAudience: ""
+
+storage:
+  # What the API and worker use. https, or http to a host name without a dot
+  # (an in-cluster Service, e.g. http://seaweedfs-s3:8333). Empty: AWS's default.
+  endpoint: ""
+  # What browsers and the CLI reach (presigned uploads); https. Empty: endpoint.
+  publicEndpoint: ""
+  bucket: warden-uploads
+
+smtp:
+  host: ""
+  port: 587
+  from: ""
+  username: ""
+  implicitTls: false
+  digestHour: 8
+
+notify:
+  readRetention: 2160h
+  unreadRetention: 8760h
+
+webhook:
+  failureLimit: 10
+
+scan:
+  # Per-scan timeout; the worker's termination grace period follows it.
+  timeout: 30m
+  slotsPerNode: 7
+
+# Further non-secret WARDEN_* settings, e.g. WARDEN_SCAN__UPLOAD_MAX_MB: "500".
+# Settings the chart manages and secret keys are refused here.
+extraEnv: {}
+
+# Internal listener: /metrics on both, /healthz and /readyz on the worker.
+# Never routed by the Ingress or Gateway.
+admin:
+  port: 9090
+
+# Applied to every Pod. runAsNonRoot and the RuntimeDefault seccomp profile are
+# always set on top; the containers always run with a read-only root
+# filesystem, no privilege escalation and every capability dropped.
+podSecurityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+
+api:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 256Mi, ephemeral-storage: 128Mi }
+    limits: { memory: 512Mi, ephemeral-storage: 512Mi }
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  service:
+    port: 80
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+worker:
+  replicas: 1
+  resources:
+    requests: { cpu: 250m, memory: 512Mi, ephemeral-storage: 2Gi }
+    limits: { memory: 2Gi }
+  # Per-scan working directories (uploads are unpacked here, then streamed
+  # into the scanner Pods): slotsPerNode × the largest upload, with margin.
+  # It counts toward the Pod's ephemeral storage on the node.
+  scratch:
+    sizeLimit: 32Gi
+  # A stopping worker finishes its running scans: at least scan.timeout + 10m.
+  # Empty: scan.timeout + 15m.
+  terminationGracePeriodSeconds: null
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+migrate:
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Where scanner Pods run (scan.kube.*). The worker's only rights are there.
+sandbox:
+  namespace: warden-sandbox
+  # false: the namespace exists already; it must carry the Pod Security
+  # Admission label enforce=restricted (checked at install when readable).
+  createNamespace: true
+  podSecurityVersion: latest
+  # Must name a RuntimeClass with gVisor's handler (runsc; gvisor on GKE Sandbox),
+  # installed beforehand. Pre-pull the scanner images on the scan nodes: pull
+  # time counts against each scanner Pod's deadline.
+  runtimeClassName: gvisor
+  # Lets the worker get that one RuntimeClass (its startup check); the only
+  # cluster-scoped right the chart grants.
+  readRuntimeClass: true
+  # Image holding warden-sandbox-io. Empty: the Warden image above.
+  ioImage: ""
+  # Scanner Pods run as the sandbox namespace's `default` ServiceAccount with
+  # no token. Pull credentials for private scanner images: the node's
+  # registry credentials, or a pull Secret in the sandbox namespace listed on
+  # that ServiceAccount (kubectl patch serviceaccount default -n <namespace>
+  # -p '{"imagePullSecrets":[{"name":"<secret>"}]}').
+  # Caps everything the namespace can run at once (scanner Pods of every
+  # worker, plus the worker's network canary). A source scan's four scanners
+  # request about 2 CPUs and 5.5 GiB; size for worker.replicas × scan.slotsPerNode.
+  resourceQuota:
+    enabled: true
+    hard:
+      pods: "64"
+      requests.cpu: "16"
+      limits.cpu: "32"
+      requests.memory: 48Gi
+      limits.memory: 64Gi
+      requests.ephemeral-storage: 64Gi
+      limits.ephemeral-storage: 128Gi
+  # Defaults for containers that state no resources, and a per-container cap.
+  limitRange:
+    enabled: true
+    default: { cpu: "1", memory: 1Gi, ephemeral-storage: 1Gi }
+    defaultRequest: { cpu: 100m, memory: 256Mi, ephemeral-storage: 256Mi }
+    max: { cpu: "4", memory: 8Gi, ephemeral-storage: 16Gi }
+
+# The offline scanner data (Trivy DB, Opengrep rules, Gitleaks config,
+# KEV/EPSS/OSV feeds). It is needed in two namespaces: the worker reads the
+# intel feeds from it (release namespace) and scanner Pods mount it read-only
+# (sandbox namespace, scan.kube.mirror_pvc). A claim belongs to one namespace,
+# so there are two claims on the same files.
+mirror:
+  storage:
+    # existingClaims: you create both claims on shared storage.
+    # nfs / csi: the chart creates two static PersistentVolumes on the same
+    #   NFS export or CSI volume (the driver must allow one volumeHandle in two
+    #   PVs: NFS CSI, EFS, Filestore, Azure Files, CephFS static volumes do):
+    #   read-write in the release namespace, read-only in the sandbox namespace.
+    type: existingClaims
+    # Release namespace: written by the CronJob, read by the worker.
+    # ReadWriteMany: the CronJob and the worker may run on different nodes.
+    claimName: ""
+    accessMode: ReadWriteMany
+    # Sandbox namespace: read by every scanner Pod.
+    sandboxClaimName: warden-mirror
+    sandboxAccessMode: ReadOnlyMany
+    size: 20Gi
+    mountOptions: []
+    nfs:
+      server: ""
+      path: ""
+    csi:
+      driver: ""
+      volumeHandle: ""
+      volumeAttributes: {}
+  cronjob:
+    enabled: true
+    # The CronJob's own image: bash, curl, jq and gzip, with Warden's
+    # scripts/sync-mirror.sh, scanners/ and rules/opengrep under /opt/warden
+    # (deploy/helm/mirror/Dockerfile builds one). Pinned by digest.
+    image: ""
+    schedule: "17 3 * * *"
+    timeZone: Etc/UTC
+    # The Trivy DB is fetched by the pinned Trivy image itself (an init
+    # container), not through Docker. Empty: scannerImages.trivy.
+    trivyImage: ""
+    # OCI repositories of the Trivy DB (Trivy's --db-repository), e.g. an
+    # internal mirror populated with `oras copy`. Empty: Trivy's default.
+    trivyDBRepositories: []
+    # Overrides for sync-mirror.sh's feed URLs (empty: its defaults).
+    feeds:
+      kevUrl: ""
+      kevFallbackUrl: ""
+      epssUrl: ""
+      osvUrl: ""
+      osvEcosystems: ""
+    activeDeadlineSeconds: 7200
+    backoffLimit: 1
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { memory: 2Gi }
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+# NetworkPolicies for this release's Pods (the sandbox namespace always denies
+# everything). Each egress entry is {to, ports}; an empty `to` means any
+# destination on those ports. The kube API rule must match how your CNI sees
+# the API server (some, like Cilium, need their own policy for it).
+networkPolicy:
+  enabled: true
+  # Who may reach the API's HTTP port: your ingress controller or Gateway.
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+  # Who may scrape the admin port.
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels: { kubernetes.io/metadata.name: monitoring }
+  egress:
+    dns:
+      to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    database:
+      to: []
+      ports: [{ port: 5432, protocol: TCP }]
+    storage:
+      to: []
+      ports: [{ port: 443, protocol: TCP }]
+    # The identity provider's discovery document and keys (API).
+    oidc:
+      to: []
+      ports: [{ port: 443, protocol: TCP }]
+    smtp:
+      to: []
+      ports: [{ port: 587, protocol: TCP }, { port: 465, protocol: TCP }]
+    # The worker: Pods and exec in the sandbox namespace.
+    kubeAPI:
+      to: []
+      ports: [{ port: 443, protocol: TCP }, { port: 6443, protocol: TCP }]
+    # The worker's webhooks and Slack (Warden refuses internal addresses itself).
+    webhooks:
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+        - ipBlock:
+            cidr: "::/0"
+            except: ["fc00::/7", "fe80::/10", "::1/128"]
+      ports: [{ port: 443, protocol: TCP }]
+    # The mirror CronJob's downloads (Trivy DB registry, GitHub, CISA, FIRST, OSV).
+    mirror:
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+        - ipBlock:
+            cidr: "::/0"
+            except: ["fc00::/7", "fe80::/10", "::1/128"]
+      ports: [{ port: 443, protocol: TCP }]
+
+# A Service per component exposes the admin port inside the cluster.
+metrics:
+  enabled: true
+# Prometheus Operator ServiceMonitors for both (needs metrics.enabled).
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}

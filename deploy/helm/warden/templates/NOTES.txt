@@ -1,0 +1,38 @@
+Warden {{ .Chart.AppVersion }} is installed as "{{ .Release.Name }}" in namespace {{ .Release.Namespace }}.
+Scanner Pods run in namespace {{ .Values.sandbox.namespace }}.
+
+PREREQUISITES (the chart doesn't install them)
+  - RuntimeClass "{{ .Values.sandbox.runtimeClassName }}" whose handler is gVisor's (runsc, or gvisor on GKE Sandbox), e.g. containerd's
+    runsc shim on the scan nodes (https://gvisor.dev/docs/user_guide/containerd/quick_start/).
+    The worker checks the handler and refuses to start without it.
+  - A CNI that enforces NetworkPolicy (Calico, Cilium, GKE Dataplane V2, …). Without one, the
+    sandbox namespace's deny-all policy does nothing; the worker's network canary then stops it.
+  - Shared storage for the mirror, mounted in two namespaces: claim "{{ include "warden.mirrorClaim" . }}"
+    (ReadWriteMany) in {{ .Release.Namespace }} and claim "{{ include "warden.sandboxMirrorClaim" . }}"
+    (read-only) in {{ .Values.sandbox.namespace }}, both on the same files{{ if eq .Values.mirror.storage.type "existingClaims" }}: create them yourself (mirror.storage.type=existingClaims){{ end }}.
+    The files must be writable by uid 65532.
+  - Secret "{{ .Values.existingSecret }}" in {{ .Release.Namespace }} with the keys listed in values.yaml.
+  - Postgres with the warden_owner and warden_app roles (deploy/postgres/init-roles.sh), an
+    S3-compatible bucket, an OIDC provider and an SMTP relay.
+
+AFTER INSTALL
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "warden.fullname" . }}-worker | grep -i -E 'preflight|runtime|canary'
+{{- if .Values.mirror.cronjob.enabled }}
+  # Fill the mirror now instead of waiting for the schedule ({{ .Values.mirror.cronjob.schedule }}):
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "warden.fullname" . }}-mirror {{ include "warden.fullname" . }}-mirror-initial
+{{- end }}
+  # The sandbox namespace denies all traffic and enforces the restricted Pod Security profile:
+  kubectl get ns {{ .Values.sandbox.namespace }} --show-labels
+  kubectl -n {{ .Values.sandbox.namespace }} get networkpolicy,resourcequota,limitrange
+  # The worker can manage Pods there and nothing else:
+  kubectl auth can-i --list -n {{ .Values.sandbox.namespace }} --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "warden.fullname" . }}-worker
+  kubectl auth can-i get secrets -n {{ .Release.Namespace }} --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "warden.fullname" . }}-worker   # no
+{{- if or .Values.ingress.enabled .Values.gateway.enabled }}
+  curl -fsS https://{{ .Values.domain }}/readyz
+{{- else }}
+  No Ingress or HTTPRoute was created: route https://{{ .Values.domain }} to Service {{ include "warden.fullname" . }}-api (port http).
+{{- end }}
+
+Then create the first organization with warden-admin (README "Quick start"; it connects with
+WARDEN_DATABASE__DSN, as the runtime role) from a machine that reaches the database.

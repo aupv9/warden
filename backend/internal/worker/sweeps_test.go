@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -417,9 +419,29 @@ func TestNewEnv(t *testing.T) {
 	if !strings.HasSuffix(env.ScratchDir, "/rel/scratch") || env.ScratchDir[0] != '/' || env.AbandonUploadAfter != time.Hour {
 		t.Fatalf("%+v", env.Settings)
 	}
-	if _, ok := env.Sandbox.(DockerSandbox); !ok {
+	if _, ok := env.Sandbox.(DockerSandbox); !ok || env.Kube != nil {
 		t.Fatal("production sandbox")
 	}
+	// scan.sandbox_backend=kubernetes: Pods through the API (a kubeconfig here).
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(kc, []byte("apiVersion: v1\nkind: Config\nclusters: [{name: c, cluster: {server: \"https://127.0.0.1:6443\"}}]\n"+
+		"contexts: [{name: c, context: {cluster: c, user: u}}]\ncurrent-context: c\nusers: [{name: u, user: {token: t}}]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Scan.SandboxBackend = "kubernetes"
+	cfg.Scan.Kube = config.KubeSection{Namespace: "warden-sandbox", IOImage: "warden:dev", Kubeconfig: kc}
+	env, err = NewEnv(cfg, nil, &fakeStore{}, quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Kube == nil || env.Sandbox != Sandbox(env.Kube) || env.Kube.MaxInputBytes != 3002<<20 || env.Kube.MaxInputEntries != 5000*51+16 {
+		t.Fatalf("kube backend %+v", env.Kube)
+	}
+	cfg.Scan.Kube.Namespace = "Not A Namespace"
+	if _, err := NewEnv(cfg, nil, &fakeStore{}, quietLog()); err == nil || !strings.Contains(err.Error(), "scan.kube") {
+		t.Fatal("bad namespace accepted:", err)
+	}
+	cfg.Scan.SandboxBackend, cfg.Scan.Kube = "docker", config.KubeSection{}
 	// In prod a scanner without an image is a refusal, not a warning.
 	cfg.Scan.Images = map[string]string{"gitleaks": testImages["gitleaks"]}
 	if _, err := NewEnv(cfg, nil, &fakeStore{}, quietLog()); err != nil {
