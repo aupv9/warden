@@ -20,10 +20,12 @@ import (
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
 	"github.com/aupv9/warden/backend/internal/notify"
+	"github.com/aupv9/warden/backend/internal/scan/archpath"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/redact"
 	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
+	"github.com/aupv9/warden/backend/internal/scan/sandbox/kube"
 	"github.com/aupv9/warden/backend/internal/scan/zipcheck"
 	"github.com/aupv9/warden/backend/internal/webhook"
 )
@@ -51,7 +53,8 @@ type Store interface {
 	Put(ctx context.Context, key string, body []byte, sha256Hex, contentType string) error
 }
 
-// Sandbox runs scanner containers (sandbox.Run / sandbox.Kill in production).
+// Sandbox runs scanner containers: DockerSandbox (sandbox.Run /
+// sandbox.Kill) or kube.Backend, per scan.sandbox_backend.
 type Sandbox interface {
 	Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.RunConfig) sandbox.ToolRun
 	Kill(scanID, tool string)
@@ -98,6 +101,9 @@ type Env struct {
 	Tx      TxFunc
 	Store   Store
 	Sandbox Sandbox
+	// Kube is the kubernetes backend (also Sandbox), nil with docker: the
+	// preflight and the readiness check use it.
+	Kube *kube.Backend
 	// Mailer sends notification email; nil disables email.
 	Mailer notify.Sender
 	Settings
@@ -133,7 +139,14 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 		}
 		log.Warn("no scanner image configured; these tools will fail", "tools", missing)
 	}
-	if s.SandboxRuntime != "runsc" {
+	var sb Sandbox = DockerSandbox{}
+	var kb *kube.Backend
+	if s.SandboxBackend == "kubernetes" {
+		if kb, err = newKube(s, log); err != nil {
+			return nil, err
+		}
+		sb = kb
+	} else if s.SandboxRuntime != "runsc" {
 		log.Warn("scanner sandbox is not gVisor (runsc); acceptable for local development only", "runtime", s.SandboxRuntime)
 	}
 	m := cfg.SMTP
@@ -160,7 +173,7 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 	hooks := WebhookSettings{Keys: keys, FailureLimit: cfg.Webhook.FailureLimit,
 		Client: webhook.NewClient(webhook.Policy{AllowHosts: cfg.Webhook.AllowHosts}, webhook.ClientOptions{})}
 	return &Env{
-		Tx: PoolTx(pool), Store: store, Sandbox: DockerSandbox{}, Mailer: mailer, Now: time.Now, Log: log,
+		Tx: PoolTx(pool), Store: store, Sandbox: sb, Kube: kb, Mailer: mailer, Now: time.Now, Log: log,
 		Settings: Settings{
 			ScratchDir: scratch, MirrorDir: mirror, Runtime: s.SandboxRuntime, Images: s.Images,
 			HMACMaster: master, GuardRatio: s.AutocloseGuardRatio, ScanTimeout: s.Timeout,
@@ -170,6 +183,34 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 			NotifyRetention: notify.Retention{Read: cfg.Notify.ReadRetention, Unread: cfg.Notify.UnreadRetention},
 		},
 	}, nil
+}
+
+// newKube connects the kubernetes backend (scan.sandbox_backend=kubernetes).
+// What a run may send into a Pod is bounded by the largest input any scan
+// kind accepts, plus the HMAC key and a rules file; the entry bound can't
+// refuse a tree zipcheck accepted (each file brings at most one directory
+// per level of its path).
+func newKube(s config.ScanSection, log *slog.Logger) (*kube.Backend, error) {
+	k := s.Kube
+	maxMB := max(s.UnzipMaxMB, s.ImageUploadMaxMB, s.HistoryUploadMaxMB)
+	b, err := kube.New(kube.Config{
+		Namespace: k.Namespace, RuntimeClass: k.RuntimeClass, MirrorPVC: k.MirrorPVC, IOImage: k.IOImage,
+		MaxInputBytes:   int64(maxMB)<<20 + 2<<20,
+		MaxInputEntries: s.UnzipMaxFiles*(archpath.MaxPathDepth+1) + 16,
+	}, k.Kubeconfig, log)
+	if err != nil {
+		return nil, fmt.Errorf("scan.kube: %w", err)
+	}
+	if k.RuntimeClass == "" {
+		log.Warn("scan.kube.runtime_class is empty: scanner pods use the cluster's default runtime, not gVisor; acceptable for local development only")
+	}
+	if k.MirrorPVC == "" {
+		log.Warn("scan.kube.mirror_pvc is empty: scanners get an empty /data and those that need the mirror fail")
+	}
+	if k.Kubeconfig != "" {
+		log.Warn("scan.kube.kubeconfig is set: for development only")
+	}
+	return b, nil
 }
 
 // ScanLimits maps the archive settings onto the checks: the archive itself

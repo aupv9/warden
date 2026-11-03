@@ -32,7 +32,7 @@ COPY --from=web /web/dist ./internal/webui/dist
 RUN go test -tags webui -count=1 ./internal/webui/
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -tags webui -o /out/ \
       -ldflags="-s -w -X github.com/aupv9/common-go/health.Version=${VERSION} -X github.com/aupv9/common-go/health.Commit=${COMMIT} -X github.com/aupv9/common-go/health.BuildTime=${BUILD_TIME}" \
-      ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate
+      ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate ./cmd/warden-sandbox-io
 
 # The docker CLI (client only, statically linked) for warden-worker, which runs
 # each scanner with `docker run --runtime=runsc` against the host's daemon.
@@ -54,7 +54,10 @@ RUN set -eu; \
     tar -xzf /tmp/docker.tgz -C /tmp docker/docker; \
     mkdir -p /out && install -m 0555 /tmp/docker/docker /out/docker
 
-# No shell, no package manager: three static binaries, the docker CLI and the CA bundle.
+# No shell, no package manager: four static binaries, the docker CLI and the CA bundle.
+# warden-sandbox-io is not run here: with scan.sandbox_backend=kubernetes this
+# image is also scan.kube.io_image, whose containers in each scanner Pod move
+# the input in and the reports out over the exec API.
 FROM scratch
 ARG VERSION=dev COMMIT=none
 LABEL org.opencontainers.image.title="warden" \
