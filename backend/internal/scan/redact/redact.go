@@ -21,6 +21,10 @@ const (
 	MinKeyBytes     = 32
 )
 
+// OrgRulePrefix starts the ids of an organization's own Gitleaks rules
+// (internal/rules.Prefix; not imported, this runs in the sandbox image).
+const OrgRulePrefix = "org."
+
 // Mask keeps the first 4 characters of secrets of at least 12 characters; shorter
 // ones would leak too large a fraction of the secret.
 func Mask(secret string) string {
@@ -131,9 +135,24 @@ func Doc(doc map[string]any, key []byte) (map[string]any, error) {
 			dropCommitDetails(m)
 			secret := firstSnippet(m)
 			keys[[2]int{i, j}] = contentKey(key, secret)
-			if secret != "" && !seen[secret] {
+			if secret == "" {
+				continue
+			}
+			// An org rule chooses its own secretGroup, so rules shifted by a
+			// few characters could each show a different visible prefix of
+			// one key: secrets an org rule found are masked whole, and win
+			// over a built-in rule's mask of the same secret.
+			rid, _ := m["ruleId"].(string)
+			if !seen[secret] {
 				seen[secret] = true
 				reps = append(reps, replacement{secret, Mask(secret)})
+			}
+			if strings.HasPrefix(rid, OrgRulePrefix) {
+				for k := range reps {
+					if reps[k].secret == secret {
+						reps[k].masked = "****"
+					}
+				}
 			}
 		}
 	}

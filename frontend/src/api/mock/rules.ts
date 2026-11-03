@@ -89,7 +89,11 @@ function parseOpengrep(lines: string[], problems: RuleProblem[]): ParsedRule {
       if (!severity) problems.push(p(n, "severity must be ERROR, WARNING or INFO", raw.indexOf(sev[1]!) + 1));
     }
     const msg = /^\s*message:\s*(.+)$/.exec(raw);
-    if (msg) message = unquote(msg[1]!);
+    if (msg) {
+      message = unquote(msg[1]!);
+      // As the server: Opengrep would fill $X in the message with the matched code.
+      if (message.includes("$")) problems.push(p(n, "message can't contain $: Opengrep would fill metavariables with the matched code", raw.indexOf("$") + 1));
+    }
     if (/^\s*languages:\s*\S/.test(raw)) hasLanguages = true;
     const pat = /^\s*(?:-\s+)?(pattern|pattern-regex|pattern-either|patterns)\s*:\s*(.*)$/.exec(raw);
     if (pat) {

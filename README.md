@@ -544,12 +544,17 @@ scanner sees it; everything that could silence or redirect a scan is refused:
   `pattern-not`, `pattern-inside`, `pattern-not-inside`, `pattern-regex`, `pattern-not-regex`,
   `metavariable-regex`, `metavariable-pattern`, `focus-metavariable`), taint mode and short
   `metadata`. No `fix`, `paths`, `options`, includes or excludes, YAML anchors, aliases, merge
-  keys or tags, and no `security-severity` metadata.
+  keys or tags, and no `security-severity` metadata. The `message` can't contain `$`: Opengrep
+  would fill metavariables with the matched code, and only Gitleaks output is redacted. For the
+  same reason an org Opengrep finding's title and description come from the rule's own text,
+  and no source snippet is kept for it (file and line only).
 - *Gitleaks*: TOML with one `[[rules]]`: `id`, `description`, `regex`, `secretGroup`, `entropy`,
   `keywords` (lower case: Gitleaks lowercases text before matching them), `path`, `tags`. No
   allowlists, `[extend]` or `useDefault`. Findings are High and go through the same in-sandbox
-  redaction as built-in ones; Gitleaks' default allowlist (lock files, `node_modules`,
-  placeholders) applies to them too.
+  redaction as built-in ones, except that a secret an org rule found is masked whole (`****`,
+  no visible prefix: rules choosing shifted `secretGroup`s could otherwise show different parts
+  of one key); Gitleaks' default allowlist (lock files, `node_modules`, placeholders) applies to
+  them too.
 - Every regular expression must compile with Go's RE2 and stay short; Opengrep's (PCRE) also
   may not nest repetition such as `(a+)*`, and no rule may match empty text.
 

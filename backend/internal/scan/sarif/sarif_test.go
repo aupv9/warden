@@ -458,3 +458,30 @@ func TestLoadRejectsBadDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An org rule written to match credentials must not carry them out of the
+// sandbox: Opengrep interpolates the matched code into the result message
+// (and its region snippet), and nothing outside Gitleaks's sandbox redacts.
+// Title and description come from the rule's own text; no snippet is kept.
+func TestOrgOpengrepFindingCarriesNoMatchedCode(t *testing.T) {
+	secret := st.FakeSecret
+	root := filepath.Join(t.TempDir(), "src")
+	_ = os.MkdirAll(root, 0o755)
+	_ = os.WriteFile(filepath.Join(root, "conf.py"), []byte("x = 1\nkey = \""+secret+"\"\ny = 2\n"), 0o644)
+	rid := "rules.org.hardcoded"
+	loc := st.Loc("conf.py", 2)
+	loc["physicalLocation"].(st.M)["region"].(st.M)["snippet"] = st.M{"text": "key = \"" + secret + "\""}
+	doc := st.Doc(
+		[]any{st.M{"ruleId": rid, "level": "error", "message": st.M{"text": "Hardcoded credential " + secret}, "locations": []any{loc}}},
+		st.M{"id": rid, "shortDescription": st.M{"text": "Opengrep Finding: " + rid},
+			"fullDescription": st.M{"text": "Hardcoded credential\nRotate it."}},
+	)
+	opts := sarif.Options{SourceRoot: root, OrgRules: map[string]severity.Severity{"org.hardcoded": severity.High}}
+	f := one(t, parse(t, doc, "opengrep", opts))
+	if strings.Contains(f.Title+f.Description+f.Snippet+f.RuleDescription, secret) {
+		t.Fatalf("matched code left the sandbox: %+v", f)
+	}
+	if f.Title != "Hardcoded credential" || f.Snippet != "" || f.ContentKey == "" || *f.StartLine != 2 {
+		t.Fatalf("%+v", f)
+	}
+}
