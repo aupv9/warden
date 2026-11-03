@@ -1699,9 +1699,12 @@ export interface components {
             /** @description Set when the issue comes from an org rule (rule_id org.*). */
             org_rule: {
                 rule_id: string;
-                /** @description Null when the rule was deleted. */
+                /** @description The rule's name; a deleted rule's last name. Null only when no rule of this org ever had that key. */
                 name: string | null;
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description The live rule, else the most recently deleted one with that key.
+                 */
                 scan_rule_id: string | null;
             } | null;
         };
@@ -2456,6 +2459,7 @@ export interface components {
             /** @description The version you read (optimistic lock). */
             version: number;
             name?: string;
+            /** @description Must keep the rule's key: issues and past scans refer to org.<key> (changing it is 422 RULE_INVALID). */
             body?: string;
             enabled?: boolean;
             project_ids?: string[] | null;
