@@ -126,6 +126,16 @@ type Container struct {
 // services warden-api-1 and so on) are never touched.
 var scannerName = regexp.MustCompile(`^warden-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(gitleaks|opengrep|trivy|checkov)$`)
 
+// ParseContainerName returns the scan id and tool of a name ContainerName
+// made for a scan (a UUID) and a known tool; ok is false for anything else.
+func ParseContainerName(name string) (scanID, tool string, ok bool) {
+	m := scannerName.FindStringSubmatch(name)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
 // ScannerContainers lists containers (running or not) named like scanner
 // containers. One whose warden.scan label disagrees with its name is left
 // out: it is not one Warden made.

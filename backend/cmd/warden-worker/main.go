@@ -66,7 +66,7 @@ func appOptions(cfg *config.Config) fx.Option {
 		),
 		// In this order: readiness checks, then the host checks and cleanup
 		// (before any job can start a container), then River.
-		fx.Invoke(registerStorageCheck, registerDockerCheck, registerGauges, preflight, run),
+		fx.Invoke(registerStorageCheck, registerSandboxCheck, registerGauges, preflight, run),
 		// Running scans must finish their cleanup (source deletion) before exit.
 		fx.StopTimeout(cfg.Scan.Timeout+10*time.Minute),
 	)
@@ -86,9 +86,15 @@ func registerStorageCheck(reg *health.Registry, store *storage.Client, log *slog
 	}})
 }
 
-func registerDockerCheck(c *config.Config, reg *health.Registry, log *slog.Logger) {
-	reg.Register(&worker.DockerChecker{Docker: sandbox.ExecRunner{}, Runtime: c.Scan.SandboxRuntime,
-		TTL: 15 * time.Second, Now: time.Now, Warn: log.Warn})
+// registerSandboxCheck: "sandbox" is ready when the backend can run
+// scanners (docker: the daemon and its runtime; kubernetes: the API server
+// for the namespace and the RuntimeClass).
+func registerSandboxCheck(c *config.Config, env *worker.Env, reg *health.Registry, log *slog.Logger) {
+	probe := worker.DockerProbe(sandbox.ExecRunner{}, c.Scan.SandboxRuntime)
+	if env.Kube != nil {
+		probe = env.Kube.Ready
+	}
+	reg.Register(&worker.SandboxChecker{Probe: probe, TTL: 15 * time.Second, Now: time.Now, Warn: log.Warn})
 }
 
 // registerGauges: the queue depth and feed ages are read from the database
@@ -98,8 +104,10 @@ func registerGauges(pool *pgxpool.Pool, log *slog.Logger) error {
 	return metrics.Registry.Register(metrics.NewDBGauges(pool, log))
 }
 
-// preflight checks Docker, the runtime and the images, and removes what a
-// crashed worker left behind. In prod a failed check stops the worker.
+// preflight checks the sandbox (docker: the daemon, the runtime and the
+// images; kubernetes: the RuntimeClass, pinned images and a network canary)
+// and removes what a crashed worker left behind. In prod a failed check
+// stops the worker.
 func preflight(c *config.Config, env *worker.Env) error {
 	return env.Preflight(context.Background(), sandbox.ExecRunner{}, c.App.Env == config.EnvProd)
 }
