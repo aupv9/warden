@@ -1,0 +1,177 @@
+# Nightly: long fuzzing and the upgrade test, too slow for every pull request.
+# Same pinning rules as ci.yml: actions by commit SHA, tools by version and
+# checksum, releases at least 2 weeks old when pinned.
+#
+# - fuzz: every fuzz target (scripts/fuzz.sh) for 10 minutes, one job per
+#   target: 30+ targets in one job would pass the 6-hour job limit, and a
+#   failure then names its target.
+# - upgrade: scripts/upgrade-test.sh from the last baseline release to the
+#   image built from this commit (Compose, app.env=prod).
+# - report: on the default branch, a failure opens a GitHub issue "Nightly
+#   fuzz: <target>" (or "Nightly upgrade test"), or comments on the open one.
+#   The issue gets the target and links only: a crasher may hold hostile bytes,
+#   so neither it nor the job log goes into an issue.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: Fuzzing time per target (go test -fuzztime, e.g. 10m or 100000x)
+        default: 10m
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+
+jobs:
+  # The fuzz targets as a matrix: what `go test -list` finds, as fuzz.sh does.
+  targets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - id: list
+        run: |
+          set -euo pipefail
+          mod="$(go -C backend list -m)"
+          # `go test -list` prints a package's matching names, then its "ok" line.
+          go -C backend test -list '^Fuzz' ./... |
+            awk '/^Fuzz/ { names[++n] = $1; next } $1 == "ok" { for (i = 1; i <= n; i++) print $2, names[i]; n = 0 }' |
+            jq -Rnc --arg mod "$mod/" '[inputs | split(" ") | (.[0] | ltrimstr($mod)) as $dir
+              | {dir: $dir, pkg: ("./" + $dir), name: .[1], id: ($dir + "." + .[1]), slug: (($dir | gsub("/"; "-")) + "." + .[1])}]' > targets.json
+          # Names end up in job names, artifact paths and issue titles.
+          jq -e 'length > 0 and all(.[]; (.dir | test("^[a-z0-9_/-]+$")) and (.name | test("^Fuzz[A-Za-z0-9_]+$")))' targets.json >/dev/null \
+            || { echo "::error::unexpected fuzz target list"; cat targets.json; exit 1; }
+          echo "$(jq length targets.json) fuzz targets" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "matrix=$(cat targets.json)" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: targets
+    name: fuzz ${{ matrix.target.id }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Fuzz ${{ matrix.target.id }}
+        env:
+          FUZZTIME: ${{ inputs.fuzztime || '10m' }}
+          FUZZ_MATCH: ^${{ matrix.target.name }}$
+          PKG: ${{ matrix.target.pkg }}
+        run: |
+          [[ "$FUZZTIME" =~ ^[0-9]{1,6}(s|m|h|x)$ ]] || { echo "::error::fuzztime: a duration such as 10m, or Nx"; exit 1; }
+          ./scripts/fuzz.sh "$PKG"
+      # The crasher, committed with the fix, replays as a regular test case.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target.slug }}
+          path: backend/${{ matrix.target.dir }}/testdata/fuzz/${{ matrix.target.name }}/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history: the test takes the baseline release's compose files and
+        # warden-admin from its tag.
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build the image from this commit
+        run: docker build -f backend/Dockerfile -t warden/api:nightly .
+      - name: Upgrade test (baseline release → this image, Compose, app.env=prod)
+        run: ./scripts/upgrade-test.sh warden/api:nightly
+
+  report:
+    needs: [targets, fuzz, upgrade]
+    if: ${{ always() && contains(needs.*.result, 'failure') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read # this run's jobs and artifacts
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TARGETS_RESULT: ${{ needs.targets.result }}
+      UPGRADE_RESULT: ${{ needs.upgrade.result }}
+    steps:
+      - name: Open or update an issue per failure
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA:0:12}"
+          # file TITLE BODY: comment on the open issue with exactly TITLE, else open one.
+          file() {
+            local n
+            n="$(gh issue list --state open --search "\"$1\" in:title" --limit 100 --json number,title \
+              | jq -r --arg t "$1" 'map(select(.title == $t)) | .[0].number // empty')"
+            if [ -n "$n" ]; then
+              gh issue comment "$n" --body "$2"
+            else
+              gh issue create --title "$1" --body "$2"
+            fi
+          }
+          # This run's failed jobs (name, log URL) and artifacts (name, id).
+          gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | [.name, .html_url] | @tsv' > failed.tsv
+          gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | [.name, (.id | tostring)] | @tsv' > artifacts.tsv
+
+          if [ "$TARGETS_RESULT" = failure ]; then
+            file "Nightly fuzz: target list" "Listing the fuzz targets failed on $sha, so nothing was fuzzed: $RUN_URL"
+          fi
+          while IFS=$'\t' read -r name url; do
+            id="${name#fuzz }"
+            [ "$id" != "$name" ] || continue
+            [[ "$id" =~ ^[a-z0-9_/-]+\.Fuzz[A-Za-z0-9_]+$ ]] || { echo "::warning::skipped job name"; continue; }
+            dir="${id%.*}" target="${id##*.}" slug="${id//\//-}"
+            art="$(awk -F'\t' -v n="fuzz-$slug" '$1 == n { print $2; exit }' artifacts.tsv)"
+            if [ -n "$art" ]; then
+              crasher="$(printf '%s\n' \
+                "- Crashing input (artifact, kept 30 days): $RUN_URL/artifacts/$art" \
+                "" \
+                "The input may be hostile: handle it only as data. To replay it, unzip the artifact into" \
+                "\`backend/$dir/testdata/fuzz/$target/\` and run \`go -C backend test ./$dir -run '^$target\$'\`;" \
+                "commit it with the fix so it stays a regression test.")"
+            else
+              crasher="- No crashing input was written (build failure or timeout?): see the job log."
+            fi
+            file "Nightly fuzz: $id" "$(printf '%s\n' \
+              "Nightly fuzzing of \`$target\` in \`$dir\` failed on $sha." "" "- Job: $url" "$crasher")"
+          done < failed.tsv
+          if [ "$UPGRADE_RESULT" = failure ]; then
+            url="$(awk -F'\t' '$1 == "upgrade" { print $2; exit }' failed.tsv)"
+            file "Nightly upgrade test" "scripts/upgrade-test.sh failed on $sha: ${url:-$RUN_URL}"
+          fi

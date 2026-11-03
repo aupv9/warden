@@ -960,6 +960,14 @@ request, and `make test-int` when touching the database. For changes to scanners
 images, run a sample archive through the real pipeline and check that no raw secret appears
 in any SARIF report.
 
+Merge only when CI is green. Branch protection on `main` requires these status checks, the
+jobs of [`ci.yml`](.github/workflows/ci.yml): `lint`, `vulncheck`, `test`, `fuzz`,
+`integration`, `frontend`, `image`, `helm`, `selfscan` and `kube`; a job added to `ci.yml`
+joins the list. [`nightly.yml`](.github/workflows/nightly.yml) fuzzes every target for 10
+minutes and runs `scripts/upgrade-test.sh` (the last baseline release, upgraded on Compose to
+an image built from `main`: data, audit chain, API and the schema gate); a failure opens an
+issue titled `Nightly fuzz: <target>` or `Nightly upgrade test`.
+
 ## Reporting a vulnerability
 
 Please don't open a public issue. Use GitHub's
