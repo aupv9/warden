@@ -1,6 +1,7 @@
 # On top of required.yaml: the other branches of the templates (Gateway API,
 # CSI mirror volumes, an existing sandbox namespace, ServiceMonitor, optional
-# secret keys, extra settings, an explicit grace period).
+# secret keys, extra settings, an explicit grace period, IPv6 and several
+# API server addresses).
 existingSecretOptional:
   smtpPassword: true
   secretsOldKeys: true
@@ -11,6 +12,8 @@ gateway:
 sandbox:
   namespace: scans
   createNamespace: false
+  # helm template can't read the namespace: the operator owns its label.
+  podSecurityConfirmed: true
   runtimeClassName: gvisor-runsc
   ioImage: registry.example.com/warden/warden@sha256:5555555555555555555555555555555555555555555555555555555555555555
 mirror:
@@ -39,3 +42,7 @@ oidc:
   algorithms: [RS256, ES256]
   mfaAcr: [phr, phrh]
   requireMfaRoles: []
+networkPolicy:
+  egress:
+    kubeAPI:
+      cidrs: [10.0.0.10/32, 10.0.1.10/32, "fd00:10::1/128", 10.0.2.0/28]

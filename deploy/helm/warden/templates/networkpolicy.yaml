@@ -47,8 +47,8 @@ spec:
     {{- include "warden.egressRule" $e.smtp | nindent 4 }}
 ---
 # worker: no HTTP in but the admin port from the metrics scrapers. Out: DNS,
-# database, object store, the Kubernetes API (scanner Pods and exec), SMTP,
-# webhooks and Slack.
+# database, object store, the Kubernetes API server's addresses only (scanner
+# Pods and exec), SMTP, webhooks and Slack.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -70,7 +70,7 @@ spec:
     {{- include "warden.egressRule" $e.dns | nindent 4 }}
     {{- include "warden.egressRule" $e.database | nindent 4 }}
     {{- include "warden.egressRule" $e.storage | nindent 4 }}
-    {{- include "warden.egressRule" $e.kubeAPI | nindent 4 }}
+    {{- include "warden.kubeAPIRule" . | nindent 4 }}
     {{- include "warden.egressRule" $e.smtp | nindent 4 }}
     {{- include "warden.egressRule" $e.webhooks | nindent 4 }}
 ---

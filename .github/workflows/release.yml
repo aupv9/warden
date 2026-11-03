@@ -1,6 +1,7 @@
 # Pushing a tag vMAJOR.MINOR.PATCH[-pre] on main runs the full CI suite (with the
 # release self-scan gate), then publishes static binaries, a multi-arch image on
-# GHCR, SBOMs and checksums, each with a Sigstore build-provenance attestation.
+# GHCR, the Helm chart, SBOMs and checksums, each with a Sigstore
+# build-provenance attestation.
 # Same pinning rules as ci.yml: SHA / digest / checksum, releases ≥ 2 weeks old.
 name: Release
 
@@ -21,6 +22,9 @@ env:
   IMAGE: ghcr.io/aupv9/warden
   SYFT_VERSION: "1.52.0"
   SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
+  # As in ci.yml's helm job (linux-amd64 tarball).
+  HELM_VERSION: v3.22.1
+  HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
   BUILDKIT_IMAGE: moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
 
 jobs:
@@ -101,6 +105,15 @@ jobs:
             n="$(basename "$d")"
             /tmp/syft scan "dir:$d" -o "spdx-json=dist/$n.sbom.spdx.json"
           done
+      - name: Helm chart (the tag's version)
+        run: |
+          curl -fsSL -o /tmp/helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c -
+          tar -xzf /tmp/helm.tgz -C /tmp --strip-components=1 linux-amd64/helm
+          chart="dist/warden-${VERSION#v}.tgz"
+          /tmp/helm package deploy/helm/warden --version "${VERSION#v}" --app-version "$VERSION" --destination dist
+          /tmp/helm show chart "$chart" | tee /dev/stderr | grep -qx "version: ${VERSION#v}"
+          /tmp/helm show chart "$chart" | grep -qx "appVersion: $VERSION"
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > "warden_${VERSION}_checksums.txt" && cat "warden_${VERSION}_checksums.txt"
@@ -182,11 +195,14 @@ jobs:
           ${IMAGE}@${DIGEST}
           \`\`\`
 
+          Helm chart: \`warden-${VERSION#v}.tgz\` (set \`image.digest: ${DIGEST}\`).
+
           Verify before running (see README, "Verifying a release"):
 
           \`\`\`bash
           sha256sum -c --ignore-missing warden_${VERSION}_checksums.txt
           gh attestation verify warden_${VERSION}_linux_amd64.tar.gz -R ${GITHUB_REPOSITORY}
+          gh attestation verify warden-${VERSION#v}.tgz -R ${GITHUB_REPOSITORY}
           gh attestation verify oci://${IMAGE}@${DIGEST} -R ${GITHUB_REPOSITORY}
           \`\`\`
           EOF
