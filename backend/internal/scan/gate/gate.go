@@ -80,6 +80,9 @@ func LoadBaseline(path string, today time.Time) (map[string]bool, []string, erro
 
 type Input struct {
 	Tool, File string
+	// ImageLayers: Gitleaks in an image scan, the layers' digests from its
+	// layer report; one row per secret, at the lowest layer that holds it.
+	ImageLayers []string
 }
 
 type Options struct {
@@ -92,6 +95,8 @@ type Options struct {
 	// History: the inputs are a history scan's (Gitleaks in git mode): one
 	// row per secret, at the oldest commit that added it.
 	History bool
+	// ImageTarget names the image of an image scan (Inputs with ImageLayers).
+	ImageTarget string
 }
 
 type Row struct {
@@ -129,12 +134,19 @@ func Run(opts Options, w io.Writer) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		findings, err := sarif.Parse(doc, in.Tool, sarif.Options{SourceRoot: opts.SourceRoot, History: opts.History})
+		po := sarif.Options{SourceRoot: opts.SourceRoot, History: opts.History}
+		if in.ImageLayers != nil {
+			po.ImageTarget, po.ImageLayers = opts.ImageTarget, in.ImageLayers
+		}
+		findings, err := sarif.Parse(doc, in.Tool, po)
 		if err != nil {
 			return 2, err
 		}
 		if opts.History {
 			findings = sarif.CollapseHistory(findings)
+		}
+		if in.ImageLayers != nil {
+			findings = sarif.CollapseImageLayers(findings)
 		}
 		for _, item := range fingerprint.Assign(findings, sarif.Finding.Key, sarif.Finding.Line) {
 			f := item.Finding
@@ -145,6 +157,9 @@ func Run(opts Options, w io.Writer) (int, error) {
 			}
 			if c := f.Commit; c != nil {
 				loc += fmt.Sprintf(" in commit %.7s (%d commits)", c.SHA, c.Count)
+			}
+			if l := f.ImageLayer; l != nil {
+				loc += fmt.Sprintf(" in layer %d %.19s (%d layers)", l.Index, l.Digest, l.Count)
 			}
 			row := Row{
 				Fingerprint: item.Fingerprint, Tool: in.Tool, Rule: f.RuleID, Severity: string(f.Severity),
