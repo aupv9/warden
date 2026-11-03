@@ -371,6 +371,16 @@ export function IntegrationsIcon({ size = 15 }: P) {
   );
 }
 
+/** v0.6: Scan rules: a page with a check mark. */
+export function RulesIcon({ size = 15 }: P) {
+  return (
+    <Svg size={size}>
+      <path d="M6 3h9l4 4v14H6z" />
+      <path d="M9.5 13.5l2 2 4-4.5" />
+    </Svg>
+  );
+}
+
 /** Send a test delivery: a paper plane. */
 export function SendIcon({ size = 14 }: P) {
   return (

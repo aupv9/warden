@@ -6,6 +6,7 @@ import type { Org, SlaDays } from "../api/types";
 import { SeverityMark } from "../components/Badges";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { ButtonLink } from "../components/Button";
 import { focusFirstInvalid } from "../components/Field";
 import { AlertIcon } from "../components/Icons";
 import { PageHeader } from "../components/PageHeader";
@@ -59,6 +60,18 @@ export function OrgSettingsPage() {
         <LicensePolicySection />
         <VulnDataCard />
         {canViewSignIn(meOrg.role) && <SignInSection />}
+        <Card title="Scan rules" titleId="scan-rules-h">
+          <div className="stack" style={{ gap: 10 }}>
+            <p className="muted">
+              Your org's own Opengrep and Gitleaks rules, run in every scan next to Warden's built-in rules. They only add findings.
+            </p>
+            <div>
+              <ButtonLink size="sm" to={`/orgs/${orgId}/settings/scan-rules`}>
+                {can("manage_rules", meOrg.role) ? "Manage scan rules" : "View scan rules"}
+              </ButtonLink>
+            </div>
+          </div>
+        </Card>
       </div>
     </div>
   );
