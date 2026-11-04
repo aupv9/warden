@@ -42,6 +42,12 @@ type PlanInput struct {
 	// ran: a rule that was disabled, deleted, scoped to other projects or no
 	// longer valid didn't look, so its issues stay open.
 	OrgRulesRun map[RuleRun]bool
+	// Import: the scan imports another tool's results (kind import). It
+	// matches, reopens and fixes only issues of tool external; any other
+	// scan only issues of other tools. Targets keep them apart already
+	// ('(import) …' is no image repository); this keeps an import from ever
+	// touching a Warden scanner's issue, and the other way round.
+	Import bool
 }
 
 // RuleRun names a rule of a tool (keys are unique per tool, not across tools).
@@ -128,6 +134,18 @@ func AutoFixAllowed(candidates, active int, ratio float64) bool {
 // against the state it produced yields no new issues, events or fixes.
 func BuildPlan(in PlanInput) (Plan, error) {
 	succeeded := SucceededTools(in.Runs)
+	for t := range succeeded {
+		if (t == sarif.ToolExternal) != in.Import {
+			delete(succeeded, t)
+		}
+	}
+	var existing []ExistingIssue
+	for _, e := range in.Existing {
+		if (e.Tool == sarif.ToolExternal) == in.Import {
+			existing = append(existing, e)
+		}
+	}
+	in.Existing = existing
 	byFP := make(map[string]ExistingIssue, len(in.Existing))
 	active := 0
 	for _, e := range in.Existing {

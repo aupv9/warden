@@ -4,7 +4,7 @@ import { api, ApiError, isMockMode } from "../client";
 import { isNotFound } from "../errors";
 import { qk } from "../keys";
 import { useCursorList } from "../paging";
-import type { CreateScanBody, CreateScanResponse, Page, SbomDownload, SbomFormatParam, Scan, ScanStatus, Tool } from "../types";
+import type { CreateScanBody, CreateScanResponse, Page, SbomDownload, SbomFormatParam, Scan, ScanStatus, ScannerTool } from "../types";
 import { hashFile, UploadSession, xhrPut } from "../../lib/upload";
 import type { ScanOptions, UploadDeps, UploadSnapshot } from "../../lib/upload";
 import { safeExternalUrl, startDownload } from "../../lib/url";
@@ -157,7 +157,7 @@ export function useUploadScan(orgId: string, projectId: string) {
   );
 
   const start = useCallback(
-    async (file: File, tools: Tool[], options?: ScanOptions) => {
+    async (file: File, tools: ScannerTool[], options?: ScanOptions) => {
       await session.current?.cancel();
       const s = new UploadSession(file, tools, uploadDeps(orgId, projectId), setState, options);
       session.current = s;

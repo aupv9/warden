@@ -36,6 +36,7 @@ import type {
 } from "../types";
 import * as db from "./fixtures";
 import { fakeTest, parseRule } from "./rules";
+import { IMPORT_TARGET_PREFIX, IMPORT_TOOL_RE } from "../../lib/imports";
 
 const LATENCY = import.meta.env.MODE === "test" ? 0 : 250;
 const PAGE = 50;
@@ -138,6 +139,30 @@ function advance(s: Scan): Scan {
     s.status = runs.some((r) => r.status !== "succeeded") ? "partial" : "completed";
     s.finished_at = new Date().toISOString();
     s.stats = { new: 2, fixed: 1, reopened: 0, total: 12 };
+    // v0.8: an import read its report. Name the file …invalid…, …toolarge… or …screenfail… to
+    // see IMPORT_INVALID, IMPORT_TOO_LARGE (both rejected) or IMPORT_SCREEN_FAILED (failed).
+    if (s.kind === "import" && s.import) {
+      const code = s.file_name.includes("invalid")
+        ? "IMPORT_INVALID"
+        : s.file_name.includes("toolarge")
+          ? "IMPORT_TOO_LARGE"
+          : s.file_name.includes("screenfail")
+            ? "IMPORT_SCREEN_FAILED"
+            : null;
+      if (code) {
+        s.status = "failed";
+        s.error_code = code;
+        s.tool_runs = [];
+        s.stats = { new: 0, fixed: 0, reopened: 0, total: 0 };
+        return s;
+      }
+      const run = runs[0];
+      if (run) run.tool_version = s.import.tool === "codeql" ? "2.23.1" : "1.0.0";
+      s.import = { ...s.import, tool_version: run?.tool_version ?? null, results: 9, dropped: 1, screened: 1 };
+      s.stats = { new: 3, fixed: 0, reopened: 0, total: 8 };
+      if (run) run.findings_count = 8;
+      return s;
+    }
     // An SBOM when Trivy finished (the server stores it from the same Trivy run).
     if (runs.some((r) => r.tool === "trivy" && r.status === "succeeded")) {
       s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118, formats: ["cyclonedx-json", "spdx-json"] };
@@ -538,7 +563,7 @@ function projectTargets(p: Project): { items: ProjectTarget[] } {
       const last = db.scans.filter((s) => s.project_id === p.id && s.target === target).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
       return {
         target,
-        kind: (target === "" ? "source" : target === "(history)" ? "history" : "image") as ProjectTarget["kind"],
+        kind: (target === "" ? "source" : target === "(history)" ? "history" : target.startsWith(IMPORT_TARGET_PREFIX) ? "import" : "image") as ProjectTarget["kind"],
         last_scan_at: last?.created_at ?? null,
         open_issues: db.issues.filter((i) => i.project_id === p.id && i.target === target && ACTIVE.includes(i.status)).length,
       };
@@ -590,7 +615,8 @@ function validateRules(p: Project, items: AssignRule[]): void {
     const m = r.match ?? {};
     if (!m.path_glob && !m.tool && !m.severity_at_least) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match`]: "needs at least one matcher" });
     if (m.path_glob && m.path_glob.length > GLOB_MAX) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.path_glob`]: "at most 200 characters" });
-    if (m.tool && !TOOLS.includes(m.tool)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.tool`]: "unknown tool" });
+    // v0.8: a rule may match external (any imported result) too.
+    if (m.tool && m.tool !== "external" && !TOOLS.some((t) => t === m.tool)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.tool`]: "unknown tool" });
     if (!members.some((x) => x.user.id === r.assignee_id)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].assignee_id`]: "not a project member" });
   });
 }
@@ -808,7 +834,7 @@ const routes: [string, RegExp, Handler][] = [
     new RegExp(`^${O}/targets$`),
     (m, url) => {
       const kind = url.searchParams.get("kind");
-      if (kind !== null && !["source", "image", "history"].includes(kind)) throw new Fail(422, "VALIDATION_FAILED", { kind: "source, image or history" });
+      if (kind !== null && !["source", "image", "history", "import"].includes(kind)) throw new Fail(422, "VALIDATION_FAILED", { kind: "source, image, history or import" });
       const items = [...visibleProjects(m[1]!)]
         .sort((a, b) => a.key.localeCompare(b.key))
         .flatMap((p) => projectTargets(p).items.map((t) => ({ project_id: p.id, project_key: p.key, project_name: p.name, ...t })))
@@ -1516,6 +1542,9 @@ const routes: [string, RegExp, Handler][] = [
       if (!/^[0-9a-f]{64}$/.test(b.sha256)) throw new Fail(422, "VALIDATION_FAILED", { sha256: "must be 64 hex characters" });
       const kind = b.kind ?? "source";
       const fields: Record<string, string> = {};
+      // v0.8: imports have their own endpoint, and no scan chooses external.
+      if (kind === "import") fields.kind = "imports use POST …/scans/import";
+      if (b.tools?.some((t) => (t as string) === "external")) fields.tools = "external is never chosen";
       if (kind === "image") {
         if (!/\.tar$/i.test(b.file_name)) fields.file_name = "must be a .tar for an image scan";
         if (!b.target || b.target.length > 255 || !IMAGE_TARGET.test(b.target)) fields.target = "must be an image repository without tag, e.g. ghcr.io/acme/api";
@@ -1535,7 +1564,7 @@ const routes: [string, RegExp, Handler][] = [
       if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
       const tools =
         kind === "image"
-          ? ((b.tools?.length ? IMAGE_TOOLS.filter((t) => b.tools!.includes(t)) : IMAGE_TOOLS) as Scan["tools"])
+          ? ((b.tools?.length ? IMAGE_TOOLS.filter((t) => b.tools!.some((x) => x === t)) : IMAGE_TOOLS) as Scan["tools"])
           : kind === "history"
             ? (["gitleaks"] as Scan["tools"])
             : (b.tools ?? p.default_tools);
@@ -1561,12 +1590,68 @@ const routes: [string, RegExp, Handler][] = [
         history: null,
         org_rules: kind === "image" ? [] : orgRulesFor(p, tools),
         pulled: false,
+        import: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
       audit("scan.created", "scan", scan.id, { project_key: p.key, file_name: scan.file_name, file_size: scan.file_size });
       const type = kind === "image" ? "application/x-tar" : "application/zip";
       return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": type }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
+    },
+  ],
+  // v0.8: another tool's report (SARIF or GitLab SAST), uploaded like a .zip, then started.
+  [
+    "POST",
+    new RegExp(`^${O}/projects/([^/]+)/scans/import$`),
+    (m, _u, body) => {
+      const p = orgProject(m[1]!, m[2]!);
+      if (p.archived_at) throw new Fail(409, "PROJECT_ARCHIVED");
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["tool", "format", "category", "file_name", "file_size", "sha256"].includes(k)) fields[k] = "unknown field";
+      const tool = b.tool;
+      if (typeof tool !== "string" || !IMPORT_TOOL_RE.test(tool)) fields.tool = "codeql, gitlab-sast, semgrep, snyk-code, sonarqube or external.<key>";
+      const format = b.format ?? "sarif";
+      if (format !== "sarif" && format !== "gitlab-sast") fields.format = "sarif or gitlab-sast";
+      const category = b.category ?? "";
+      if (typeof category !== "string" || !/^[A-Za-z0-9/:._=+-]{0,100}$/.test(category)) fields.category = "at most 100 letters, digits and / : . _ = + -";
+      const name = b.file_name;
+      if (typeof name !== "string" || name.length > 255 || !/^[^/\\]+\.(sarif|json)$/i.test(name)) fields.file_name = "must be a .sarif or .json file";
+      const size = b.file_size;
+      if (typeof size !== "number" || !Number.isInteger(size) || size < 1) fields.file_size = "must be at least 1";
+      else if (size > 50 * 1024 * 1024) fields.file_size = "larger than import_max_mb";
+      if (typeof b.sha256 !== "string" || !/^[0-9a-fA-F]{64}$/.test(b.sha256)) fields.sha256 = "must be 64 hex characters";
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if ((name as string).includes("ratelimit")) throw new Fail(429, "RATE_LIMITED");
+      const at = new Date().toISOString();
+      const scan: Scan = {
+        id: db.uuid(),
+        project_id: p.id,
+        status: "pending_upload",
+        file_name: name as string,
+        file_size: size as number,
+        tools: ["external"],
+        error_code: null,
+        stats: { new: 0, fixed: 0, reopened: 0, total: 0 },
+        created_by: meRef(),
+        created_at: at,
+        queued_at: null,
+        started_at: null,
+        finished_at: null,
+        via_token: null,
+        kind: "import",
+        target: `${IMPORT_TARGET_PREFIX}${tool as string}${category ? ` ${category as string}` : ""}`,
+        image_ref: null,
+        sbom: null,
+        history: null,
+        org_rules: [],
+        pulled: false,
+        import: { tool: tool as string, category: category as string, format: format as "sarif" | "gitlab-sast", tool_version: null, results: null, dropped: null, screened: null },
+        tool_runs: [{ tool: "external", tool_version: "", status: "queued", findings_count: null, duration_ms: null, error: null }],
+      };
+      db.scans.unshift(scan);
+      audit("scan.created", "scan", scan.id, { project_key: p.key, file_name: scan.file_name, file_size: scan.file_size, import_tool: tool });
+      return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": "application/json" }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
     },
   ],
   // v0.7 wave 2: an image the worker pulls by digest; nothing is uploaded, so it is queued at once.
@@ -1614,6 +1699,7 @@ const routes: [string, RegExp, Handler][] = [
         history: null,
         org_rules: [],
         pulled: true,
+        import: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       const outcome = pullOutcome(m[1]!, imageRef);
@@ -1851,8 +1937,19 @@ const routes: [string, RegExp, Handler][] = [
 
 const verifyRuns: Record<string, number[]> = {};
 
+function sourceOf(i: Issue): "code" | "image" | "history" | "import" {
+  if (i.target === "") return "code";
+  if (i.target === "(history)") return "history";
+  if (i.tool === "external") return "import";
+  return "image";
+}
+
 /** GET /issues and (v0.5 wave 2) GET /issues/export.csv: the same filters and order. */
 function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorted: Issue[] } {
+  const ext = sp.get("external_tool");
+  if (ext !== null && !IMPORT_TOOL_RE.test(ext)) throw new Fail(422, "VALIDATION_FAILED", { external_tool: "not an import tool" });
+  const source = sp.get("source");
+  if (source !== null && !["code", "image", "history", "import"].includes(source)) throw new Fail(422, "VALIDATION_FAILED", { source: "code, image, history or import" });
   const statuses = sp.getAll("status");
   const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
   const q = (sp.get("q") ?? "").toLowerCase();
@@ -1867,9 +1964,9 @@ function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorte
       (sp.get("kev") !== "true" || i.kev) &&
       (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
       (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
-      // v0.4 wave 2: history issues have the target "(history)".
-      (!sp.get("source") ||
-        (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
+      // v0.4 wave 2: history issues have the target "(history)"; v0.8 imported ones "(import) …".
+      (!sp.get("source") || sourceOf(i) === sp.get("source")) &&
+      (!sp.get("external_tool") || i.external_tool === sp.get("external_tool")) &&
       (!sp.get("target") || i.target === sp.get("target")) &&
       (!sp.get("assignee") ||
         (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
@@ -1921,7 +2018,7 @@ function exportCsv(orgId: string, url: URL): Response {
       i.title,
       i.severity,
       i.status,
-      i.tool,
+      i.external_tool ? `external:${i.external_tool}` : i.tool,
       i.rule_id,
       i.file_path,
       i.start_line,

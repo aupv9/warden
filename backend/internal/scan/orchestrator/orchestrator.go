@@ -25,6 +25,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/scan/bundlecheck"
 	"github.com/aupv9/warden/backend/internal/scan/imagecheck"
+	"github.com/aupv9/warden/backend/internal/scan/importer"
 	"github.com/aupv9/warden/backend/internal/scan/sandbox"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
 	"github.com/aupv9/warden/backend/internal/scan/sbom"
@@ -67,8 +68,12 @@ type Job struct {
 	Pulled bool `json:"-"`
 	// OrgRules are the org's own rules per tool (set by the worker from the
 	// database, never from the job's JSON). Only tools in Tools that take org
-	// rules (sandbox.OrgRulesFile) get them.
+	// rules (sandbox.OrgRulesFile) get them. An import scan's Gitleaks
+	// screening takes OrgRules["gitleaks"].
 	OrgRules map[string]OrgRules `json:"-"`
+	// Import: an import scan's settings (kind import), set by the worker from
+	// the scan row; nil for other kinds.
+	Import *Import `json:"-"`
 }
 
 // OrgRules is one tool's org rules for a scan: the scanner config rendered
@@ -118,6 +123,8 @@ type Outcome struct {
 	// in its SARIF (sarif.LoadedOrgRules): the ones that ran. Opengrep runs
 	// the rest of a config when one rule fails to load.
 	OrgRulesLoaded map[string]map[string]bool
+	// Import: what an import scan read, dropped and screened (kind import).
+	Import *ImportStats
 }
 
 // History is what warden-gitleaks reports about a history scan
@@ -142,6 +149,9 @@ type Limits struct {
 	// (scan.pull_max_mb); its tarball is checked against that plus the tar's
 	// own overhead.
 	PullMaxBytes int64
+	// ImportMaxBytes caps an imported file (scan.import_max_mb);
+	// DefaultImportMaxBytes when 0.
+	ImportMaxBytes int64
 }
 
 // Puller fetches a pulled scan's image (Job.Pulled) as a docker save tarball
@@ -194,6 +204,9 @@ func Execute(ctx context.Context, job Job, deps Deps) (out *Outcome, err error) 
 
 func execute(ctx context.Context, job Job, deps Deps, scanDir string) (*Outcome, error) {
 	kind := job.kind()
+	if kind == KindImport {
+		return executeImport(ctx, job, deps, scanDir)
+	}
 	for _, t := range job.Tools {
 		if !knownTool(kind, t) {
 			return nil, fmt.Errorf("unknown tool %q for a %s scan", t, kind)
@@ -342,6 +355,11 @@ func rejection(job Job, err error) (string, bool) {
 	if errors.As(err, &br) {
 		slog.Info("scan rejected", "scan_id", job.ScanID, "code", br.Code, "detail", br.Detail)
 		return br.Code, true
+	}
+	var mr *importer.Rejected
+	if errors.As(err, &mr) {
+		slog.Info("scan rejected", "scan_id", job.ScanID, "code", mr.Code, "detail", mr.Detail)
+		return mr.Code, true
 	}
 	var pr *registry.Error
 	if errors.As(err, &pr) {

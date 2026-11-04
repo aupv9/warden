@@ -93,8 +93,10 @@
           "gitleaks",
           "opengrep",
           "trivy",
-          "checkov"
-        ]
+          "checkov",
+          "external"
+        ],
+        "description": "Warden's scanners, and external for issues and scans imported from another tool (POST \u2026/scans/import); external is never accepted where a scan's tools are chosen."
       },
       "SeverityCounts": {
         "type": "object",
@@ -659,7 +661,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository for image scans (no tag); (history) for history scans; empty for source scans."
+            "description": "Image repository for image scans (no tag); (history) for history scans; '(import) <tool>[ <category>]' for import scans; empty for source scans."
           },
           "image_ref": {
             "type": [
@@ -735,6 +737,17 @@
           "pulled": {
             "type": "boolean",
             "description": "The worker pulled the image from its registry (POST \u2026/scans/pull) instead of an upload."
+          },
+          "import": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScanImport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set on import scans (kind import), whose target is '(import) <tool>[ <category>]' and tools ['external']."
           }
         },
         "required": [
@@ -758,7 +771,8 @@
           "sbom",
           "history",
           "org_rules",
-          "pulled"
+          "pulled",
+          "import"
         ],
         "additionalProperties": false
       },
@@ -925,6 +939,17 @@
               null
             ],
             "description": "Trivy license category, for license-policy issues."
+          },
+          "external_tool": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportTool"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tool an imported issue (tool external) came from; null otherwise."
           }
         },
         "required": [
@@ -948,7 +973,8 @@
           "target",
           "kev",
           "epss",
-          "license_category"
+          "license_category",
+          "external_tool"
         ],
         "additionalProperties": false
       },
@@ -1291,6 +1317,17 @@
               }
             ],
             "description": "For a secret Gitleaks found in an image's layers: the lowest layer that holds it. Set even when a later layer deletes the file: it is still in the image."
+          },
+          "external_tool": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportTool"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tool an imported issue (tool external) came from; null otherwise."
           }
         },
         "required": [
@@ -1334,7 +1371,8 @@
           "license_category",
           "commit",
           "org_rule",
-          "image_layer"
+          "image_layer",
+          "external_tool"
         ],
         "additionalProperties": false
       },
@@ -2103,11 +2141,11 @@
             },
             "minItems": 1,
             "uniqueItems": true,
-            "description": "Image scans run trivy and gitleaks (secrets in the layers); history scans only gitleaks; any other tool is a 422."
+            "description": "Image scans run trivy and gitleaks (secrets in the layers); history scans only gitleaks; any other tool is a 422. external is a 422."
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind",
-            "description": "Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs."
+            "description": "Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. import is a 422: imports are created with POST \u2026/scans/import."
           },
           "target": {
             "type": "string",
@@ -2750,7 +2788,8 @@
         "enum": [
           "source",
           "image",
-          "history"
+          "history",
+          "import"
         ]
       },
       "SbomDownload": {
@@ -3163,7 +3202,7 @@
         "properties": {
           "target": {
             "type": "string",
-            "description": "Image repository, (history), or empty for source code."
+            "description": "Image repository, (history), '(import) <tool>[ <category>]', or empty for source code."
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind"
@@ -3900,7 +3939,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository, (history), or empty for source code."
+            "description": "Image repository, (history), '(import) <tool>[ <category>]', or empty for source code."
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind"
@@ -4545,11 +4584,117 @@
             },
             "minItems": 1,
             "uniqueItems": true,
-            "description": "trivy and/or gitleaks; default both."
+            "description": "trivy and/or gitleaks; default both. external is a 422."
           }
         },
         "required": [
           "image_ref"
+        ],
+        "additionalProperties": false
+      },
+      "ImportTool": {
+        "type": "string",
+        "pattern": "^(codeql|gitlab-sast|semgrep|snyk-code|sonarqube|external\\.[a-z0-9-]{1,32})$",
+        "description": "The tool whose results are imported: one of the named tools, or external.<key> for any other. Never a Warden scanner."
+      },
+      "ImportScanRequest": {
+        "type": "object",
+        "description": "Import another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, \u2026) or a GitLab SAST report (format gitlab-sast). The file goes to object storage like an upload, then POST \u2026/scans/{id}/start queues it. The worker parses it as hostile input: snippets, code flows and fixes are dropped, paths must stay inside the source root, and every kept string (titles, messages, rule text, paths) is screened by Gitleaks in the sandbox; a match drops the string (a path: the result).",
+        "properties": {
+          "tool": {
+            "$ref": "#/components/schemas/ImportTool"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "sarif",
+              "gitlab-sast"
+            ],
+            "description": "Default sarif."
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9/:._=+-]{0,100}$",
+            "description": "Separates runs of one tool, like GitHub's category (CodeQL: one per language, e.g. /language:python/). An import auto-fixes only issues of the same tool and category. Default empty; the CLI defaults it to the first run's automationDetails.id."
+          },
+          "file_name": {
+            "type": "string",
+            "maxLength": 255,
+            "pattern": "^[^/\\\\]+\\.([sS][aA][rR][iI][fF]|[jJ][sS][oO][nN])$"
+          },
+          "file_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "At most scan.import_max_mb MiB."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{64}$"
+          }
+        },
+        "required": [
+          "tool",
+          "file_name",
+          "file_size",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "ScanImport": {
+        "type": "object",
+        "description": "An import scan's source.",
+        "properties": {
+          "tool": {
+            "$ref": "#/components/schemas/ImportTool"
+          },
+          "category": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "sarif",
+              "gitlab-sast"
+            ]
+          },
+          "tool_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From the report (SARIF tool.driver.version), once processed."
+          },
+          "results": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Results read, once processed."
+          },
+          "dropped": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Results refused (path outside the source root, over a limit), once processed."
+          },
+          "screened": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Strings dropped because Gitleaks matched them, once processed."
+          }
+        },
+        "required": [
+          "tool",
+          "category",
+          "format",
+          "tool_version",
+          "results",
+          "dropped",
+          "screened"
         ],
         "additionalProperties": false
       }
@@ -7677,10 +7822,11 @@
               "enum": [
                 "code",
                 "image",
-                "history"
+                "history",
+                "import"
               ]
             },
-            "description": "Issues from source scans, image scans, or history scans (secrets in git history)."
+            "description": "Issues from source scans, image scans, history scans (secrets in git history), or imports (tool external)."
           },
           {
             "name": "target",
@@ -7692,6 +7838,15 @@
               "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
             },
             "description": "Issues from image scans of this repository. History issues are filtered with source=history."
+          },
+          {
+            "name": "external_tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ImportTool"
+            },
+            "description": "Imported issues of this tool (implies tool=external)."
           },
           {
             "name": "q",
@@ -12092,7 +12247,7 @@
         ],
         "operationId": "exportIssuesCSV",
         "summary": "The issue list as CSV (same filters and visibility)",
-        "description": "Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.",
+        "description": "Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. An imported issue's tool cell reads external:<tool> (e.g. external:codeql). No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.",
         "parameters": [
           {
             "name": "project_id",
@@ -12207,10 +12362,11 @@
               "enum": [
                 "code",
                 "image",
-                "history"
+                "history",
+                "import"
               ]
             },
-            "description": "Issues from source scans, image scans, or history scans (secrets in git history)."
+            "description": "Issues from source scans, image scans, history scans (secrets in git history), or imports (tool external)."
           },
           {
             "name": "target",
@@ -12222,6 +12378,15 @@
               "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
             },
             "description": "Issues from image scans of this repository. History issues are filtered with source=history."
+          },
+          {
+            "name": "external_tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ImportTool"
+            },
+            "description": "Imported issues of this tool (implies tool=external)."
           },
           {
             "name": "q",
@@ -13950,6 +14115,153 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorEnvelope"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/{org_id}/projects/{project_id}/scans/import": {
+      "parameters": [
+        {
+          "name": "org_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Non-members get 404."
+        },
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "scans"
+        ],
+        "operationId": "createImportScan",
+        "summary": "Import another tool's results (SARIF or GitLab SAST)",
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CreatedScan"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token (generic message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (inactive account, or missing permission).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or not visible to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (PROJECT_ARCHIVED: the project is archived).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed or invalid transition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited; see the Retry-After header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a scan can be created again.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (details are logged, never returned).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "description": "Creates an import scan (kind import, tools ['external'], target '(import) <tool>[ <category>]') and returns a presigned upload for the report, at most scan.import_max_mb MiB; POST \u2026/scans/{scan_id}/start queues it, like an upload. Imported issues have tool external and external_tool set; an import never sets or fixes an issue of a Warden scanner, and fixes only issues of its own tool and category (auto-fix per target, with the same guard ratio). Severity comes from a result's (or its rule's) security-severity (>= 9 Critical, >= 7 High, >= 4 Medium, else Low), else its level (error High, warning Medium, note or none Low). Counts against the hourly scan limit. API tokens with scan:write may call it. Failures end the scan with error_code IMPORT_INVALID (not SARIF 2.1.0 or a GitLab SAST report, or malformed), IMPORT_TOO_LARGE (over 10 runs, 50,000 results or 5,000 rules) or IMPORT_SCREEN_FAILED (the Gitleaks screening could not run; nothing is stored).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportScanRequest"
               }
             }
           }
