@@ -6,6 +6,8 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-alpha.1] - 2026-11-04
+
 ### Added
 
 - Import another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, Snyk Code, SonarQube, …)
@@ -16,16 +18,6 @@ All notable changes to Warden are listed here. The format follows
   and can be filtered with `source=import` or `external_tool`. The CSV tool cell reads
   `external:<tool>`. The web UI shows imports and the CI setup card has CodeQL and GitLab SAST
   snippets. New setting: `WARDEN_SCAN__IMPORT_MAX_MB`.
-
-### Fixed
-
-- The pull/merge request comment of a history scan used the source scan's marker, so the next
-  source scan overwrote it.
-
-## [0.7.0-alpha.1] - 2026-11-04
-
-### Added
-
 - Nightly workflow: every fuzz target for 10 minutes (an issue per failing target, with links
   only) and an upgrade test; `scripts/upgrade-test.sh` upgrades a production Compose from
   v0.5.0-alpha.1 and checks data, the audit chain and the schema gate.
@@ -59,6 +51,8 @@ All notable changes to Warden are listed here. The format follows
 
 ### Fixed
 
+- The pull/merge request comment of a history scan used the source scan's marker, so the next
+  source scan overwrote it.
 - Gitleaks redaction also masks percent-encoded and path-normalized forms of a secret: a file
   named with an encoded secret (`%41KIA…`) no longer rebuilds it in the issue's path.
 
