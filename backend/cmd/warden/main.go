@@ -8,6 +8,8 @@
 //	warden scan ... --image ghcr.io/acme/api:1.2           # docker save, then an image scan
 //	warden scan ... --image-tar api.tar --target ghcr.io/acme/api [--image-ref ghcr.io/acme/api:1.2]
 //	warden scan ... [--dir .] --history                   # every commit (git bundle), Gitleaks only
+//	warden import --url ... --org ... --project ... --tool codeql [--format sarif|gitlab-sast] \
+//	    [--category /language:go/] [--fail-on high] ... results.sarif   # another tool's results
 //
 // --sbom-out saves the scan's SBOM, CycloneDX or (--sbom-format spdx) SPDX
 // JSON (Trivy must be among the tools), after checking it against the SHA-256
@@ -56,6 +58,8 @@ const (
                    [--fail-on-kev] [--timeout 30m] [--sbom-out FILE [--sbom-format cyclonedx|spdx]]
                    [--image REF | --image-tar FILE --target REPO [--image-ref REF] | --history]
                    [--comment auto|github|gitlab|off]
+       warden import --url URL --org ORG_ID --project PROJECT_ID --tool TOOL [--format sarif|gitlab-sast]
+                   [--category C] [--fail-on high] [--fail-on-kev] [--timeout 30m] [--comment auto|github|gitlab|off] FILE
 The API token is read from $WARDEN_TOKEN; --comment uses $GITHUB_TOKEN or $WARDEN_GITLAB_TOKEN.`
 )
 
@@ -137,39 +141,35 @@ type options struct {
 
 	// history: bundle every commit of dir (a history scan, Gitleaks only).
 	history bool
+
+	// warden import: another tool's report and what it is (import.go).
+	importFile, importTool, importFormat, importCategory string
 }
 
-func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, d deps) int {
-	if len(args) == 0 || args[0] != "scan" {
-		fmt.Fprintln(stderr, usage)
-		return exitError
+// commonFlags are the flags every command takes: the server and project, the
+// gate, the deadline and the pull request comment.
+type commonFlags struct {
+	server, org, project, failOn, comment *string
+	failOnKEV                             *bool
+	timeout                               *time.Duration
+}
+
+func addCommonFlags(fs *flag.FlagSet) commonFlags {
+	return commonFlags{
+		server:    fs.String("url", "", "Warden server, e.g. https://warden.example"),
+		org:       fs.String("org", "", "organization id"),
+		project:   fs.String("project", "", "project id"),
+		failOn:    fs.String("fail-on", "high", "critical|high|medium|low"),
+		timeout:   fs.Duration("timeout", 30*time.Minute, "give up (and cancel the scan) after this long"),
+		failOnKEV: fs.Bool("fail-on-kev", false, "also fail on any issue whose CVE is known exploited (CISA KEV)"),
+		comment:   fs.String("comment", commentOff, "comment on the pull/merge request: auto|github|gitlab|off"),
 	}
-	fs := flag.NewFlagSet("warden scan", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	server := fs.String("url", "", "Warden server, e.g. https://warden.example")
-	org := fs.String("org", "", "organization id")
-	project := fs.String("project", "", "project id")
-	dir := fs.String("dir", ".", "git working tree to scan")
-	tools := fs.String("tools", "", "comma-separated scanners (default: the project's)")
-	failOn := fs.String("fail-on", "high", "critical|high|medium|low")
-	timeout := fs.Duration("timeout", 30*time.Minute, "give up (and cancel the scan) after this long")
-	failOnKEV := fs.Bool("fail-on-kev", false, "also fail on any issue whose CVE is known exploited (CISA KEV)")
-	sbomOut := fs.String("sbom-out", "", "save the scan's SBOM to this file")
-	sbomFormat := fs.String("sbom-format", "cyclonedx", "SBOM format for --sbom-out: cyclonedx|spdx")
-	image := fs.String("image", "", "scan this container image (docker save) instead of --dir")
-	imageTar := fs.String("image-tar", "", "scan this docker save tarball instead of --dir")
-	target := fs.String("target", "", "image repository without tag (required with --image-tar)")
-	imageRef := fs.String("image-ref", "", "image reference shown on the scan (with --image-tar)")
-	comment := fs.String("comment", commentOff, "comment on the pull/merge request: auto|github|gitlab|off")
-	history := fs.Bool("history", false, "scan every commit of --dir for secrets (needs the full history, not a shallow clone)")
-	if err := fs.Parse(args[1:]); err != nil {
-		fmt.Fprintln(stderr, usage)
-		return exitError
-	}
-	o := options{dir: *dir, failOn: *failOn, failOnKEV: *failOnKEV, sbomOut: *sbomOut, sbomFormat: *sbomFormat, timeout: *timeout, stdout: stdout, stderr: stderr,
-		image: *image, imageTar: *imageTar, target: *target, imageRef: *imageRef, comment: *comment, getenv: getenv, history: *history}
-	set := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+}
+
+// apply copies the common flags and $WARDEN_TOKEN into o and returns what is
+// wrong with them.
+func (cf commonFlags) apply(o *options, getenv func(string) string) []string {
+	o.failOn, o.failOnKEV, o.timeout, o.comment, o.getenv = *cf.failOn, *cf.failOnKEV, *cf.timeout, *cf.comment, getenv
 	var problems []string
 	var err error
 	switch o.comment {
@@ -177,14 +177,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	default:
 		problems = append(problems, "--comment: must be auto, github, gitlab or off")
 	}
-	problems = append(problems, o.imageProblems(set)...)
-	if o.server, err = checkURL(*server); err != nil {
+	if o.server, err = checkURL(*cf.server); err != nil {
 		problems = append(problems, "--url: "+err.Error())
 	}
-	if o.org, err = uuid.Parse(*org); err != nil {
+	if o.org, err = uuid.Parse(*cf.org); err != nil {
 		problems = append(problems, "--org: must be an organization id (UUID)")
 	}
-	if o.project, err = uuid.Parse(*project); err != nil {
+	if o.project, err = uuid.Parse(*cf.project); err != nil {
 		problems = append(problems, "--project: must be a project id (UUID)")
 	}
 	switch o.failOn {
@@ -192,21 +191,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	default:
 		problems = append(problems, "--fail-on: must be critical, high, medium or low")
 	}
-	switch {
-	case o.sbomFormat != "cyclonedx" && o.sbomFormat != "spdx":
-		problems = append(problems, "--sbom-format: must be cyclonedx or spdx")
-	case set["sbom-format"] && o.sbomOut == "":
-		problems = append(problems, "--sbom-format: needs --sbom-out")
-	}
 	if o.timeout <= 0 {
 		problems = append(problems, "--timeout: must be positive")
 	}
-	for _, t := range strings.Split(*tools, ",") {
-		if t = strings.TrimSpace(t); t != "" {
-			o.tools = append(o.tools, t)
-		}
-	}
-	problems = append(problems, o.historyProblems(set)...)
 	o.token = strings.TrimSpace(getenv("WARDEN_TOKEN"))
 	switch {
 	case o.token == "":
@@ -214,21 +201,70 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	case !strings.HasPrefix(o.token, "wdn_") || strings.ContainsFunc(o.token, unicode.IsSpace):
 		problems = append(problems, "WARDEN_TOKEN doesn't look like a Warden API token (wdn_...)")
 	}
+	return problems
+}
+
+// execute runs the flow once the arguments are checked (problems empty).
+func execute(ctx context.Context, o options, d deps, problems []string) int {
 	if len(problems) > 0 {
 		for _, p := range problems {
-			fmt.Fprintln(stderr, "warden:", p)
+			fmt.Fprintln(o.stderr, "warden:", p)
 		}
-		fmt.Fprintln(stderr, usage)
+		fmt.Fprintln(o.stderr, usage)
 		return exitError
 	}
-
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	code, err := scan(ctx, o, d)
 	if err != nil {
-		fmt.Fprintln(stderr, "warden:", clean(err.Error()))
+		fmt.Fprintln(o.stderr, "warden:", clean(err.Error()))
 	}
 	return code
+}
+
+func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, d deps) int {
+	if len(args) == 0 || (args[0] != "scan" && args[0] != "import") {
+		fmt.Fprintln(stderr, usage)
+		return exitError
+	}
+	if args[0] == "import" {
+		return runImport(ctx, args[1:], getenv, stdout, stderr, d)
+	}
+	fs := flag.NewFlagSet("warden scan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cf := addCommonFlags(fs)
+	dir := fs.String("dir", ".", "git working tree to scan")
+	tools := fs.String("tools", "", "comma-separated scanners (default: the project's)")
+	sbomOut := fs.String("sbom-out", "", "save the scan's SBOM to this file")
+	sbomFormat := fs.String("sbom-format", "cyclonedx", "SBOM format for --sbom-out: cyclonedx|spdx")
+	image := fs.String("image", "", "scan this container image (docker save) instead of --dir")
+	imageTar := fs.String("image-tar", "", "scan this docker save tarball instead of --dir")
+	target := fs.String("target", "", "image repository without tag (required with --image-tar)")
+	imageRef := fs.String("image-ref", "", "image reference shown on the scan (with --image-tar)")
+	history := fs.Bool("history", false, "scan every commit of --dir for secrets (needs the full history, not a shallow clone)")
+	if err := fs.Parse(args[1:]); err != nil {
+		fmt.Fprintln(stderr, usage)
+		return exitError
+	}
+	o := options{dir: *dir, sbomOut: *sbomOut, sbomFormat: *sbomFormat, stdout: stdout, stderr: stderr,
+		image: *image, imageTar: *imageTar, target: *target, imageRef: *imageRef, history: *history}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	problems := cf.apply(&o, getenv)
+	problems = append(problems, o.imageProblems(set)...)
+	switch {
+	case o.sbomFormat != "cyclonedx" && o.sbomFormat != "spdx":
+		problems = append(problems, "--sbom-format: must be cyclonedx or spdx")
+	case set["sbom-format"] && o.sbomOut == "":
+		problems = append(problems, "--sbom-format: needs --sbom-out")
+	}
+	for _, t := range strings.Split(*tools, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			o.tools = append(o.tools, t)
+		}
+	}
+	problems = append(problems, o.historyProblems(set)...)
+	return execute(ctx, o, d, problems)
 }
 
 // checkURL accepts the server URL: https://, or http:// only for localhost,

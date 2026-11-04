@@ -261,7 +261,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	projRow := []any{proj, "WEB", "Web", &desc, []string{"trivy"}, "owner", now, 1, 2, 3, 4, 5, 6, scan, "completed", now, now, nil}
 	scanRow := []any{scan, org, proj, "queued", "a.zip", int64(10), []string{"trivy"}, nil, service.ScanStats{Total: 2},
 		now, now, nil, nil, "key", "sum", user, "a@b.c", "A", nil, nil, nil, "source", "", nil, "sboms/k", int64(9), "abc", 4, "sboms/s", int64(12), "def", 120, true,
-		service.ScanRuleRefs{{RuleID: "org.x", Tool: "opengrep", Version: 2, SHA256: "s"}}, true}
+		service.ScanRuleRefs{{RuleID: "org.x", Tool: "opengrep", Version: 2, SHA256: "s"}}, true, nil, nil, nil, nil, nil, nil, nil}
 	r, _ := repoWith(on(map[string][][]any{
 		"LEFT JOIN LATERAL":                           {projRow},
 		"SELECT (SELECT pm.role":                      {{"developer"}},
@@ -297,7 +297,7 @@ func TestRepoProjectsAndScans(t *testing.T) {
 	if s, err := r.Scan(ctx, scan, true); err != nil || s.Stats.Total != 2 || s.CreatedBy.ID != user || s.QueuedAt == nil ||
 		s.Kind != "source" || s.SBOM == nil || s.SBOM.Components != 4 || s.SBOM.Key != "sboms/k" || s.SBOM.SPDXKey != "sboms/s" ||
 		s.SBOM.SPDXSize != 12 || len(s.SBOM.Formats) != 2 || s.History == nil || s.History.Commits != 120 || !s.History.Truncated ||
-		len(s.OrgRules) != 1 || s.OrgRules[0].Version != 2 || !s.Pulled {
+		len(s.OrgRules) != 1 || s.OrgRules[0].Version != 2 || !s.Pulled || s.Import != nil {
 		t.Fatal(s, err)
 	}
 	if s, err := r.Scans(ctx, proj, &service.ScanCursor{CreatedAt: now, ID: scan}, 10); err != nil || len(s) != 1 {
@@ -345,7 +345,7 @@ var ruleID = uuid.New()
 
 func issueRow(id, proj, scan uuid.UUID, withDetail bool) []any {
 	row := []any{id, "WEB-1", proj, "t", "high", "open", "opengrep", "r", nil, nil, nil, nil, nil,
-		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97, nil}
+		uuid.New(), "a@b.c", "A", now, true, now, "", true, 0.97, nil, nil}
 	if withDetail {
 		row = append(row, nil, nil, nil, nil, []string{"CWE-79"}, nil, scan, now, scan, now, 2, 3, nil, 1, "WEB",
 			0.99, "2024-03-01", true, strings.Repeat("a", 40), now, 3, ruleID, "Rule name",

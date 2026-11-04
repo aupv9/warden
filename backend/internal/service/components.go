@@ -36,7 +36,7 @@ type ComponentRepo interface {
 type OrgTargetQuery struct {
 	Vis       Visibility
 	ProjectID *uuid.UUID // API tokens: their own project only
-	Kind      string     // "", KindSource, KindImage or KindHistory
+	Kind      string     // "", KindSource, KindImage, KindHistory or KindImport
 }
 
 // OrgTarget is a ProjectTarget with its project.
@@ -423,9 +423,9 @@ func (s *Service) OrgTargets(ctx context.Context, a *Actor, kind string) (Items[
 	out := Items[OrgTarget]{Items: []OrgTarget{}}
 	err := s.inOrg(ctx, a, func(r Repo) error {
 		switch kind {
-		case "", KindSource, KindImage, KindHistory:
+		case "", KindSource, KindImage, KindHistory, KindImport:
 		default:
-			return errField("kind", "must be source, image or history")
+			return errField("kind", "must be source, image, history or import")
 		}
 		q := OrgTargetQuery{Vis: a.vis(), Kind: kind}
 		// The API doesn't route tokens here; if one gets here, it sees only its project.

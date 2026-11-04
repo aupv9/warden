@@ -299,6 +299,7 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
     history: null,
     org_rules: [],
     pulled: false,
+    import: null,
     ...partial,
   };
   // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
@@ -472,6 +473,8 @@ interface IssueSeed {
   orgRule?: Issue["org_rule"];
   /** v0.7 wave 2: a secret found in an image's layers. */
   imageLayer?: Issue["image_layer"];
+  /** v0.8: imported from this tool's report (tool external, no snippet). */
+  externalTool?: string;
 }
 
 function issue(s: IssueSeed): Issue {
@@ -497,7 +500,7 @@ function issue(s: IssueSeed): Issue {
     updated_at: ago(3 * H),
     description: s.description,
     remediation: s.remediation,
-    snippet: s.snippet ?? "",
+    snippet: s.externalTool ? null : (s.snippet ?? ""),
     end_line: s.start_line ?? null,
     cwe: s.cwe ?? [],
     cve: s.cve ?? [],
@@ -519,6 +522,7 @@ function issue(s: IssueSeed): Issue {
     commit: s.commit ?? null,
     org_rule: s.orgRule ?? null,
     image_layer: s.imageLayer ?? null,
+    external_tool: s.externalTool ?? null,
   };
 }
 
@@ -1767,5 +1771,125 @@ for (const i of [IMAGE_LAYER_ISSUE, BASE_LAYER_ISSUE]) {
   i.first_seen_scan = { id: PULLED_SCAN.id, created_at: PULLED_SCAN.created_at };
   i.last_seen_scan = { id: PULLED_SCAN.id, created_at: PULLED_SCAN.created_at };
   events[i.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: PULLED_SCAN.finished_at! }];
+  comments[i.id] = [];
+}
+
+// ---- v0.8 wave 1: results imported from another tool (`warden import` in CI) ----
+
+const GH_TOKEN = { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" };
+
+/** WEB imports CodeQL's Python results from GitHub Actions (category /language:python/): 14 results
+ *  read, one dropped (a path outside the source root), two strings screened out by Gitleaks. */
+export const CODEQL_IMPORT = scan(
+  WEB,
+  {
+    kind: "import",
+    target: "(import) codeql /language:python/",
+    file_name: "python.sarif",
+    file_size: 412_330,
+    tools: ["external"],
+    via_token: GH_TOKEN,
+    created_by: users.linh,
+    stats: { new: 2, fixed: 1, reopened: 0, total: 13 },
+    tool_runs: [{ tool: "external", tool_version: "2.23.1", status: "succeeded", findings_count: 13, duration_ms: 9_000, error: null }],
+    import: { tool: "codeql", category: "/language:python/", format: "sarif", tool_version: "2.23.1", results: 14, dropped: 1, screened: 2 },
+  },
+  90 * 60_000,
+);
+/** And GitLab SAST's report from a GitLab pipeline (no category). */
+export const GITLAB_SAST_IMPORT = scan(
+  WEB,
+  {
+    kind: "import",
+    target: "(import) gitlab-sast",
+    file_name: "gl-sast-report.json",
+    file_size: 88_102,
+    tools: ["external"],
+    created_by: users.minh,
+    stats: { new: 1, fixed: 0, reopened: 0, total: 1 },
+    tool_runs: [{ tool: "external", tool_version: "6.6.0", status: "succeeded", findings_count: 1, duration_ms: 4_000, error: null }],
+    import: { tool: "gitlab-sast", category: "", format: "gitlab-sast", tool_version: "6.6.0", results: 1, dropped: 0, screened: 0 },
+  },
+  20 * H,
+);
+/** An older import of a file that wasn't SARIF: rejected, nothing stored. */
+export const INVALID_IMPORT = scan(
+  WEB,
+  {
+    kind: "import",
+    target: "(import) semgrep",
+    file_name: "semgrep.json",
+    file_size: 2_048,
+    tools: ["external"],
+    status: "failed",
+    error_code: "IMPORT_INVALID",
+    tool_runs: [],
+    finished_at: ago(3 * DAY - 5_000),
+    import: { tool: "semgrep", category: "", format: "sarif", tool_version: null, results: null, dropped: null, screened: null },
+  },
+  3 * DAY,
+);
+scans.push(CODEQL_IMPORT, GITLAB_SAST_IMPORT, INVALID_IMPORT);
+
+issues.push(
+  issue({
+    p: WEB,
+    title: "Uncontrolled data used in path expression",
+    severity: "high",
+    status: "open",
+    tool: "external",
+    externalTool: "codeql",
+    rule_id: "py/path-injection",
+    file_path: "api/files.py",
+    start_line: 42,
+    target: CODEQL_IMPORT.target,
+    dueIn: 18 * DAY,
+    cwe: ["CWE-22"],
+    description: "Accessing paths influenced by users can allow an attacker to access unexpected resources.",
+    remediation: "Validate user input before using it to construct a file path: normalize it and check that it stays under the folder it should.",
+  }),
+  issue({
+    p: WEB,
+    title: "py/clear-text-logging-sensitive-data",
+    severity: "medium",
+    status: "open",
+    tool: "external",
+    externalTool: "codeql",
+    rule_id: "py/clear-text-logging-sensitive-data",
+    file_path: "api/auth.py",
+    start_line: 77,
+    target: CODEQL_IMPORT.target,
+    dueIn: 60 * DAY,
+    cwe: ["CWE-312"],
+    // Its rule text matched Gitleaks during screening, so it was dropped: the title is the rule id.
+    description: "",
+    remediation: "",
+  }),
+  issue({
+    p: WEB,
+    title: "Improper neutralization of special elements used in an SQL command",
+    severity: "medium",
+    status: "open",
+    tool: "external",
+    externalTool: "gitlab-sast",
+    rule_id: "bandit.B608",
+    file_path: "api/reports.py",
+    start_line: 88,
+    target: GITLAB_SAST_IMPORT.target,
+    dueIn: 55 * DAY,
+    cwe: ["CWE-89"],
+    description: "SQL query built from string formatting. Data from outside the program can change the query.",
+    remediation: "Use the driver's query parameters instead of building the SQL text.",
+  }),
+);
+export const IMPORTED_ISSUES = issues.slice(-3);
+for (const i of IMPORTED_ISSUES) {
+  const from = i.external_tool === "codeql" ? CODEQL_IMPORT : GITLAB_SAST_IMPORT;
+  if (i.description === "") i.description = null;
+  if (i.remediation === "") i.remediation = null;
+  i.occurrences = 1;
+  i.first_seen_scan = { id: from.id, created_at: from.created_at };
+  i.last_seen_scan = { id: from.id, created_at: from.created_at };
+  events[i.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: from.finished_at! }];
   comments[i.id] = [];
 }

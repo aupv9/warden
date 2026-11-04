@@ -199,7 +199,10 @@ func buildTargets(a *args, projects, kind string, limit int) string {
 	case service.KindHistory:
 		w = ` WHERE t.target = ` + a.add(service.HistoryTarget)
 	case service.KindImage:
-		w = ` WHERE t.target <> '' AND t.target <> ` + a.add(service.HistoryTarget)
+		w = ` WHERE t.target <> '' AND t.target <> ` + a.add(service.HistoryTarget) +
+			` AND NOT starts_with(t.target, ` + a.add(service.ImportTargetPrefix) + `)`
+	case service.KindImport:
+		w = ` WHERE starts_with(t.target, ` + a.add(service.ImportTargetPrefix) + `)`
 	}
 	return `WITH vp AS (` + projects + `), t AS (
 			SELECT s.project_id, s.target FROM scan s JOIN vp ON vp.id = s.project_id WHERE s.status <> 'pending_upload'
@@ -221,6 +224,9 @@ func scanTarget(row pgx.CollectableRow) (service.OrgTarget, error) {
 		t.Kind = service.KindHistory
 	default:
 		t.Kind = service.KindImage
+		if strings.HasPrefix(t.Target, service.ImportTargetPrefix) {
+			t.Kind = service.KindImport
+		}
 	}
 	return t, err
 }
