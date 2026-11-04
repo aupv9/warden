@@ -1227,7 +1227,7 @@ export interface paths {
         };
         /**
          * The issue list as CSV (same filters and visibility)
-         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.
+         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. An imported issue's tool cell reads external:<tool> (e.g. external:codeql). No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.
          */
         get: operations["exportIssuesCSV"];
         put?: never;
@@ -1676,7 +1676,7 @@ export interface components {
             /** @description The API token that created the scan, if any (created_by is the token's creator). */
             via_token: components["schemas"]["TokenRef"] | null;
             kind: components["schemas"]["ScanKind"];
-            /** @description Image repository for image scans (no tag); (history) for history scans; empty for source scans. */
+            /** @description Image repository for image scans (no tag); (history) for history scans; '(import) <tool>[ <category>]' for import scans; empty for source scans. */
             target: string;
             /** @description The image reference given at upload, for display (image scans only). */
             image_ref: string | null;
@@ -1745,6 +1745,8 @@ export interface components {
              * @enum {string|null}
              */
             license_category: "forbidden" | "restricted" | "reciprocal" | "notice" | "permissive" | "unencumbered" | "unknown" | null;
+            /** @description The tool an imported issue (tool external) came from; null otherwise. */
+            external_tool: components["schemas"]["ImportTool"] | null;
         };
         Issue: {
             /** Format: uuid */
@@ -2030,7 +2032,7 @@ export interface components {
             sha256: string;
             /** @description Image scans run trivy and gitleaks (secrets in the layers); history scans only gitleaks; any other tool is a 422. external is a 422. */
             tools?: components["schemas"]["Tool"][];
-            /** @description Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. */
+            /** @description Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. import is a 422: imports are created with POST …/scans/import. */
             kind?: components["schemas"]["ScanKind"];
             /** @description Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Not allowed for source and history scans (a history scan's target is always (history)). Issues are tracked per target. */
             target?: string;
@@ -2320,7 +2322,7 @@ export interface components {
             malicious: boolean;
         };
         ProjectTarget: {
-            /** @description Image repository, (history), or empty for source code. */
+            /** @description Image repository, (history), '(import) <tool>[ <category>]', or empty for source code. */
             target: string;
             kind: components["schemas"]["ScanKind"];
             /** Format: date-time */
@@ -2529,7 +2531,7 @@ export interface components {
             project_id: string;
             project_key: string;
             project_name: string;
-            /** @description Image repository, (history), or empty for source code. */
+            /** @description Image repository, (history), '(import) <tool>[ <category>]', or empty for source code. */
             target: string;
             kind: components["schemas"]["ScanKind"];
             /** Format: date-time */
@@ -7570,10 +7572,12 @@ export interface operations {
                 /** @description Only issues with a CVE in KEV. */
                 kev?: boolean;
                 epss_min?: number;
-                /** @description Issues from source scans, image scans, or history scans (secrets in git history). */
-                source?: "code" | "image" | "history";
+                /** @description Issues from source scans, image scans, history scans (secrets in git history), or imports (tool external). */
+                source?: "code" | "image" | "history" | "import";
                 /** @description Issues from image scans of this repository. History issues are filtered with source=history. */
                 target?: string;
+                /** @description Imported issues of this tool (implies tool=external). */
+                external_tool?: components["schemas"]["ImportTool"];
                 /** @description Title, rule_id or file_path substring, or an issue key such as WEB-41. */
                 q?: string;
                 sort?: "due_at" | "-severity" | "-updated_at" | "-epss";

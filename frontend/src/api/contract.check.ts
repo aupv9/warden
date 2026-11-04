@@ -119,9 +119,7 @@ export type Q9 = Fits<T.WebhookDeliveryState, NonNullable<DeliveriesQuery["state
 // The CSV export takes the issue list's filters, and the list takes every one the UI sends.
 type ExportQuery = NonNullable<Ops["exportIssuesCSV"]["parameters"]["query"]>;
 type FilterKeys = keyof import("../lib/issueFilters").IssueFilterQuery;
-// v0.8: the export doesn't take external_tool (or source=import) yet; IssueList turns it off
-// while those filters are set (exportBlockedReason).
-export type Q10 = Fits<keyof ExportQuery, keyof import("../lib/issueFilters").IssueExportQuery>;
+export type Q10 = Fits<keyof ExportQuery, FilterKeys>;
 export type Q11 = Fits<keyof IssueListQuery, FilterKeys>;
 type OrgTargetsQuery = NonNullable<Ops["listOrgTargets"]["parameters"]["query"]>;
 export type Q12 = Fits<NonNullable<OrgTargetsQuery["kind"]>, "image" | "import">;
@@ -195,6 +193,8 @@ export type C108 = Fits<T.Scan["import"], S["Scan"]["import"]>;
 export type C109 = Fits<S["Scan"]["import"], T.Scan["import"]>;
 export type C110 = Fits<T.Issue["external_tool"], S["Issue"]["external_tool"]>;
 export type C111 = Fits<S["Issue"]["external_tool"], T.Issue["external_tool"]>;
+export type C117 = Fits<T.IssueSummary["external_tool"], S["IssueSummary"]["external_tool"]>;
+export type C118 = Fits<S["IssueSummary"]["external_tool"], T.IssueSummary["external_tool"]>;
 export type C112 = Fits<T.ImportFormat, S["ScanImport"]["format"]>;
 export type C113 = Fits<S["ScanImport"]["format"], T.ImportFormat>;
 export type C114 = Fits<T.CreateScanResponse, Json<"createImportScan", 201>>;
@@ -204,4 +204,6 @@ export type R25 = Fits<ImportBody, T.ImportScanBody>;
 // The issue list's Source filter covers every source the server has, and the imported-tool filter
 // is the contract's parameter.
 export type Q16 = Fits<import("../lib/issueFilters").IssueSourceFilter, NonNullable<IssueListQuery["source"]>>;
+export type Q18 = Fits<import("../lib/issueFilters").IssueSourceFilter, NonNullable<ExportQuery["source"]>>;
+export type Q19 = Fits<NonNullable<ExportQuery["external_tool"]>, NonNullable<import("../lib/issueFilters").IssueFilterQuery["external_tool"]>>;
 export type Q17 = Fits<NonNullable<IssueListQuery["external_tool"]>, NonNullable<import("../lib/issueFilters").IssueFilterQuery["external_tool"]>>;
