@@ -16,6 +16,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/metrics"
 	"github.com/aupv9/warden/backend/internal/notify"
 	"github.com/aupv9/warden/backend/internal/registry"
+	"github.com/aupv9/warden/backend/internal/scan/importer"
 	"github.com/aupv9/warden/backend/internal/scan/orchestrator"
 	"github.com/aupv9/warden/backend/internal/scan/results"
 	"github.com/aupv9/warden/backend/internal/scan/sbom"
@@ -109,6 +110,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	var sc scanRow
 	var orgRules scanOrgRules
 	var pr *pullRow
+	var imp *orchestrator.Import
 	log := e.Log.With("scan_id", scanID, "org_id", org, "attempt", attempt)
 	err := e.Tx(ctx, org, func(db DB) error {
 		var err error
@@ -116,11 +118,14 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 			return err
 		}
 		if sc.Status == string(orchestrator.Queued) || sc.Status == string(orchestrator.Running) {
-			if orgRules, err = loadOrgRules(ctx, db, org, sc.ProjectID, sc.Tools, log); err != nil {
+			if orgRules, err = loadOrgRules(ctx, db, org, sc.ProjectID, ruleTools(sc), log); err != nil {
 				return err
 			}
-			if sc.Kind == orchestrator.KindImage {
+			switch sc.Kind {
+			case orchestrator.KindImage:
 				pr, err = loadPull(ctx, db, org, scanID, e.registryClient().Allowed)
+			case orchestrator.KindImport:
+				imp, err = loadImport(ctx, db, scanID)
 			}
 		}
 		return err
@@ -166,6 +171,13 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 	job.ProjectKey, job.Kind, job.Target = sc.ProjectKey, sc.Kind, sc.Target
 	var ruleRefs []results.OrgRuleRef
 	job.OrgRules, ruleRefs = orgRules.render(log)
+	job.Import = imp
+	if imp != nil {
+		// The org's Gitleaks rules screen the import's strings; they find
+		// nothing the import stores, so they aren't recorded as run and
+		// fix no org rule's issue.
+		ruleRefs = nil
+	}
 	// A crashed attempt may have left its scratch directory behind.
 	if err := zipcheck.RemoveAll(filepath.Join(e.ScratchDir, scanID.String())); err != nil {
 		return err
@@ -184,11 +196,15 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 		return done(orchestrator.Cancelled, e.finishCancelled(fin, org, scanID, sc))
 	case err != nil:
 		code := errorCode(err, timedOut)
+		if code == CodeTooLarge && sc.Kind == orchestrator.KindImport {
+			code = importer.CodeTooLarge
+		}
 		log.Error("scan failed", "code", code, "err", err)
 		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, code))
 	case out.Status == orchestrator.Failed:
 		code := out.ErrorCode
-		if timedOut {
+		// An import whose screening ran out of time says so: nothing was stored.
+		if timedOut && code != importer.CodeScreenFailed {
 			code = CodeTimeout
 		}
 		return done(orchestrator.Failed, e.finishFailed(fin, org, scanID, sc.Tools, code))
@@ -204,6 +220,7 @@ func (e *Env) RunScan(ctx context.Context, job orchestrator.Job, attempt int) er
 			OrgID: org, ProjectID: sc.ProjectID, ScanID: scanID, Status: string(out.Status), Target: sc.Target,
 			Runs: out.Runs, Findings: out.Findings, Licenses: out.Licenses, Packages: out.Packages, GuardRatio: e.GuardRatio, Now: e.Now().UTC(),
 			SBOM: stored, History: history(out.History), OrgRules: loadedRules(ruleRefs, out.OrgRulesLoaded, log),
+			Import: importResult(imp, out.Import),
 		})
 		if err != nil {
 			return err
@@ -253,6 +270,40 @@ func history(h *orchestrator.History) *results.History {
 		return nil
 	}
 	return &results.History{Commits: h.Commits, Truncated: h.Truncated}
+}
+
+// ruleTools are the tools whose org rules a scan loads: its own, or for an
+// import Gitleaks, which screens the imported strings.
+func ruleTools(sc scanRow) []string {
+	if sc.Kind == orchestrator.KindImport {
+		return []string{"gitleaks"}
+	}
+	return sc.Tools
+}
+
+// loadImport reads an import scan's settings (migration 00016).
+func loadImport(ctx context.Context, db DB, id uuid.UUID) (*orchestrator.Import, error) {
+	var tool, category, format *string
+	if err := db.QueryRow(ctx, `SELECT import_tool, import_category, import_format FROM scan WHERE id = $1`, id).
+		Scan(&tool, &category, &format); err != nil {
+		return nil, err
+	}
+	if tool == nil || category == nil || format == nil {
+		return nil, errors.New("import scan without its import settings")
+	}
+	return &orchestrator.Import{Tool: *tool, Category: *category, Format: *format}, nil
+}
+
+// importResult maps an import's settings and outcome onto the processor's.
+func importResult(imp *orchestrator.Import, st *orchestrator.ImportStats) *results.Import {
+	if imp == nil {
+		return nil
+	}
+	out := &results.Import{Tool: imp.Tool}
+	if st != nil {
+		out.ToolVersion, out.Results, out.Dropped, out.Screened = st.ToolVersion, st.Results, st.Dropped, st.Screened
+	}
+	return out
 }
 
 func errorCode(err error, timedOut bool) string {

@@ -207,8 +207,10 @@ func NewEnv(cfg *config.Config, pool *pgxpool.Pool, store Store, log *slog.Logge
 func newKube(s config.ScanSection, log *slog.Logger) (*kube.Backend, error) {
 	k := s.Kube
 	// A pulled image's tarball is at most PullMaxMB plus registry.TarOverhead
-	// (well under the 2 MiB of slack).
-	maxMB := max(s.UnzipMaxMB, s.ImageUploadMaxMB, s.HistoryUploadMaxMB, s.PullMaxMB)
+	// (well under the 2 MiB of slack). An import's screening file is at most
+	// the imported file's size: each string in it is a JSON string of the
+	// file, cleaned and capped, written once.
+	maxMB := max(s.UnzipMaxMB, s.ImageUploadMaxMB, s.HistoryUploadMaxMB, s.PullMaxMB, s.ImportMaxMB)
 	b, err := kube.New(kube.Config{
 		Namespace: k.Namespace, RuntimeClass: k.RuntimeClass, MirrorPVC: k.MirrorPVC, IOImage: k.IOImage,
 		MaxInputBytes:   int64(maxMB)<<20 + 2<<20,
@@ -236,7 +238,7 @@ func ScanLimits(s config.ScanSection) orchestrator.Limits {
 		MaxZipBytes: int64(s.UploadMaxMB) << 20, MaxTotalBytes: int64(s.UnzipMaxMB) << 20, MaxEntries: s.UnzipMaxFiles,
 	}, ImageMaxBytes: int64(s.ImageUploadMaxMB) << 20,
 		HistoryMaxBytes: int64(s.HistoryUploadMaxMB) << 20, HistoryMaxCommits: s.HistoryMaxCommits,
-		PullMaxBytes: int64(s.PullMaxMB) << 20}
+		PullMaxBytes: int64(s.PullMaxMB) << 20, ImportMaxBytes: int64(s.ImportMaxMB) << 20}
 }
 
 // OrgKey derives the organization's secret-fingerprint key from the master key:

@@ -44,6 +44,12 @@ const (
 	OrgRulePrefix = "org."
 )
 
+// ToolExternal is the tool of every imported finding and issue (scan kind
+// import, internal/scan/importer): another tool's results, never a Warden
+// scanner's. Its rule ids are whatever the report says ("gitleaks", "org.x"):
+// IsOrgRule is false for them, and no Warden scan auto-fixes them.
+const ToolExternal = "external"
+
 // orgRuleTools take org rules (sandbox.OrgRulesFile).
 var orgRuleTools = []string{"opengrep", "gitleaks"}
 
@@ -129,6 +135,10 @@ type Finding struct {
 	// ImageLayer is set on Gitleaks findings of image scans
 	// (Options.ImageLayers).
 	ImageLayer *ImageLayer `json:"image_layer,omitempty"`
+	// ImportTarget is the target of an imported finding (Tool ToolExternal):
+	// its key's path is "<target>::<path>", so imports of another tool or
+	// category never share an issue. Set by internal/scan/importer only.
+	ImportTarget string `json:"-"`
 	// RuleDescription is the rule's own text from the SARIF rule metadata
 	// (full description, else a non-generic short one), never the result's
 	// message, which Opengrep fills with matched code ($X). Rule tests show it.
@@ -317,10 +327,13 @@ func (f Finding) Line() int {
 // secret only (fingerprint.HistoryPath): the file it was added in doesn't
 // make it another secret to rotate. Nor does the file or layer of a secret
 // in an image: it is keyed by the image's target, rule and secret
-// (ImageSecretPath), never by a layer digest a rebuild changes.
+// (ImageSecretPath), never by a layer digest a rebuild changes. An imported
+// finding's path is "<target>::<path>" (ImportTarget).
 func (f Finding) Key() fingerprint.Key {
 	path := f.FilePath
 	switch {
+	case f.Tool == ToolExternal:
+		path = f.ImportTarget + "::" + f.FilePath
 	case f.Commit != nil:
 		path = fingerprint.HistoryPath
 	case f.ImageLayer != nil:
