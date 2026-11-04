@@ -5,8 +5,9 @@ description: >-
   worker with a Kubernetes (gVisor) sandbox, schema migrations and the offline
   scanner mirror.
 type: application
-# The chart is released with Warden: the release sets both from the tag
-# (helm package --version X.Y.Z --app-version X.Y.Z).
+# The chart is released with Warden: release.yml sets both from the tag vX.Y.Z
+# (helm package --version X.Y.Z --app-version vX.Y.Z) and attaches the
+# package to the GitHub release, with its checksum and provenance.
 version: 0.6.0
 appVersion: "0.6.0"
 # 1.29: native sidecars (scanner Pods may use one for warden-sandbox-io) and

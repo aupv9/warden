@@ -80,15 +80,33 @@ type Input struct {
 	// of tools that succeeded are recorded, and only their issues may be
 	// auto-fixed (PlanInput.OrgRulesRun).
 	OrgRules []OrgRuleRef
+	// Import is set for an import scan (kind import): its findings are all
+	// of tool external, and only the target's external issues of the same
+	// import tool are matched and auto-fixed. nil for every other scan, whose
+	// findings then can't be external and which never touches an external
+	// issue.
+	Import *Import
 }
 
-// OrgRuleRef is one org rule a scan ran: its id ("org.<key>"), tool, and the
-// version and body hash that ran (scan.org_rules, API ScanRuleRef).
+// Import is an import scan's tool (issue.external_tool of every issue it
+// opens) and what it recorded (scan.import_tool_version, import_results,
+// import_dropped, import_screened).
+type Import struct {
+	Tool                       string
+	ToolVersion                string
+	Results, Dropped, Screened int
+}
+
+// OrgRuleRef is one org rule a scan ran: its id ("org.<key>"), tool, the
+// version and body hash that ran, and the scan_rule row it came from, which
+// tells apart two rules of one key after a delete and re-add (scan.org_rules,
+// API ScanRuleRef; rows written before v0.7 have no scan_rule_id).
 type OrgRuleRef struct {
-	RuleID  string `json:"rule_id"`
-	Tool    string `json:"tool"`
-	Version int    `json:"version"`
-	SHA256  string `json:"sha256"`
+	RuleID     string    `json:"rule_id"`
+	Tool       string    `json:"tool"`
+	Version    int       `json:"version"`
+	SHA256     string    `json:"sha256"`
+	ScanRuleID uuid.UUID `json:"scan_rule_id"`
 }
 
 // orgRulesRun are in's org rules of tools that succeeded.
@@ -176,12 +194,26 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	if err := json.Unmarshal(rawPolicy, &policy); err != nil {
 		return Plan{}, fmt.Errorf("organization.license_policy: %w", err)
 	}
+	if err := checkImport(in); err != nil {
+		return Plan{}, err
+	}
 	findings := in.Findings
-	if in.Target == fingerprint.HistoryPath {
+	switch {
+	case in.Import != nil:
+		// Another tool's findings: no history, no image layers.
+	case in.Target == "":
+	case in.Target == fingerprint.HistoryPath:
 		// One finding per rule and secret, at the oldest commit that added it.
 		findings = map[string][]sarif.Finding{}
 		for tool, fs := range in.Findings {
 			findings[tool] = sarif.CollapseHistory(fs)
+		}
+	default:
+		// An image: one finding per rule and secret, at the lowest layer that
+		// holds it (Trivy's findings have no layer and pass through).
+		findings = map[string][]sarif.Finding{}
+		for tool, fs := range in.Findings {
+			findings[tool] = sarif.CollapseImageLayers(fs)
 		}
 	}
 	if SucceededTools(in.Runs)["trivy"] {
@@ -196,13 +228,13 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 			findings = all
 		}
 	}
-	existing, err := loadIssues(ctx, db, in.ProjectID, in.Target)
+	existing, err := loadIssues(ctx, db, in.ProjectID, in.Target, in.Import)
 	if err != nil {
 		return Plan{}, err
 	}
 	refs, ran := orgRulesRun(in)
 	plan, err := BuildPlan(PlanInput{ScanID: in.ScanID, Runs: in.Runs, Findings: findings, Existing: existing, GuardRatio: in.GuardRatio,
-		OrgRulesRun: ran})
+		OrgRulesRun: ran, Import: in.Import != nil})
 	if err != nil {
 		return Plan{}, err
 	}
@@ -224,9 +256,43 @@ func Process(ctx context.Context, db DB, in Input) (Plan, error) {
 	return plan, nil
 }
 
-func loadIssues(ctx context.Context, db DB, projectID uuid.UUID, target string) ([]ExistingIssue, error) {
-	rows, err := db.Query(ctx, `SELECT id, fingerprint, tool, rule_id, status, severity, severity_overridden, last_seen_scan_id
-		FROM issue WHERE project_id = $1 AND target = $2`, projectID, target)
+// checkImport: an import scan's runs and findings are tool external's
+// alone, and no other scan's are.
+func checkImport(in Input) error {
+	imported := in.Import != nil
+	if imported && in.Import.Tool == "" {
+		return errors.New("import scan without its tool")
+	}
+	for _, r := range in.Runs {
+		if (r.Tool == sarif.ToolExternal) != imported {
+			return fmt.Errorf("tool %s in a scan with import %t", r.Tool, imported)
+		}
+	}
+	for tool, fs := range in.Findings {
+		if (tool == sarif.ToolExternal) != imported {
+			return fmt.Errorf("findings of %s in a scan with import %t", tool, imported)
+		}
+		for _, f := range fs {
+			if f.Tool != tool {
+				return fmt.Errorf("a finding of %s among %s's", f.Tool, tool)
+			}
+		}
+	}
+	return nil
+}
+
+// loadIssues reads the issues of the scan's target. An import scan reads
+// only the external issues of its import tool: the target ('(import) <tool>
+// [<category>]') already names it, and the filter makes sure.
+func loadIssues(ctx context.Context, db DB, projectID uuid.UUID, target string, imp *Import) ([]ExistingIssue, error) {
+	q := `SELECT id, fingerprint, tool, rule_id, status, severity, severity_overridden, last_seen_scan_id
+		FROM issue WHERE project_id = $1 AND target = $2`
+	args := []any{projectID, target}
+	if imp != nil {
+		q += ` AND tool = 'external' AND external_tool = $3`
+		args = append(args, imp.Tool)
+	}
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load issues: %w", err)
 	}
@@ -379,6 +445,17 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 			return fmt.Errorf("record sbom: %w", err)
 		}
 	}
+	if im := a.in.Import; im != nil {
+		if _, err := a.db.Exec(ctx, `UPDATE scan SET import_tool_version = $2, import_results = $3, import_dropped = $4,
+			import_screened = $5 WHERE id = $1`, a.in.ScanID, nullable(im.ToolVersion), im.Results, im.Dropped, im.Screened); err != nil {
+			return fmt.Errorf("record import: %w", err)
+		}
+		// The import's one tool run reports the tool that produced the file.
+		if _, err := a.db.Exec(ctx, `UPDATE scan_tool_run SET tool_version = $3 WHERE scan_id = $1 AND tool = $2`,
+			a.in.ScanID, sarif.ToolExternal, im.ToolVersion); err != nil {
+			return fmt.Errorf("record import tool version: %w", err)
+		}
+	}
 	if h := a.in.History; h != nil {
 		if _, err := a.db.Exec(ctx, `UPDATE scan SET history_commits = $2, history_truncated = $3 WHERE id = $1`,
 			a.in.ScanID, h.Commits, h.Truncated); err != nil {
@@ -393,6 +470,15 @@ func (a applier) apply(ctx context.Context, p Plan) error {
 func commit(f sarif.Finding) (sha *string, at *time.Time, count *int) {
 	if c := f.Commit; c != nil {
 		return &c.SHA, c.Date, &c.Count
+	}
+	return nil, nil, nil
+}
+
+// imageLayer returns an image-layer finding's issue.image_layer_digest,
+// image_layer_index and image_layer_count (all nil for other findings).
+func imageLayer(f sarif.Finding) (digest *string, index, count *int) {
+	if l := f.ImageLayer; l != nil {
+		return &l.Digest, &l.Index, &l.Count
 	}
 	return nil, nil, nil
 }
@@ -420,17 +506,25 @@ func (a applier) create(ctx context.Context, number int, n NewIssue, now time.Ti
 		status, assignee = issuestate.Assigned, &user
 	}
 	sha, committed, commits := commit(f)
+	layer, layerIndex, layers := imageLayer(f)
+	var external *string
+	if f.Tool == sarif.ToolExternal {
+		if a.in.Import == nil {
+			return errors.New("an external finding outside an import scan")
+		}
+		external = &a.in.Import.Tool
+	}
 	_, err := a.db.Exec(ctx, `INSERT INTO issue (id, org_id, project_id, number, fingerprint, tool, rule_id, title,
 		description, remediation, severity, status, file_path, start_line, end_line, snippet, cwe, cve,
 		package_name, package_version, fixed_version, first_seen_scan_id, last_seen_scan_id, due_at, created_at, updated_at, assignee_id, target,
-		license_category, commit_sha, committed_at, commit_count)
+		license_category, commit_sha, committed_at, commit_count, image_layer_digest, image_layer_index, image_layer_count, external_tool)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $24, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $23, $25, $26,
-		$27, $28, $29, $30)`,
+		$27, $28, $29, $30, $31, $32, $33, $34)`,
 		id, a.in.OrgID, a.in.ProjectID, number, n.Fingerprint, f.Tool, f.RuleID, f.Title,
 		nullable(f.Description), nullable(f.Remediation), string(f.Severity), nullable(f.FilePath), f.StartLine, f.EndLine,
 		nullable(f.Snippet), f.CWE, f.CVE, nullable(f.PackageName), nullable(f.PackageVersion), nullable(f.FixedVersion),
 		a.in.ScanID, a.sla.DueAt(f.Severity, now), now, string(status), assignee, a.in.Target, nullable(f.LicenseCategory),
-		sha, committed, commits)
+		sha, committed, commits, layer, layerIndex, layers, external)
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)
 	}
@@ -456,13 +550,16 @@ func (a applier) sighting(ctx context.Context, s Sighting, now time.Time) error 
 	f, id := s.Finding, s.Issue.ID
 	// Location and snippet follow the code (and the license category, Trivy's
 	// classification; for a secret in history, the oldest commit that added
-	// it, which a rewrite may change); this isn't a user-visible edit, so
-	// version and updated_at stay put.
+	// it, which a rewrite may change; for a secret in an image, the lowest
+	// layer that holds it, which a rebuild changes); this isn't a
+	// user-visible edit, so version and updated_at stay put.
 	sha, committed, commits := commit(f)
+	layer, layerIndex, layers := imageLayer(f)
 	if _, err := a.db.Exec(ctx, `UPDATE issue SET last_seen_scan_id = $2, file_path = $3, start_line = $4, end_line = $5,
-		snippet = $6, license_category = $7, commit_sha = $8, committed_at = $9, commit_count = $10 WHERE id = $1`,
+		snippet = $6, license_category = $7, commit_sha = $8, committed_at = $9, commit_count = $10,
+		image_layer_digest = $11, image_layer_index = $12, image_layer_count = $13 WHERE id = $1`,
 		id, a.in.ScanID, nullable(f.FilePath), f.StartLine, f.EndLine,
-		nullable(f.Snippet), nullable(f.LicenseCategory), sha, committed, commits); err != nil {
+		nullable(f.Snippet), nullable(f.LicenseCategory), sha, committed, commits, layer, layerIndex, layers); err != nil {
 		return fmt.Errorf("update issue: %w", err)
 	}
 	sev := s.Issue.Severity

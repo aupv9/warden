@@ -37,6 +37,10 @@ export function pageItems(base: string, role: OrgRole): Item[] {
     ...(can("manage_integrations", role)
       ? [{ id: "p-integrations", group: "Pages" as const, label: "Integrations (webhooks and Slack)", to: `${base}/integrations` }]
       : []),
+    // v0.7 wave 2: the credentials Warden pulls images with.
+    ...(can("manage_registries", role)
+      ? [{ id: "p-registries", group: "Pages" as const, label: "Registries (image pull credentials)", to: `${base}/settings/registries` }]
+      : []),
     // v0.6: the org's own Opengrep and Gitleaks rules.
     { id: "p-scan-rules", group: "Pages", label: "Scan rules (Opengrep and Gitleaks)", to: `${base}/settings/scan-rules` },
     ...(can("manage_rules", role)

@@ -6,6 +6,69 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-alpha.1] - 2026-11-04
+
+### Added
+
+- Import another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, Snyk Code, SonarQube, …)
+  or a GitLab SAST report, through `POST …/scans/import` and `warden import`. The file is parsed
+  as hostile input, and every kept string is screened by Gitleaks in the sandbox before anything
+  is stored. Imported issues have tool `external` and `external_tool`, and are tracked per tool
+  and category (`--category`, like GitHub's). They get SLA, exceptions, auto-assign and the gate,
+  and can be filtered with `source=import` or `external_tool`. The CSV tool cell reads
+  `external:<tool>`. The web UI shows imports and the CI setup card has CodeQL and GitLab SAST
+  snippets. New setting: `WARDEN_SCAN__IMPORT_MAX_MB`.
+- Nightly workflow: every fuzz target for 10 minutes (an issue per failing target, with links
+  only) and an upgrade test; `scripts/upgrade-test.sh` upgrades a production Compose from
+  v0.5.0-alpha.1 and checks data, the audit chain and the schema gate.
+- CI job `helm-cluster`: the chart installed on kind with an enforcing NetworkPolicy plugin.
+- `warden-admin` in the image and the release archives.
+- Each release ships the Helm chart (`warden-X.Y.Z.tgz`, in the checksums and attestation).
+- A complete issues export ends with `#warden:end rows=<N>`; the web UI saves only a complete
+  file and says so otherwise.
+- `ScanRuleRef.scan_rule_id`: a scan links to the org rule that ran even after its key was
+  deleted and re-added.
+- `WARDEN_MIRROR_SKIP_TRIVY=1` for `sync-mirror.sh`; the chart's docker shim is gone.
+- Org registries (`/orgs/{org}/registries`, permission `manage_registries`: org admins and
+  security leads): credentials sealed with `secrets.key`, checked with "Test", re-encrypted by
+  `warden-admin secrets rotate`.
+- Image scans pulled from a registry (`POST …/scans/pull`, the web UI's "Image from a
+  registry"): by digest only, through the outbound-address guard, size-limited
+  (`WARDEN_SCAN__PULL_MAX_MB`, `WARDEN_SCAN__PULL_PLATFORM`); the image is never run. Private
+  or single-label registry hosts need `WARDEN_REGISTRY__ALLOW_HOSTS`.
+- Secrets in image layers: Gitleaks scans each layer of an image inside the sandbox
+  (unpacked there under zipcheck's limits); an issue names the layer (`Issue.image_layer`).
+- Checkov severities from a per-check table (1,316 checks) instead of Medium for all.
+
+### Changed
+
+- Helm: the worker reaches the Kubernetes API server only (looked up at install/upgrade, or
+  `networkPolicy.egress.kubeAPI.cidrs`; `kubeAPI.to` is removed), and object storage on
+  public addresses unless listed. A sandbox namespace the chart can't read needs
+  `sandbox.podSecurityConfirmed: true` instead of being trusted silently.
+- Image scans run Trivy and Gitleaks by default.
+- Helm: the worker (pulls) and the API ("Test") reach registries on public addresses, port 443.
+
+### Fixed
+
+- The pull/merge request comment of a history scan used the source scan's marker, so the next
+  source scan overwrote it.
+- Gitleaks redaction also masks percent-encoded and path-normalized forms of a secret: a file
+  named with an encoded secret (`%41KIA…`) no longer rebuilds it in the issue's path.
+
+## [0.6.0-alpha.3] - 2026-11-03
+
+Tagged, but its release run stopped at a flaky unit test (`TestCLINetworkGate`, fixed in
+v0.7); nothing was published for this tag. Its change ships in the next release.
+
+### Changed
+
+- Checkov runs with 1 CPU, 3 GB and a 15-minute timeout (was 0.25 CPU, 2 GB, 10 minutes): on
+  Warden's own repository it was killed for memory under gVisor, or took 535 s of 600. The Helm
+  chart's sandbox ResourceQuota grows to match (24 CPU, 64 GiB requested).
+
+## [0.6.0-alpha.2] - 2026-11-03
+
 ### Added
 
 - A Kubernetes sandbox backend (`WARDEN_SCAN__SANDBOX_BACKEND=kubernetes`, `WARDEN_SCAN__KUBE__*`):
@@ -19,12 +82,6 @@ All notable changes to Warden are listed here. The format follows
   mounted per Pod, mirror claims and CronJob without Docker, optional ServiceMonitor, a strict
   values schema; CI jobs `helm` (lint, kubeconform, security properties) and `kube` (kind with
   gVisor).
-
-### Changed
-
-- Checkov runs with 1 CPU, 3 GB and a 15-minute timeout (was 0.25 CPU, 2 GB, 10 minutes): on
-  Warden's own repository it was killed for memory under gVisor, or took 535 s of 600. The Helm
-  chart's sandbox ResourceQuota grows to match (24 CPU, 64 GiB requested).
 
 ### Fixed
 
@@ -271,7 +328,10 @@ Tagged, but the release workflow failed, so no binaries or image were published 
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
 
-[Unreleased]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.1...HEAD
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.7.0-alpha.1...HEAD
+[0.7.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.3...v0.7.0-alpha.1
+[0.6.0-alpha.3]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.2...v0.6.0-alpha.3
+[0.6.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.1...v0.6.0-alpha.2
 [0.6.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.2...v0.6.0-alpha.1
 [0.5.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
 [0.5.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.4.0-alpha.2...v0.5.0-alpha.1

@@ -1227,7 +1227,7 @@ export interface paths {
         };
         /**
          * The issue list as CSV (same filters and visibility)
-         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. If the server fails after the first row was sent, the download ends early (over HTTP/1.1 the connection is reset; over HTTP/2 the response may simply end): a file with fewer data rows than the export's audit entry is incomplete.
+         * @description Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. An imported issue's tool cell reads external:<tool> (e.g. external:codeql). No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.
          */
         get: operations["exportIssuesCSV"];
         put?: never;
@@ -1376,6 +1376,124 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/projects/{project_id}/scans/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan an image pulled from a registry (run_scan)
+         * @description Queues an image scan with no upload: the worker pulls the image by digest (at most scan.pull_max_mb, refusing internal addresses and redirects to them), converts it to a docker save tarball and scans it like an upload (imagecheck, Trivy, Gitleaks on the layers). The scan's target is the repository. Counts against the hourly scan limit. API tokens with scan:write may call it. Pull failures end the scan with error_code PULL_UNAUTHORIZED, PULL_NOT_FOUND, PULL_TOO_LARGE, PULL_BLOCKED, PULL_PLATFORM or PULL_FAILED.
+         */
+        post: operations["createPullScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/registries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        /** The org's registry credentials (manage_registries) */
+        get: operations["listRegistryCredentials"];
+        put?: never;
+        /**
+         * Add credentials for a registry host (manage_registries)
+         * @description At most 20 per org, one per host. Audited as registry.created (host and username only). Not for API tokens.
+         */
+        post: operations["createRegistryCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/registries/{registry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                registry_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete credentials (manage_registries) */
+        delete: operations["deleteRegistryCredential"];
+        options?: never;
+        head?: never;
+        /** Change the username or password (manage_registries) */
+        patch: operations["updateRegistryCredential"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/registries/{registry_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                registry_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check the credentials against the registry (manage_registries)
+         * @description Authenticates against https://<host>/v2/ through the same guarded client as pulls. 10 per credential per hour.
+         */
+        post: operations["testRegistryCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/projects/{project_id}/scans/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import another tool's results (SARIF or GitLab SAST)
+         * @description Creates an import scan (kind import, tools ['external'], target '(import) <tool>[ <category>]') and returns a presigned upload for the report, at most scan.import_max_mb MiB; POST …/scans/{scan_id}/start queues it, like an upload. Imported issues have tool external and external_tool set; an import never sets or fixes an issue of a Warden scanner, and fixes only issues of its own tool and category (auto-fix per target, with the same guard ratio). Severity comes from a result's (or its rule's) security-severity (>= 9 Critical, >= 7 High, >= 4 Medium, else Low), else its level (error High, warning Medium, note or none Low). Counts against the hourly scan limit. API tokens with scan:write may call it. Failures end the scan with error_code IMPORT_INVALID (not SARIF 2.1.0 or a GitLab SAST report, or malformed), IMPORT_TOO_LARGE (over 10 runs, 50,000 results or 5,000 rules) or IMPORT_SCREEN_FAILED (the Gitleaks screening could not run; nothing is stored).
+         */
+        post: operations["createImportScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export interface webhooks {
     event: {
@@ -1413,8 +1531,11 @@ export interface components {
         ScanStatus: "pending_upload" | "queued" | "running" | "completed" | "partial" | "failed" | "cancelled";
         /** @enum {string} */
         ToolStatus: "queued" | "running" | "succeeded" | "failed" | "timeout" | "skipped";
-        /** @enum {string} */
-        Tool: "gitleaks" | "opengrep" | "trivy" | "checkov";
+        /**
+         * @description Warden's scanners, and external for issues and scans imported from another tool (POST …/scans/import); external is never accepted where a scan's tools are chosen.
+         * @enum {string}
+         */
+        Tool: "gitleaks" | "opengrep" | "trivy" | "checkov" | "external";
         SeverityCounts: {
             critical: number;
             high: number;
@@ -1555,7 +1676,7 @@ export interface components {
             /** @description The API token that created the scan, if any (created_by is the token's creator). */
             via_token: components["schemas"]["TokenRef"] | null;
             kind: components["schemas"]["ScanKind"];
-            /** @description Image repository for image scans (no tag); (history) for history scans; empty for source scans. */
+            /** @description Image repository for image scans (no tag); (history) for history scans; '(import) <tool>[ <category>]' for import scans; empty for source scans. */
             target: string;
             /** @description The image reference given at upload, for display (image scans only). */
             image_ref: string | null;
@@ -1572,6 +1693,10 @@ export interface components {
             } | null;
             /** @description The org rules this scan ran (empty when none); issues from a rule not listed here are never auto-fixed by this scan. */
             org_rules: components["schemas"]["ScanRuleRef"][];
+            /** @description The worker pulled the image from its registry (POST …/scans/pull) instead of an upload. */
+            pulled: boolean;
+            /** @description Set on import scans (kind import), whose target is '(import) <tool>[ <category>]' and tools ['external']. */
+            import: components["schemas"]["ScanImport"] | null;
         };
         Upload: {
             /** @enum {string} */
@@ -1620,6 +1745,8 @@ export interface components {
              * @enum {string|null}
              */
             license_category: "forbidden" | "restricted" | "reciprocal" | "notice" | "permissive" | "unencumbered" | "unknown" | null;
+            /** @description The tool an imported issue (tool external) came from; null otherwise. */
+            external_tool: components["schemas"]["ImportTool"] | null;
         };
         Issue: {
             /** Format: uuid */
@@ -1707,6 +1834,16 @@ export interface components {
                  */
                 scan_rule_id: string | null;
             } | null;
+            /** @description For a secret Gitleaks found in an image's layers: the lowest layer that holds it. Set even when a later layer deletes the file: it is still in the image. */
+            image_layer: {
+                digest: string;
+                /** @description 0 = the base layer. */
+                index: number;
+                /** @description How many layers hold this secret. */
+                count: number;
+            } | null;
+            /** @description The tool an imported issue (tool external) came from; null otherwise. */
+            external_tool: components["schemas"]["ImportTool"] | null;
         };
         IssueEvent: {
             /** @description Numeric event id, as a string. */
@@ -1893,9 +2030,9 @@ export interface components {
             /** @description At most upload_max_mb MiB (source), image_upload_max_mb MiB (image) or history_upload_max_mb MiB (history). */
             file_size: number;
             sha256: string;
-            /** @description Image scans only run trivy and history scans only gitleaks; any other tool is a 422. */
+            /** @description Image scans run trivy and gitleaks (secrets in the layers); history scans only gitleaks; any other tool is a 422. external is a 422. */
             tools?: components["schemas"]["Tool"][];
-            /** @description Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. */
+            /** @description Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. import is a 422: imports are created with POST …/scans/import. */
             kind?: components["schemas"]["ScanKind"];
             /** @description Required for image scans: the image repository without tag or digest, e.g. ghcr.io/acme/api. Not allowed for source and history scans (a history scan's target is always (history)). Issues are tracked per target. */
             target?: string;
@@ -2065,7 +2202,7 @@ export interface components {
             policy: components["schemas"]["SignInPolicy"];
         };
         /** @enum {string} */
-        ScanKind: "source" | "image" | "history";
+        ScanKind: "source" | "image" | "history" | "import";
         SbomDownload: {
             /**
              * Format: uri
@@ -2185,7 +2322,7 @@ export interface components {
             malicious: boolean;
         };
         ProjectTarget: {
-            /** @description Image repository, (history), or empty for source code. */
+            /** @description Image repository, (history), '(import) <tool>[ <category>]', or empty for source code. */
             target: string;
             kind: components["schemas"]["ScanKind"];
             /** Format: date-time */
@@ -2394,7 +2531,7 @@ export interface components {
             project_id: string;
             project_key: string;
             project_name: string;
-            /** @description Image repository, (history), or empty for source code. */
+            /** @description Image repository, (history), '(import) <tool>[ <category>]', or empty for source code. */
             target: string;
             kind: components["schemas"]["ScanKind"];
             /** Format: date-time */
@@ -2514,6 +2651,81 @@ export interface components {
             tool: components["schemas"]["ScanRuleTool"];
             version: number;
             sha256: string;
+            /**
+             * Format: uuid
+             * @description The rule that ran (its id survives a delete and re-add of the same key). Null on scans recorded before v0.7.
+             */
+            scan_rule_id: string | null;
+        };
+        /** @description Credentials Warden uses to pull images from one registry host for this org. The password or token is write-only: stored AES-256-GCM-encrypted under secrets.key and never returned. */
+        RegistryCredential: {
+            /** Format: uuid */
+            id: string;
+            /** @description Registry host (and port), lower case, e.g. ghcr.io or registry.example.com:5000. No scheme, path or IP literal. */
+            host: string;
+            username: string;
+            created_by: components["schemas"]["UserRef"] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            last_used_at: string | null;
+            /**
+             * @description Outcome of the last pull or test that failed with these credentials.
+             * @enum {string|null}
+             */
+            last_error: "unauthorized" | "unreachable" | "blocked" | null;
+        };
+        CreateRegistryCredentialRequest: {
+            /** @description Registry host (and port), lower case, e.g. ghcr.io or registry.example.com:5000. No scheme, path or IP literal. */
+            host: string;
+            username: string;
+            /** @description Password or access token; write-only. */
+            password: string;
+        };
+        UpdateRegistryCredentialRequest: {
+            username?: string;
+            password?: string;
+        };
+        /** @description Scan an image Warden pulls itself. The reference must be pinned by digest; Warden never pulls by tag. Credentials are the org's for that host, else anonymous. */
+        PullScanRequest: {
+            /** @description registry-host/repository@sha256:<digest>; a manifest list resolves to scan.pull_platform. */
+            image_ref: string;
+            /** @description trivy and/or gitleaks; default both. external is a 422. */
+            tools?: components["schemas"]["Tool"][];
+        };
+        /** @description The tool whose results are imported: one of the named tools, or external.<key> for any other. Never a Warden scanner. */
+        ImportTool: string;
+        /** @description Import another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, …) or a GitLab SAST report (format gitlab-sast). The file goes to object storage like an upload, then POST …/scans/{id}/start queues it. The worker parses it as hostile input: snippets, code flows and fixes are dropped, paths must stay inside the source root, and every kept string (titles, messages, rule text, paths) is screened by Gitleaks in the sandbox; a match drops the string (a path: the result). */
+        ImportScanRequest: {
+            tool: components["schemas"]["ImportTool"];
+            /**
+             * @description Default sarif.
+             * @enum {string}
+             */
+            format?: "sarif" | "gitlab-sast";
+            /** @description Separates runs of one tool, like GitHub's category (CodeQL: one per language, e.g. /language:python/). An import auto-fixes only issues of the same tool and category. Default empty; the CLI defaults it to the first run's automationDetails.id. */
+            category?: string;
+            file_name: string;
+            /** @description At most scan.import_max_mb MiB. */
+            file_size: number;
+            sha256: string;
+        };
+        /** @description An import scan's source. */
+        ScanImport: {
+            tool: components["schemas"]["ImportTool"];
+            category: string;
+            /** @enum {string} */
+            format: "sarif" | "gitlab-sast";
+            /** @description From the report (SARIF tool.driver.version), once processed. */
+            tool_version: string | null;
+            /** @description Results read, once processed. */
+            results: number | null;
+            /** @description Results refused (path outside the source root, over a limit), once processed. */
+            dropped: number | null;
+            /** @description Strings dropped because Gitleaks matched them, once processed. */
+            screened: number | null;
         };
     };
     responses: never;
@@ -4601,10 +4813,12 @@ export interface operations {
                 /** @description Only issues with a CVE in KEV. */
                 kev?: boolean;
                 epss_min?: number;
-                /** @description Issues from source scans, image scans, or history scans (secrets in git history). */
-                source?: "code" | "image" | "history";
+                /** @description Issues from source scans, image scans, history scans (secrets in git history), or imports (tool external). */
+                source?: "code" | "image" | "history" | "import";
                 /** @description Issues from image scans of this repository. History issues are filtered with source=history. */
                 target?: string;
+                /** @description Imported issues of this tool (implies tool=external). */
+                external_tool?: components["schemas"]["ImportTool"];
                 /** @description Title, rule_id or file_path substring, or an issue key such as WEB-41. */
                 q?: string;
                 sort?: "due_at" | "-severity" | "-updated_at" | "-epss";
@@ -7358,10 +7572,12 @@ export interface operations {
                 /** @description Only issues with a CVE in KEV. */
                 kev?: boolean;
                 epss_min?: number;
-                /** @description Issues from source scans, image scans, or history scans (secrets in git history). */
-                source?: "code" | "image" | "history";
+                /** @description Issues from source scans, image scans, history scans (secrets in git history), or imports (tool external). */
+                source?: "code" | "image" | "history" | "import";
                 /** @description Issues from image scans of this repository. History issues are filtered with source=history. */
                 target?: string;
+                /** @description Imported issues of this tool (implies tool=external). */
+                external_tool?: components["schemas"]["ImportTool"];
                 /** @description Title, rule_id or file_path substring, or an issue key such as WEB-41. */
                 q?: string;
                 sort?: "due_at" | "-severity" | "-updated_at" | "-epss";
@@ -8094,6 +8310,560 @@ export interface operations {
             /** @description Not found, or not visible to the caller. */
             404: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createPullScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PullScanRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Scan"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Too many requests (Retry-After says when to retry). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listRegistryCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            items: components["schemas"]["RegistryCredential"][];
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createRegistryCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRegistryCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RegistryCredential"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description CONFLICT: credentials for this host exist, or the org has 20. SECRETS_KEY_MISSING: the server has no secrets.key. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deleteRegistryCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                registry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateRegistryCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                registry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRegistryCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RegistryCredential"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description SECRETS_KEY_MISSING: the server has no secrets.key. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    testRegistryCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                registry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            ok: boolean;
+                            /** @enum {string|null} */
+                            error: "unauthorized" | "unreachable" | "blocked" | null;
+                        };
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Too many requests (Retry-After says when to retry). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error (details are logged, never returned). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createImportScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Non-members get 404. */
+                org_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportScanRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CreatedScan"];
+                        error: null;
+                        meta?: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            /** @description Missing, invalid or expired token (generic message). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden (inactive account, or missing permission). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found, or not visible to the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict (PROJECT_ARCHIVED: the project is archived). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Validation failed or invalid transition. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited; see the Retry-After header. */
+            429: {
+                headers: {
+                    /** @description Seconds until a scan can be created again. */
+                    "Retry-After"?: number;
                     [name: string]: unknown;
                 };
                 content: {

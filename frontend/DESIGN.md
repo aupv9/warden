@@ -1,4 +1,4 @@
-# Warden web UI: design spec (v0.6)
+# Warden web UI: design spec (v0.8)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
@@ -10,7 +10,12 @@ see "v0.4 screens". v0.5 reads the sign-in settings from the server, and its sec
 the API gaps this file listed: CSV export of the issue list, a chain check on the audit log, filters
 fed by the server (org-wide images, the inventory's ecosystems, delivery states) and clearer errors;
 the screen sections below say what changed. v0.6 wave 1 adds the org's own scan rules (Opengrep and
-Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". The images below are screenshots of the app running on its
+Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". v0.7 wave 1 checks that
+an exported CSV is complete before saving it and links a scan's org rules by id; its second wave
+lets Warden pull an image by digest from a registry (with the org's registry credentials, or
+anonymously) and finds secrets in an image's layers; see "v0.7 screens". v0.8 wave 1 shows results
+imported from another tool (CodeQL, GitLab SAST, any SARIF file) that CI uploads with `warden
+import`; see "v0.8 screens: imported results". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -39,7 +44,7 @@ enforces them anyway.
 | # | Screen | Who | Main content |
 |---|---|---|---|
 | 1 | Projects | everyone | Org summary (open issues, Critical + High, past SLA, exceptions to review); a card per project with open issues by severity, your role, the last scan and the number past SLA; an empty state for a project with no scan |
-| 2 | Upload & scans (project) | owner, developer, security lead | Drop zone with the real limits (200 MB zipped, 1 GB unpacked, 100,000 files); scanner checkboxes (project defaults); live progress per scanner (queued, running, succeeded, failed, timeout); scan history with new / fixed / reopened counts, *partial* (a scanner failed) and *rejected* (archive refused, with the reason) |
+| 2 | Upload & scans (project) | owner, developer, security lead | Drop zone with the real limits (200 MB zipped, 1 GB unpacked, 100,000 files); scanner checkboxes (project defaults); live progress per scanner (queued, running, succeeded, failed, timeout); scan history with new / fixed / reopened counts, *partial* (a scanner failed) and *rejected* (archive refused, with the reason). v0.8: imports from CI show as **Imported** with the tool, never as an upload choice |
 | 3 | Issue list | everyone with access | Saved views (Active, Assigned to me, Past SLA, Secrets); search (title, rule, file, `WEB-41`); filter chips for severity, status, project, assignee, scanner, past SLA; grouped by severity; bulk assign; sorted by due date; Export CSV (v0.5). See "Issue triage" |
 | 4 | Issue detail | everyone with access | Opens beside the list on wide screens, as a page otherwise. Severity, status, SLA due date; status stepper; location with the masked snippet; what was found; how to fix; comments; details (assignee, rule, CWE/CVE, package and fixed version, first and last scan seen, number of scans it appeared in); activity from `issue_event`. Actions: start progress, reassign, request exception |
 | 5 | Exceptions | security lead decides; others see their own | Tabs: pending, approved, rejected, expiring soon. A queue on the left and a review panel on the right: reason, "accepted until" (≤ 180 days), decision note (required to reject), approve or reject |
@@ -52,9 +57,10 @@ enforces them anyway.
 | 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
 | 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook, filtered by state (v0.5) |
 | 14 | Scan rules (v0.6) | everyone reads (`view_results`); org admins and security leads edit (`manage_rules`) | Under Organization in the navigation. The org's own Opengrep and Gitleaks rules: a list per scanner with an on/off switch; a rule page with a plain editor, a live check with problems at their lines, the canonical body, project scope, a snippet test and delete; its versions with a line diff. Issues from these rules carry an Org rule tag and card; the scan panel lists the rules a scan ran |
+| 15 | Registries (v0.7) | org admins and security leads (`manage_registries`); hidden from everyone else | Org settings › Registries. The credentials Warden pulls images with, one per host: list (host, username, last used, last error), add, change the username or password, test, delete. New scan gains "Image from a registry"; issue pages gain "Found in image layer" |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation, and members don't see
-"Integrations".
+"Integrations" or the Registries card in Settings.
 States, the upload flow, dialogs and the phone layout are specified below the screenshots.
 
 ## Screens in the app
@@ -236,6 +242,13 @@ navigation items or the bell; 01 and 03 are current.
   rest." 429: the usual rate-limit toast with `Retry-After` ("Try again in 2 minutes"); 422: "Warden
   couldn't export with these filters. Clear them and try again."; other errors as in "Error
   messages". How the file is fetched and saved: see "Security rules for the UI".
+  **v0.7: complete or not saved.** If the server fails after the first row, the response just
+  ends (over HTTP/2 without an error), so before saving the page checks the file's end line: a
+  complete export ends with exactly `#warden:end rows=<N>`, N being its data rows. When that line
+  is missing or N doesn't match the rows, nothing is saved and an error toast says "The export
+  was cut off. Nothing was saved; try again." (the button is back to "Export CSV" for the retry).
+  A file the server cut at 50,000 rows still has its end line, so it is saved with the warning
+  above. The end line stays in the saved file; a spreadsheet shows it as a last row.
 
 ## v0.2 screens
 
@@ -426,8 +439,9 @@ takes the plain `.tar` from `docker save` (`.tar.gz` and `.zip` are refused) up 
 `limits.image_upload_max_mb` (default 2 GB). "Image repository" is required (the contract
 pattern: lowercase, no tag); pasting `repo:tag` moves the full reference to "Image reference
 (optional)" and announces it. The card shows copyable `docker save -o app.tar IMAGE` and
-`warden scan --image IMAGE`, and says that Warden pulls from no registry, keeps no credentials
-and doesn't scan secrets in images. The scanner is fixed to Trivy; the button reads "Scan image".
+`warden scan --image IMAGE`. The scanner is fixed to Trivy; the button reads "Scan image". (v0.7
+wave 2 changes this: image scans offer Trivy and Gitleaks, and the card points at "Image from a
+registry"; see "v0.7 screens".)
 History rows and the scan panel show an **Image** tag with the image reference (or target); the
 panel adds "Issues tracked under <target>", and "View issues" opens the issue list with
 `?target=`. `IMAGE_*` errors count as Rejected.
@@ -701,7 +715,9 @@ key" note; `?mock_role=member` hides the page.
 
 Every new endpoint has a mock route. The CSV export applies the list's filters and the server's
 apostrophe rule; `?mock_export=truncated` marks it cut at 50,000 rows, `?mock_export=rate_limited`
-answers 429 with `Retry-After: 120`, `?mock_export=invalid` a 422. "Verify chain" passes, and
+answers 429 with `Retry-After: 120`, `?mock_export=invalid` a 422 (v0.7: the export ends with its
+end line, `?mock_export=cut` drops it with the last row, `?mock_export=miscount` counts one row
+too many; both show "The export was cut off"). "Verify chain" passes, and
 `?mock_audit=broken` names a changed entry on the first page of the log; it is recorded as
 `audit.verified`, refused for members and limited to 10 an hour. Audit entry ids are numbers, as
 in the contract. PAY has an image scan (`ghcr.io/acme/payments`), so the org-wide Image filter has
@@ -864,10 +880,14 @@ removed then added.
   the rule id, no link, and "The rule was deleted, so no scan runs it any more and none will fix
   this issue. It stays open until someone closes it."
 - **Scan panel:** a scan that ran org rules (`Scan.org_rules`) lists them after the counts: "Org
-  rules · 3", then per rule its name (a link when a current rule has that scanner and rule id),
-  `org.<key>`, the scanner and "version 2 (now 4)" when the rule changed since; a rule that no
-  longer exists reads "Deleted rule org.no-pickle-loads · Opengrep · version 2". Under them:
-  "Issues from an org rule are fixed only by scans that run it."
+  rules · 3", then per rule its name (a link to the rule that ran while it exists), `org.<key>`,
+  the scanner and "version 2 (now 4)" when the rule changed since; a rule that no longer exists
+  reads "Deleted rule org.no-pickle-loads · Opengrep · version 2". Under them: "Issues from an
+  org rule are fixed only by scans that run it." v0.7: the rule that ran is found by
+  `ScanRuleRef.scan_rule_id`, so a rule deleted and added again with the same key reads as the
+  deleted rule and never links to the new one (whose versions are not the ones that ran). Only a
+  scan recorded before v0.7 (`scan_rule_id` null) falls back to the current rule with that
+  scanner and rule id (`ranRules` in `src/lib/scanRules.ts`).
 
 ### Security rules (Scan rules)
 
@@ -904,6 +924,235 @@ an hour answers 429. The mock keeps the outcome, never the snippet. Two finished
 (2 lines found, and a timeout). WEB's latest scan ran three rules (one at an older version); a PAY
 scan ran `org.no-pickle-loads`, since deleted, whose issue shows "a deleted rule". New scans run
 the enabled rules in their project's scope. `?mock_error=RULE_INVALID` makes the next write fail.
+v0.7: every scan's rules carry `scan_rule_id`, except WEB's `storefront-2.2.zip` scan, recorded
+"before v0.7", whose rules are found by scanner and rule id.
+
+## v0.7 screens
+
+v0.7 wave 2 lets Warden **pull an image itself**, by digest only, from a registry, and runs
+**Gitleaks on an image's layers** next to Trivy (uploaded `.tar` or pulled). An org's
+**registry credentials** say how Warden signs in to a host; without them it pulls anonymously.
+
+### Registries
+
+`/orgs/:org/settings/registries`, reached from a **Registries** card in Org settings ("Manage
+registries") and the command palette. Org admins and security leads only (`manage_registries`):
+others see neither the card nor the palette entry, and the page shows the 403 state without
+calling the API if they open the URL.
+
+- **Intro:** "Credentials Warden signs in with to pull images for scans of <org> (New scan ›
+  Image from a registry). Warden pulls only by digest, and only from the hosts listed here or
+  anonymously. Passwords and tokens are stored encrypted and never shown again; use a token that
+  can only read images."
+- **List:** one row per host, sorted by host: the host (mono, bold, text, never a link), "as
+  <username>", "Used 2 h ago" / "Not used yet" (the full time in the tooltip) and who added it;
+  a red **Refused** / **Unreachable** / **Blocked address** mark from `last_error`, with "Last
+  attempt: <words>" under it (`unauthorized` "The registry refused these credentials. Check the
+  username and the password or token (a token needs read access to packages), then change them
+  here.", `unreachable` "Warden couldn't reach the registry. Check the host name and port, and
+  that the registry answers on https.", `blocked` "The host resolves to a private or internal
+  address, so Warden doesn't connect to it."; anything else "The last attempt with these
+  credentials failed."). Buttons **Test**, **Change**, **Delete** (with the host in their
+  accessible names). A footer "n of 20"; at 20, Add is disabled with the reason.
+- **Test:** `POST …/registries/{id}/test`; the result goes on the row in a polite live region,
+  "Test: Warden signed in to ghcr.io with these credentials." or the error words above, and the
+  list refreshes (the test sets `last_error`). 429 (10 per credential per hour) is a toast:
+  "These credentials were tested 10 times in the last hour, the most Warden allows. Try again
+  later."
+- **Add / change dialog:** host (add only; lower-cased, checked like the contract: a dot, an
+  optional port, no `https://`, path, user info or IP literal, each with what to do instead;
+  on change it is shown as text, "can't be changed; delete these and add new ones for another
+  host"), username, and **Password or access token**: `type="password"`,
+  `autocomplete="new-password"`, never prefilled; on change "New password or token (optional)",
+  empty keeps the stored one, and only changed fields are sent. A note says Warden uses them only
+  to pull by digest from that host, and the audit log records host and username, never the
+  password. Errors: `SECRETS_KEY_MISSING` and `CONFLICT` (see "API error.code"); field errors under
+  their field.
+- **Delete:** confirm dialog: "Delete the credentials for <host> (<username>)? Scans then pull
+  images from <host> anonymously, so private images there fail with “registry refused access”.
+  This can't be undone."
+- **Empty state:** "No registry credentials yet". "Warden pulls images only by digest
+  (registry/repository@sha256:…), never by tag. It signs in only to the hosts listed here; any
+  other image is pulled anonymously, so a private image needs credentials for its host first."
+  Button "Add credentials".
+
+### New scan: Image from a registry
+
+The New scan switch has three buttons: **Source code / Container image / Image from a
+registry** (`aria-pressed`; `?new=image|pull` opens the card on that mode).
+
+- **Image reference** (mono, `autocomplete="off"`), hint "Pin by digest: registry/repo@sha256:….
+  Warden never pulls by tag, because a tag can point to another image tomorrow." It is checked
+  before anything is sent, with the contract's pattern last (`PULL_REF_RE`, compared with
+  `openapi.json` in `src/lib/registries.test.ts`) and the common mistakes first, each saying what
+  to do: a tag or no digest ("Pin the image by digest…"), a tag and a digest ("Leave out the
+  tag…"), a scheme, upper case, a digest that isn't `sha256:` and 64 hex, and a first part that
+  isn't a host ("Start with the registry host, such as docker.io/library/alpine@sha256:…"; the
+  server's pattern would read `library` as a host).
+- A copyable `docker inspect --format '{{index .RepoDigests 0}}' IMAGE` prints the digest.
+- **Scanners (for images):** Trivy (packages) and Gitleaks (secrets in every layer), both on.
+- Note: Warden pulls the image itself and signs in with the org's credentials for its host if
+  an org admin or security lead added them under Registries (a link for those who can open it),
+  otherwise anonymously; internal addresses are refused. "Nothing is uploaded from this browser.
+  The image is deleted as soon as the scan ends." Button **Pull and scan**.
+- 429 shows the hourly-limit banner ("Nothing was pulled."); a 422 on `image_ref` goes under the
+  field; other errors in a banner in the card.
+- **Container image** uploads now offer the same Trivy / Gitleaks choice, and say "Gitleaks reads
+  every layer for secrets, also files a later layer deletes. To scan an image without saving it,
+  choose Image from a registry."
+- **Scans tab:** a pulled scan (`Scan.pulled`) shows no file name: history rows show the Image tag,
+  the digest reference and "Pulled from ghcr.io" (the host of the reference); the panel's first
+  line is "Pulled from ghcr.io · 191 MB · …". A `PULL_*` failure reads "Pull failed" with the
+  words of "Scan error_code", "Nothing was scanned and no issues changed.", and **Pull again**,
+  which opens Image from a registry with the same reference.
+- **CI setup:** no snippet. The CLI's `--image-ref` only labels an uploaded `--image-tar`; it
+  doesn't ask the server to pull, so the UI doesn't offer a pull command for CI.
+
+### Issue page: Found in image layer
+
+An issue with `Issue.image_layer` (a secret Gitleaks found in a pulled or uploaded image) opens
+with a card in the warning colours, after "Found in git history":
+
+- Title **"Found in image layer 4 (3f2a9c41b7d0)"**: the index (0 is the base layer) and the
+  digest's first 12 hex characters. Then "Layer 4, counting the base layer as 0" (or "The base
+  layer") · the file and line · in the image repository.
+- "Digest" with the short form shown, the full `sha256:…` in the accessible name and a **Copy
+  digest** button. Never a link; a digest that isn't `sha256:` and 64 hex is shown whole, as text.
+- When `count > 1`: "It is also in n later layers. This is the lowest one."
+- In bold: **"Rotate this secret. Deleting the file in a later layer doesn't remove it from the
+  image: every layer ships with it, and anyone who pulls the image can read this one."** Then:
+  rebuild the image so no layer ever holds it (a build secret mount, or a multi-stage build), and
+  push it; the issue moves to Fixed when a scan of this image no longer finds it in any layer.
+  How to fix falls back to the same sentence. The snippet is the masked one.
+
+### Security rules (v0.7)
+
+- The registry password is typed into a password field, sent once and never read back. The form
+  drops it from its state as soon as the request is built (`credentialFormReducer`); the request
+  body reaches the mutation through a ref, never as mutation variables, so it is never in TanStack
+  Query's caches, a query key, the URL, browser storage or the console
+  (`src/api/registries.test.ts`). After a failed save the field is empty and its hint says to
+  enter it again.
+- Hosts, usernames, image references and layer digests are text, never links or markup
+  (`src/test/registries.test.tsx` renders hostile ones).
+- The UI hides what `manage_registries` doesn't allow; the API enforces it anyway.
+
+### Mock mode (v0.7 wave 2)
+
+Acme Engineering has three credentials: `ghcr.io` (used 2.5 h ago), `registry.acme.example:5000`
+(refused: `last_error: unauthorized`) and `harbor.acme.example` (never used); Acme Labs has none.
+`?mock_registries=empty` empties the list; `?mock_registries=unavailable` answers
+`SECRETS_KEY_MISSING` on add and change. The mock keeps no password. Test signs in to every host
+except the refused one, hosts under `.internal` / `.local` (blocked) and `.invalid`
+(unreachable); the 11th test of a credential in an hour answers 429. WEB has a pulled scan of
+`ghcr.io/acme/api@sha256:…` (Trivy and Gitleaks) whose two Gitleaks issues are in image layers
+(an AWS key in layer 4 of 2 layers, a Slack token in the base layer); PAY has one failed pull per
+`PULL_*` code. A new pull fails a few seconds after it is queued when the repository name has
+`private` (or the host's credentials are refused), `missing`, `huge`, `arm` or `flaky`, or the
+host is under `.internal`; anything else runs like an uploaded image.
+
+## v0.8 screens: imported results
+
+v0.8 wave 1 imports another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, Snyk Code,
+SonarQube, any other as `external.<name>`) or a GitLab SAST report. Only CI makes an import:
+`warden import --tool <tool> [--format gitlab-sast] [--category <c>] <file>` creates a scan of kind
+`import` (tools `["external"]`, target `(import) <tool>[ <category>]`), uploads the file and
+starts it, like `warden scan`. The worker treats the report as hostile input: it drops snippets,
+code flows and fixes, keeps paths inside the source root, and screens every text it keeps with
+Gitleaks before storing it. Its issues have tool `external` and `external_tool` naming the tool;
+an import fixes only issues of its own tool and category, never a Warden scanner's.
+
+Warden's own scanners and imported tools stay apart everywhere: separate filters, a tag with a
+dashed border on imported issues (the word says it; the border is a second cue), and the imported
+tool's name instead of "external". Every tool name, category, version and text from a report is
+rendered as text, never as markup or a link (`src/test/imports.test.tsx` renders hostile ones).
+
+### Scans tab
+
+- **New scan:** no import button. The card stays Source code / Container image / Image from a
+  registry; the note under it, which already says history scans come from CI, adds "Results of
+  another tool (CodeQL, GitLab SAST, any SARIF file) are imported from CI with `warden import`"
+  and links to the CI setup card. A browser has nothing to import: the report is made in CI.
+- **History rows:** the file name (`python.sarif`, `gl-sast-report.json`) and an **Imported** tag
+  with "CodeQL · /language:python/" (the tool's name and the category, when there is one).
+- **Panel:** the first line as for an upload (file, size, time, who). Then the **Imported** tag
+  with tool and category, the format ("SARIF" or "GitLab SAST report") and "version 2.23.1"
+  (`tool_version`, when the report had one). Once processed: **"14 results read · 1 dropped · 2
+  screened by Gitleaks"**, explained under it: "Dropped: results Warden refused (a path outside
+  the source root, or over a limit). Screened: strings left out because they looked like secrets;
+  Gitleaks checked every text and path from the report before anything was stored." Then "An
+  import fixes only issues of its own tool and category, never those Warden's scanners found."
+  Before processing the counts are left out. The scanner table is headed **Tool** and its one
+  row names the imported tool ("CodeQL"), never `external`. "View issues" opens the issue list
+  with `?source=import&external_tool=<tool>`.
+- **Failures:** `IMPORT_INVALID` and `IMPORT_TOO_LARGE` read **Report rejected**;
+  `IMPORT_SCREEN_FAILED` reads **Import failed** (see "Scan error_code"). Either way "Imports run
+  from CI with warden import; run the job again once it is fixed." There is no "Upload a new …".
+  A cancelled import reads "Import cancelled".
+
+### Issue list
+
+- An imported issue carries **Imported · CodeQL** beside its title (from `external_tool`, on list
+  rows and the issue alike). Its target is never shown as an image;
+  the Source column and the compact rows name the tool ("CodeQL").
+- **Source** gains **Imported** (`source=import`).
+- **Imported from** (`external_tool=<tool>`) is a filter of its own, apart from **Scanner**, which
+  keeps Warden's four scanners only. In "+ Filter" it sits under a line after the others; its
+  menu says "Results of other tools, imported from CI with warden import.", and Scanner's says
+  "Warden's own scanners. Results of other tools are under Imported from." Its choices are the
+  tools of the import targets in scope (a project's `GET …/targets`, else
+  `GET /orgs/{org}/targets?kind=import`), by name; it is offered only when there are some, and a
+  tool already in the URL stays listed. Picking one clears Scanner, and the other way round (an
+  issue is either). On a phone both are selects in the Filters sheet. The URL value must match
+  the contract's ImportTool pattern, or it is dropped.
+- **Export CSV** takes both filters like every other; an imported issue's tool cell reads
+  `external:<tool>` (`external:codeql`), as the server writes it.
+
+### Issue page
+
+- **Imported · CodeQL** next to severity and status.
+- An **Imported from CodeQL** card, after the Org rule card: "Found by CodeQL (category
+  /language:python/) and imported from its report with `warden import`. Warden didn't run this
+  tool." and, small: "It moves to Fixed when a later import of the same tool and category no
+  longer has it; Warden's own scans never fix it. The report's texts were screened by Gitleaks
+  before they were stored, and its code snippets were left out."
+- **Where** shows the file and line as for any issue, and no snippet section: "Imported results
+  carry no code. Open the file at this line in your repository." (never "No code snippet for this
+  finding").
+- **Details:** "Imported from" with the tool and the category instead of "Scanner"; no Image row.
+  How to fix falls back to "The report gave no fix advice for this rule." (a rule text that
+  Gitleaks matched was dropped, and the title is then the rule id).
+
+### Auto-assign rules and CI setup
+
+- The rule editor's Scanner select adds **Imported (any tool)** (`match.tool: external`), so a rule
+  can route imported issues, and one set through the API isn't widened to "Any" when edited. Its
+  sentence reads "Imported from another tool → …".
+- **CI setup** gains a third switch: **Import CodeQL results** on GitHub Actions, **Import GitLab
+  SAST results** on GitLab CI. GitHub: a `codeql` job with a language matrix runs
+  `github/codeql-action/init` and `analyze` (`category: "/language:<lang>/"`, `output:
+  codeql-results`, `upload: never`; both pinned by commit SHA by the user, as the comment says),
+  then `warden import --tool codeql --category "/language:<lang>/" … codeql-results/<lang>.sarif`
+  with the same `--url`, `--org`, `--project`, `--fail-on` (the gate applies to an import as to a
+  scan) and `WARDEN_TOKEN` as the scan job, the file last; the category is explicit, though the
+  CLI would take it from the SARIF's `automationDetails.id` without it; one category per
+  language, so each import fixes only its own language's issues. GitLab: `include:` of
+  `Jobs/SAST.gitlab-ci.yml` and a `warden-import-sast` job (`needs: [semgrep-sast]`) running
+  `warden import --tool gitlab-sast --format gitlab-sast … gl-sast-report.json`. The note names
+  the other tools (`--tool semgrep`, `snyk-code`, `sonarqube`, `external.<name>`). With history on,
+  the import jobs skip scheduled runs. No snippet contains a token (`src/lib/imports.test.ts`).
+
+### Mock mode (v0.8 wave 1)
+
+WEB has a CodeQL import from GitHub Actions (`/language:python/`, SARIF, version 2.23.1, 14 results
+read, 1 dropped, 2 screened), a GitLab SAST import (no category, 1 result) and an older Semgrep
+import rejected with `IMPORT_INVALID`. Three imported issues: a High CodeQL path injection, a
+Medium CodeQL issue whose rule text was screened out (its title is the rule id, no fix text) and a
+Medium GitLab SAST SQL injection; none has a snippet. `POST …/scans/import` checks the contract's
+patterns (a Warden scanner as the tool is a 422) and the import finishes a few seconds after it is
+started; name the file `…invalid…`, `…toolarge…` or `…screenfail…` to see each `IMPORT_*` code.
+`external` as a chosen scan tool, `kind: import` on `POST …/scans`, and a malformed
+`external_tool` or `source` on the issue list are 422s.
 
 ## Audit log
 
@@ -1014,10 +1263,13 @@ people can search for it or quote it. Unknown codes fall back to the last row of
 
 ### Scan `error_code`
 
-A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*` or `CHECKSUM_MISMATCH` code is shown as
-**Rejected** (the archive was refused before any scanner ran); any other failed scan is
-**Failed**. There is no `rejected` status in the API. History rows use the short text; the scan
-card uses the full text.
+A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*`, `IMPORT_INVALID`, `IMPORT_TOO_LARGE` or
+`CHECKSUM_MISMATCH` code is shown as **Rejected** (the archive or report was refused before any
+scanner ran); any other failed scan is **Failed** (v0.8: `IMPORT_SCREEN_FAILED` too, and the card's
+title reads "Import failed"). There is no `rejected` status in the API. History rows use the short text; the scan
+card uses the full text. v0.7: a `PULL_*` code (the worker couldn't pull the image) is **Failed**,
+and the scan card's title reads "Pull failed": nothing was refused, the image never arrived. The
+server's details (registry answers, addresses) are never shown.
 
 | Code | Short (history) | Full message |
 |---|---|---|
@@ -1038,6 +1290,15 @@ card uses the full text.
 | `ALL_SCANNERS_FAILED` | every scanner failed | Every scanner failed, so there are no results. Each scanner's error is listed below. If it happens again, tell your operator. |
 | `TIMEOUT` | took over 30 min | The scan took longer than the 30-minute limit and was stopped. |
 | `UPLOAD_ABANDONED` (v0.5, on a cancelled scan) | upload never finished | The upload didn't finish within an hour, so Warden cancelled the scan. Nothing was scanned and no issues changed. Upload the file again. |
+| `PULL_UNAUTHORIZED` (v0.7) | registry refused access | The registry refused to give Warden this image. If the image is private, an org admin or security lead must add credentials for its host under Settings › Registries, or fix the ones there (Test shows whether they work). Then scan again. |
+| `PULL_NOT_FOUND` (v0.7) | image not found | The registry has no image with this digest. Check the repository and the sha256 digest (`docker buildx imagetools inspect IMAGE` prints it), then scan again. |
+| `PULL_TOO_LARGE` (v0.7) | image too large to pull | The image is larger than this server pulls. Scan a smaller image, such as the final stage of a multi-stage build, or ask your operator about the limit. |
+| `PULL_BLOCKED` (v0.7) | registry address blocked | Warden doesn't pull from this registry: its host resolves to a private or internal address, or it redirected there. Use the registry's public host, or ask your operator. |
+| `PULL_PLATFORM` (v0.7) | no image for this platform | The digest names images for other platforms only, not the one this server scans (linux/amd64 unless your operator changed it). Pin the digest of that platform's image, or of a list that includes it. |
+| `PULL_FAILED` (v0.7) | pull failed | Warden couldn't pull the image: the registry didn't answer, or sent something Warden can't read. Check that the registry is up, then scan again. If it keeps happening, tell your operator. |
+| `IMPORT_INVALID` (v0.8) | not a SARIF or GitLab SAST report | The file isn't a SARIF 2.1.0 file or a GitLab SAST report Warden can read. Import the file the tool wrote as it is, and pass `--format gitlab-sast` for a GitLab report. |
+| `IMPORT_TOO_LARGE` (v0.8) | report too large | The report has more than Warden imports at once (10 runs, 50,000 results or 5,000 rules). Import each run or language separately, with its own `--category`. |
+| `IMPORT_SCREEN_FAILED` (v0.8) | secret check couldn't run | Gitleaks couldn't check the report's texts for secrets, so nothing was imported and no issues changed. Run the CI job again; if it keeps happening, tell your operator. |
 | anything else | failed | The scan failed (`<code>`). Tell your operator; the worker log has the details. |
 
 The numbers are the server defaults (`WARDEN_SCAN__UPLOAD_MAX_MB`, `__UNZIP_MAX_MB`,
@@ -1069,6 +1330,8 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 | `MFA_NOT_ENABLED` (409) | Banner in the sign-in policy form | "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role." |
 | `WEBHOOK_LIMIT` (409, v0.5) | Banner in the add-webhook dialog | "This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one." |
 | `SECRETS_KEY_MISSING` (409, v0.5) | Banner in the add-webhook dialog | "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY." |
+| `SECRETS_KEY_MISSING` (409, v0.7, registries) | Banner in the add / change credentials dialog | "Registry credentials are turned off on this server: it has no key to encrypt them. Ask your operator to set WARDEN_SECRETS__KEY." |
+| `CONFLICT` (409, v0.7, add credentials) | Banner in the add credentials dialog | "This org already has credentials for this host. Change those instead of adding new ones." or, at 20, "This org already has credentials for 20 hosts, the most Warden allows. Delete one you no longer use, then add this one." |
 | `RULE_INVALID` (422, v0.6) | Rule editor: each of `metadata.problems` at its line (gutter mark and the list under the editor), and a banner; the snippet test dialog lists them | "Warden can't use this rule. Fix the problems shown at their lines, then try again." The problems are the server's words, shown as text. |
 
 ## Upload flow
@@ -1205,8 +1468,16 @@ Below 800 px (screenshots in section 12):
   reach history, logs and `Referer`), same-origin and without cookies, refreshing the token once
   on 401 like every API call. The body is taken as a Blob, re-typed `application/octet-stream` so
   no browser renders it in place, and saved through a temporary hidden `<a download>` on a `blob:`
-  URL that is revoked a minute later. The page never reads, parses or renders the CSV (its cells
-  come from scanned code and other users). The file name comes from `Content-Disposition`, reduced
+  URL that is revoked a minute later. The page never parses or renders the CSV (its cells come
+  from scanned code and other users). v0.7: the completeness check reads as text only the last
+  256 bytes of the Blob (`blob.slice`), to find the end line, and counts newline bytes over the
+  whole Blob through `blob.stream()` without decoding it or building strings; data rows = line
+  breaks minus the header's and the end line's. That count is right because a cell never holds a
+  raw line break (the server turns control characters, CR and LF included, into spaces), and no
+  row can pass for the end line because each starts with the issue key. CRLF and LF both count;
+  blank lines after the end line are ignored; the end line must be a whole line and exactly that
+  text. An incomplete file is never handed to the browser (`src/lib/issueExport.test.ts`: complete,
+  cut, miscounted, cut at 50,000 with its end line, CRLF, and no CSV text in the DOM or a toast). The file name comes from `Content-Disposition`, reduced
   to its last path segment, letters, digits, `.`, `-` and `_`, no leading dot, at most 120
   characters and ending in `.csv`, else `warden-issues-<date>.csv` (`src/lib/issueExport.test.ts`).
   An error body is read only as the JSON envelope; anything else (a proxy's HTML page) is neither
@@ -1297,11 +1568,12 @@ targets for the issue list's Image filter; the inventory's ecosystem list; `WEBH
 chain check; CSV export of the issue list. (In v0.3, closed in v0.4: license issues have
 `license_category`, and `GET …/targets` lists a project's image targets.)
 
+Closed in v0.7 wave 1: `ScanRuleRef.scan_rule_id`, so the scan panel links to the rule that ran
+and a rule deleted and added again with the same key no longer links to the new one (see "Issue
+page and scan panel").
+
 Still in the design but not in the API contract:
 
-- v0.6: `ScanRuleRef` (in `Scan.org_rules`) has no rule UUID, so the scan panel finds the current
-  rule by scanner and rule id; a rule deleted and added again with the same key links to the new
-  one. A `scan_rule_id` on `ScanRuleRef` would make the link exact.
 - v0.6: there is no list of a user's snippet tests (only `GET …/tests/{id}`), so a test whose
   dialog was closed can't be found again; the UI doesn't need it, as results are dropped with the
   dialog.
@@ -1319,9 +1591,8 @@ Still in the design but not in the API contract:
   and version, so its tab leads with them.)
 - An issue created or reopened by an advisory without a scan has no event type of its own; the UI
   relies on the server's note on the `created` (or `status_changed`) event.
-- The CSV export doesn't say how many rows it holds (only whether it was cut at 50,000), and the
-  page doesn't read the file, so the success toast names the file but not the count. A header
-  such as `X-Warden-Rows` would let it say "1,204 issues exported".
+- The success toast names the exported file but not its row count. Since v0.7 the end line's N
+  is checked against the rows, so the toast could say "1,204 issues exported"; not decided yet.
 
 ## Not in v0.4
 

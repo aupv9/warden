@@ -190,7 +190,7 @@ func TestClientRefusesInternalAddresses(t *testing.T) {
 		t.Fatalf("receiver reached %d times", r.hits.Load())
 	}
 	// The dialer's own check, should the resolver step ever be bypassed.
-	if _, err := c.dial(context.Background(), "tcp", "127.0.0.1:"+port); !errors.Is(err, errBlocked) {
+	if _, err := (&Dialer{}).DialContext(context.Background(), "tcp", "127.0.0.1:"+port); !errors.Is(err, ErrRefused) {
 		t.Fatal(err)
 	}
 }

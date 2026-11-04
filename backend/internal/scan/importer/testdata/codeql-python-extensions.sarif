@@ -1,0 +1,607 @@
+{
+ "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "CodeQL",
+     "organization": "GitHub",
+     "semanticVersion": "2.17.4",
+     "rules": []
+    },
+    "extensions": [
+     {
+      "name": "codeql/python-queries",
+      "semanticVersion": "1.0.0+a7bbcf3eb852c333fa007aa27fccbfc5ea43a940",
+      "rules": [
+       {
+        "id": "py/path-injection",
+        "name": "py/path-injection",
+        "shortDescription": {
+         "text": "Uncontrolled data used in path expression"
+        },
+        "fullDescription": {
+         "text": "Accessing paths influenced by users can allow an attacker to access unexpected resources."
+        },
+        "defaultConfiguration": {
+         "enabled": true,
+         "level": "error"
+        },
+        "help": {
+         "text": "# Uncontrolled data used in path expression\nAccessing files using paths constructed from user-controlled data can allow an attacker to access unexpected resources. This can result in sensitive information being revealed or deleted, or an attacker being able to influence behavior by modifying unexpected files.\n\n\n## Recommendation\nValidate user input before using it to construct a file path, either using an off-the-shelf library function like `werkzeug.utils.secure_filename`, or by performing custom validation.\n\nIdeally, follow these rules:\n\n* Do not allow more than a single \".\" character.\n* Do not allow directory separators such as \"/\" or \"\\\\\" (depending on the file system).\n* Do not rely on "
+        },
+        "properties": {
+         "tags": [
+          "correctness",
+          "security",
+          "external/cwe/cwe-022",
+          "external/cwe/cwe-023",
+          "external/cwe/cwe-036",
+          "external/cwe/cwe-073",
+          "external/cwe/cwe-099"
+         ],
+         "kind": "path-problem",
+         "precision": "high",
+         "security-severity": "7.5"
+        }
+       },
+       {
+        "id": "py/command-line-injection",
+        "name": "py/command-line-injection",
+        "shortDescription": {
+         "text": "Uncontrolled command line"
+        },
+        "fullDescription": {
+         "text": "Using externally controlled strings in a command line may allow a malicious user to change the meaning of the command."
+        },
+        "defaultConfiguration": {
+         "enabled": true,
+         "level": "error"
+        },
+        "help": {
+         "text": "# Uncontrolled command line\nCode that passes user input directly to `exec`, `eval`, or some other library routine that executes a command, allows the user to execute malicious code.\n\n\n## Recommendation\nIf possible, use hard-coded string literals to specify the command to run or the library to load. Instead of passing the user input directly to the process or library function, examine the user input and then choose among hard-coded string literals.\n\nIf the applicable libraries or commands cannot be determined at compile time, then add code to verify that the user input string is safe before using it.\n\n\n## Example\nThe following example shows two functions. The first is unsafe as it takes a she"
+        },
+        "properties": {
+         "tags": [
+          "correctness",
+          "security",
+          "external/cwe/cwe-078",
+          "external/cwe/cwe-088"
+         ],
+         "kind": "path-problem",
+         "precision": "high",
+         "security-severity": "9.8"
+        }
+       }
+      ],
+      "locations": [
+       {
+        "uri": "file:///opt/hostedtoolcache/CodeQL/2.17.4/x64/codeql/qlpacks/codeql/python-queries/1.0.0/",
+        "description": {
+         "text": "The QL pack root directory."
+        }
+       },
+       {
+        "uri": "file:///opt/hostedtoolcache/CodeQL/2.17.4/x64/codeql/qlpacks/codeql/python-queries/1.0.0/qlpack.yml",
+        "description": {
+         "text": "The QL pack definition file."
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "results": [
+    {
+     "ruleId": "py/path-injection",
+     "rule": {
+      "id": "py/path-injection",
+      "index": 5,
+      "toolComponent": {
+       "index": 0
+      }
+     },
+     "message": {
+      "text": "This path depends on a [user-provided value](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "dsvpwa/handlers.py",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 116,
+         "startColumn": 37,
+         "endColumn": 56
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "a886445d8048d84b:1",
+      "primaryLocationStartColumnFingerprint": "20"
+     },
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 196,
+              "startColumn": 16,
+              "endColumn": 20
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 197,
+              "startColumn": 9,
+              "endColumn": 13
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 198,
+              "startColumn": 9,
+              "endColumn": 13
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 211,
+              "startColumn": 26,
+              "endColumn": 35
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Attribute"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 111,
+              "startColumn": 20,
+              "endColumn": 24
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for path"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 112,
+              "startColumn": 9,
+              "endColumn": 13
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for path"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 116,
+              "startColumn": 37,
+              "endColumn": 56
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Attribute()"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 196,
+              "startColumn": 16,
+              "endColumn": 20
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 197,
+              "startColumn": 9,
+              "endColumn": 13
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 198,
+              "startColumn": 21,
+              "endColumn": 47
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Subscript"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 198,
+              "startColumn": 9,
+              "endColumn": 13
+             }
+            },
+            "message": {
+             "text": "[post] ControlFlowNode for self [Attribute path]"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 211,
+              "startColumn": 26,
+              "endColumn": 30
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self [Attribute path]"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 211,
+              "startColumn": 26,
+              "endColumn": 35
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Attribute"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 111,
+              "startColumn": 20,
+              "endColumn": 24
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for path"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 112,
+              "startColumn": 9,
+              "endColumn": 13
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for path"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 116,
+              "startColumn": 37,
+              "endColumn": 56
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Attribute()"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "relatedLocations": [
+      {
+       "id": 1,
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "dsvpwa/handlers.py",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 196,
+         "startColumn": 16,
+         "endColumn": 20
+        }
+       },
+       "message": {
+        "text": "user-provided value"
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "py/command-line-injection",
+     "rule": {
+      "id": "py/command-line-injection",
+      "index": 6,
+      "toolComponent": {
+       "index": 0
+      }
+     },
+     "message": {
+      "text": "This command line depends on a [user-provided value](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "dsvpwa/handlers.py",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 184,
+         "startColumn": 17,
+         "endColumn": 30
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "a392bb9657eb08d2:1",
+      "primaryLocationStartColumnFingerprint": "0"
+     },
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 177,
+              "startColumn": 16,
+              "endColumn": 20
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for self"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "dsvpwa/handlers.py",
+              "uriBaseId": "%SRCROOT%",
+              "index": 0
+             },
+             "region": {
+              "startLine": 184,
+              "startColumn": 17,
+              "endColumn": 30
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Subscript"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "relatedLocations": [
+      {
+       "id": 1,
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "dsvpwa/handlers.py",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 177,
+         "startColumn": 16,
+         "endColumn": 20
+        }
+       },
+       "message": {
+        "text": "user-provided value"
+       }
+      }
+     ]
+    }
+   ],
+   "columnKind": "unicodeCodePoints",
+   "properties": {
+    "semmle.formatSpecifier": "sarif-latest",
+    "metricResults": [
+     {
+      "rule": {
+       "id": "py/summary/lines-of-code",
+       "index": 36,
+       "toolComponent": {
+        "index": 0
+       }
+      },
+      "ruleId": "py/summary/lines-of-code",
+      "value": 116930
+     },
+     {
+      "rule": {
+       "id": "py/summary/lines-of-user-code",
+       "index": 37,
+       "toolComponent": {
+        "index": 0
+       }
+      },
+      "ruleId": "py/summary/lines-of-user-code",
+      "value": 593,
+      "baseline": 709
+     }
+    ],
+    "codeqlConfigSummary": {
+     "disableDefaultQueries": false
+    }
+   }
+  }
+ ]
+}

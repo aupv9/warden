@@ -23,6 +23,7 @@ import type {
   OrgRole,
   Project,
   ProjectMember,
+  RegistryCredential,
   RuleTest,
   Scan,
   ScanRule,
@@ -76,12 +77,16 @@ export const mockFlags = {
    *  host) shows "Can't reach the server's sign-in settings". */
   webConfig: PARAMS.get("mock_web_config"),
   /** v0.5 wave 2: `?mock_export=truncated` marks the CSV as cut at 50,000 rows;
-   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. */
+   *  `rate_limited` (a 429 with Retry-After) and `invalid` (a 422) make it fail. v0.7: `cut`
+   *  ends it without the end line, `miscount` with a row count that doesn't match. */
   export: PARAMS.get("mock_export"),
   /** v0.5 wave 2: `?mock_audit=broken` makes "Verify chain" find a changed entry. */
   auditBroken: PARAMS.get("mock_audit") === "broken",
   /** v0.6: `?mock_rules=empty` starts Acme Engineering without scan rules (the empty state). */
   rulesEmpty: PARAMS.get("mock_rules") === "empty",
+  /** v0.7 wave 2: `?mock_registries=empty` starts without registry credentials;
+   *  `?mock_registries=unavailable` answers SECRETS_KEY_MISSING when credentials are saved. */
+  registries: PARAMS.get("mock_registries"),
 };
 
 /** v0.5: GET /web-config. Mock mode never signs in, so the IdP is never contacted. */
@@ -293,6 +298,8 @@ function scan(p: Project, partial: Partial<Scan>, createdAgo: number): Scan {
     sbom: null,
     history: null,
     org_rules: [],
+    pulled: false,
+    import: null,
     ...partial,
   };
   // Like the server: an SBOM exists when Trivy ran to the end (and hasn't expired).
@@ -464,6 +471,10 @@ interface IssueSeed {
   commit?: Issue["commit"];
   /** v0.6: an issue from one of the org's own rules. */
   orgRule?: Issue["org_rule"];
+  /** v0.7 wave 2: a secret found in an image's layers. */
+  imageLayer?: Issue["image_layer"];
+  /** v0.8: imported from this tool's report (tool external, no snippet). */
+  externalTool?: string;
 }
 
 function issue(s: IssueSeed): Issue {
@@ -489,7 +500,7 @@ function issue(s: IssueSeed): Issue {
     updated_at: ago(3 * H),
     description: s.description,
     remediation: s.remediation,
-    snippet: s.snippet ?? "",
+    snippet: s.externalTool ? null : (s.snippet ?? ""),
     end_line: s.start_line ?? null,
     cwe: s.cwe ?? [],
     cve: s.cve ?? [],
@@ -510,6 +521,8 @@ function issue(s: IssueSeed): Issue {
     license_category: s.licenseCategory ?? null,
     commit: s.commit ?? null,
     org_rule: s.orgRule ?? null,
+    image_layer: s.imageLayer ?? null,
+    external_tool: s.externalTool ?? null,
   };
 }
 
@@ -1553,14 +1566,22 @@ export const TEST_TWO_LINES = seedTest({
 export const TEST_FAILED = seedTest({ state: "failed", findings: [], error: "timeout", created_at: ago(8 * 60_000), finished_at: ago(5 * 60_000) });
 
 // The latest WEB scan ran three rules (one at an older version than now); a PAY scan ran a rule
-// that was deleted since.
+// that was deleted since (its id is no current rule's). v0.7: an older WEB scan was recorded
+// before v0.7, so its refs have no scan_rule_id and the panel finds them by scanner and rule id.
 scans[0]!.org_rules = [
-  { rule_id: NO_EVAL.rule_id, tool: "opengrep", version: 2, sha256: scanRuleVersions[NO_EVAL.id]![2]!.sha256 },
-  { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256 },
-  { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256 },
+  { rule_id: NO_EVAL.rule_id, tool: "opengrep", version: 2, sha256: scanRuleVersions[NO_EVAL.id]![2]!.sha256, scan_rule_id: NO_EVAL.id },
+  { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256, scan_rule_id: YAML_RULE.id },
+  { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256, scan_rule_id: ACME_RULE.id },
 ];
 export const PAY_RULES_SCAN = scans.find((s) => s.project_id === PAY.id && s.kind === "source" && s.status === "completed");
-if (PAY_RULES_SCAN) PAY_RULES_SCAN.org_rules = [{ rule_id: "org.no-pickle-loads", tool: "opengrep", version: 2, sha256: fakeSha256(9101) }];
+if (PAY_RULES_SCAN) PAY_RULES_SCAN.org_rules = [{ rule_id: "org.no-pickle-loads", tool: "opengrep", version: 2, sha256: fakeSha256(9101), scan_rule_id: uuid() }];
+export const PRE_V07_RULES_SCAN = scans.find((s) => s.project_id === WEB.id && s.file_name === "storefront-2.2.zip");
+if (PRE_V07_RULES_SCAN) {
+  PRE_V07_RULES_SCAN.org_rules = [
+    { rule_id: YAML_RULE.rule_id, tool: "opengrep", version: 1, sha256: YAML_RULE.sha256, scan_rule_id: null },
+    { rule_id: ACME_RULE.rule_id, tool: "gitleaks", version: 1, sha256: ACME_RULE.sha256, scan_rule_id: null },
+  ];
+}
 
 issues.push(
   issue({
@@ -1598,3 +1619,277 @@ issues.push(
 );
 export const ORG_RULE_ISSUE = issues[issues.length - 2]!;
 export const DELETED_RULE_ISSUE = issues[issues.length - 1]!;
+
+// ---- v0.7 wave 2: registry credentials, pulled images, secrets in image layers ----
+
+/** Acme Engineering's credentials: one that works (ghcr.io), one the registry refuses, one never
+ *  used. The mock keeps no password at all: the API never returns one. Acme Labs has none. */
+export const registries: Record<string, RegistryCredential[]> = {
+  [ORG_ID]:
+    mockFlags.registries === "empty"
+      ? []
+      : [
+          {
+            id: uuid(),
+            host: "ghcr.io",
+            username: "acme-warden-bot",
+            created_by: users.linh,
+            created_at: ago(40 * DAY),
+            updated_at: ago(12 * DAY),
+            last_used_at: ago(150 * 60_000),
+            last_error: null,
+          },
+          {
+            id: uuid(),
+            host: "registry.acme.example:5000",
+            username: "warden",
+            created_by: users.minh,
+            created_at: ago(9 * DAY),
+            updated_at: ago(9 * DAY),
+            last_used_at: ago(2 * DAY),
+            last_error: "unauthorized",
+          },
+          {
+            id: uuid(),
+            host: "harbor.acme.example",
+            username: "robot$warden",
+            created_by: null,
+            created_at: ago(3 * DAY),
+            updated_at: ago(3 * DAY),
+            last_used_at: null,
+            last_error: null,
+          },
+        ],
+  [ORG2_ID]: [],
+};
+
+/** A made-up image digest: `sha256:` and hex from the seeded generator. */
+export const fakeDigest = (seed: number) => `sha256:${fakeSha256(seed)}`;
+
+/** WEB's image, pulled by the worker (Trivy and Gitleaks), between the latest source scan and the
+ *  uploaded image. Its Gitleaks findings are the two image-layer issues below. */
+export const PULLED_SCAN = scan(
+  WEB,
+  {
+    kind: "image",
+    pulled: true,
+    target: "ghcr.io/acme/api",
+    image_ref: `ghcr.io/acme/api@${fakeDigest(8801)}`,
+    file_name: "api.tar",
+    file_size: 191 * 1024 * 1024,
+    tools: ["trivy", "gitleaks"],
+    created_by: users.linh,
+    stats: { new: 2, fixed: 0, reopened: 0, total: 7 },
+    tool_runs: [
+      { tool: "trivy", tool_version: "0.75.0", status: "succeeded", findings_count: 5, duration_ms: 88_000, error: null },
+      { tool: "gitleaks", tool_version: "8.28.0", status: "succeeded", findings_count: 2, duration_ms: 23_000, error: null },
+    ],
+    sbom: { components: 412, size: 1_284_311, formats: BOTH_SBOMS },
+  },
+  150 * 60_000,
+);
+scans.push(PULLED_SCAN);
+
+/** One failed pull per PULL_* code, on PAY's image (its target, so the image filters don't
+ *  change), all older than PAY's latest scan. */
+export const PULL_FAILURES = (
+  [
+    ["PULL_UNAUTHORIZED", "ghcr.io/acme/payments"],
+    ["PULL_NOT_FOUND", "ghcr.io/acme/payments"],
+    ["PULL_TOO_LARGE", "ghcr.io/acme/payments"],
+    ["PULL_BLOCKED", "ghcr.io/acme/payments"],
+    ["PULL_PLATFORM", "ghcr.io/acme/payments"],
+    ["PULL_FAILED", "ghcr.io/acme/payments"],
+  ] as const
+).map(([code, repo], n) => {
+  const created = 50 * H + n * H;
+  const s = scan(
+    PAY,
+    {
+      kind: "image",
+      pulled: true,
+      target: repo,
+      image_ref: `${repo}@${fakeDigest(8810 + n)}`,
+      file_name: "payments.tar",
+      file_size: 0,
+      tools: ["trivy", "gitleaks"],
+      created_by: users.minh,
+      status: "failed",
+      error_code: code,
+      tool_runs: [],
+      sbom: null,
+      finished_at: ago(created - 20_000),
+    },
+    created,
+  );
+  scans.push(s);
+  return s;
+});
+
+issues.push(
+  issue({
+    p: WEB,
+    title: "AWS access key in image layer",
+    severity: "high",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "aws-access-token",
+    file_path: "app/.env",
+    start_line: 3,
+    snippet: `AWS_ACCESS_KEY_ID=${masked}`,
+    target: "ghcr.io/acme/api",
+    imageLayer: { digest: fakeDigest(8821), index: 4, count: 2 },
+    dueIn: 12 * DAY,
+    cwe: ["CWE-798"],
+    description:
+      "An AWS access key ID is in a layer of the image. A later layer deletes the file, but the layer that added it still ships with the image.",
+    remediation: "",
+  }),
+  issue({
+    p: WEB,
+    title: "Slack bot token in image layer",
+    severity: "high",
+    status: "open",
+    tool: "gitleaks",
+    rule_id: "slack-bot-token",
+    file_path: "etc/notify/config.yml",
+    start_line: 2,
+    snippet: `token: ${maskedSlack}`,
+    target: "ghcr.io/acme/api",
+    imageLayer: { digest: fakeDigest(8822), index: 0, count: 1 },
+    dueIn: 26 * DAY,
+    cwe: ["CWE-798"],
+    description: "A Slack bot token is in the base layer of the image.",
+    remediation: "",
+  }),
+);
+export const IMAGE_LAYER_ISSUE = issues[issues.length - 2]!;
+export const BASE_LAYER_ISSUE = issues[issues.length - 1]!;
+for (const i of [IMAGE_LAYER_ISSUE, BASE_LAYER_ISSUE]) {
+  i.remediation = null;
+  i.occurrences = 1;
+  i.first_seen_scan = { id: PULLED_SCAN.id, created_at: PULLED_SCAN.created_at };
+  i.last_seen_scan = { id: PULLED_SCAN.id, created_at: PULLED_SCAN.created_at };
+  events[i.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: PULLED_SCAN.finished_at! }];
+  comments[i.id] = [];
+}
+
+// ---- v0.8 wave 1: results imported from another tool (`warden import` in CI) ----
+
+const GH_TOKEN = { id: "00000000-0000-4000-8000-00000000f001", name: "GitHub Actions (main)", prefix: "k7m2q4xa" };
+
+/** WEB imports CodeQL's Python results from GitHub Actions (category /language:python/): 14 results
+ *  read, one dropped (a path outside the source root), two strings screened out by Gitleaks. */
+export const CODEQL_IMPORT = scan(
+  WEB,
+  {
+    kind: "import",
+    target: "(import) codeql /language:python/",
+    file_name: "python.sarif",
+    file_size: 412_330,
+    tools: ["external"],
+    via_token: GH_TOKEN,
+    created_by: users.linh,
+    stats: { new: 2, fixed: 1, reopened: 0, total: 13 },
+    tool_runs: [{ tool: "external", tool_version: "2.23.1", status: "succeeded", findings_count: 13, duration_ms: 9_000, error: null }],
+    import: { tool: "codeql", category: "/language:python/", format: "sarif", tool_version: "2.23.1", results: 14, dropped: 1, screened: 2 },
+  },
+  90 * 60_000,
+);
+/** And GitLab SAST's report from a GitLab pipeline (no category). */
+export const GITLAB_SAST_IMPORT = scan(
+  WEB,
+  {
+    kind: "import",
+    target: "(import) gitlab-sast",
+    file_name: "gl-sast-report.json",
+    file_size: 88_102,
+    tools: ["external"],
+    created_by: users.minh,
+    stats: { new: 1, fixed: 0, reopened: 0, total: 1 },
+    tool_runs: [{ tool: "external", tool_version: "6.6.0", status: "succeeded", findings_count: 1, duration_ms: 4_000, error: null }],
+    import: { tool: "gitlab-sast", category: "", format: "gitlab-sast", tool_version: "6.6.0", results: 1, dropped: 0, screened: 0 },
+  },
+  20 * H,
+);
+/** An older import of a file that wasn't SARIF: rejected, nothing stored. */
+export const INVALID_IMPORT = scan(
+  WEB,
+  {
+    kind: "import",
+    target: "(import) semgrep",
+    file_name: "semgrep.json",
+    file_size: 2_048,
+    tools: ["external"],
+    status: "failed",
+    error_code: "IMPORT_INVALID",
+    tool_runs: [],
+    finished_at: ago(3 * DAY - 5_000),
+    import: { tool: "semgrep", category: "", format: "sarif", tool_version: null, results: null, dropped: null, screened: null },
+  },
+  3 * DAY,
+);
+scans.push(CODEQL_IMPORT, GITLAB_SAST_IMPORT, INVALID_IMPORT);
+
+issues.push(
+  issue({
+    p: WEB,
+    title: "Uncontrolled data used in path expression",
+    severity: "high",
+    status: "open",
+    tool: "external",
+    externalTool: "codeql",
+    rule_id: "py/path-injection",
+    file_path: "api/files.py",
+    start_line: 42,
+    target: CODEQL_IMPORT.target,
+    dueIn: 18 * DAY,
+    cwe: ["CWE-22"],
+    description: "Accessing paths influenced by users can allow an attacker to access unexpected resources.",
+    remediation: "Validate user input before using it to construct a file path: normalize it and check that it stays under the folder it should.",
+  }),
+  issue({
+    p: WEB,
+    title: "py/clear-text-logging-sensitive-data",
+    severity: "medium",
+    status: "open",
+    tool: "external",
+    externalTool: "codeql",
+    rule_id: "py/clear-text-logging-sensitive-data",
+    file_path: "api/auth.py",
+    start_line: 77,
+    target: CODEQL_IMPORT.target,
+    dueIn: 60 * DAY,
+    cwe: ["CWE-312"],
+    // Its rule text matched Gitleaks during screening, so it was dropped: the title is the rule id.
+    description: "",
+    remediation: "",
+  }),
+  issue({
+    p: WEB,
+    title: "Improper neutralization of special elements used in an SQL command",
+    severity: "medium",
+    status: "open",
+    tool: "external",
+    externalTool: "gitlab-sast",
+    rule_id: "bandit.B608",
+    file_path: "api/reports.py",
+    start_line: 88,
+    target: GITLAB_SAST_IMPORT.target,
+    dueIn: 55 * DAY,
+    cwe: ["CWE-89"],
+    description: "SQL query built from string formatting. Data from outside the program can change the query.",
+    remediation: "Use the driver's query parameters instead of building the SQL text.",
+  }),
+);
+export const IMPORTED_ISSUES = issues.slice(-3);
+for (const i of IMPORTED_ISSUES) {
+  const from = i.external_tool === "codeql" ? CODEQL_IMPORT : GITLAB_SAST_IMPORT;
+  if (i.description === "") i.description = null;
+  if (i.remediation === "") i.remediation = null;
+  i.occurrences = 1;
+  i.first_seen_scan = { id: from.id, created_at: from.created_at };
+  i.last_seen_scan = { id: from.id, created_at: from.created_at };
+  events[i.id] = [{ id: uuid(), type: "created", actor: null, from_value: null, to_value: "open", note: null, created_at: from.finished_at! }];
+  comments[i.id] = [];
+}

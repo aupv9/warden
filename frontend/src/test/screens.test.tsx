@@ -535,12 +535,13 @@ describe("every screen renders with mock data", () => {
 
     const scans = `/orgs/${db.ORG_ID}/projects/${web().id}/scans`;
     const sha = "a".repeat(64);
-    const badImage = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api:1", tools: ["gitleaks"] });
+    const badImage = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api:1", tools: ["opengrep"] });
     expect(badImage.json.error?.metadata?.fields).toEqual({ target: expect.any(String), tools: expect.any(String) });
     const created = await call("POST", scans, { file_name: "a.tar", file_size: 4, sha256: sha, kind: "image", target: "ghcr.io/acme/api", image_ref: "ghcr.io/acme/api:2" });
     expect(created.status).toBe(201);
     const made = (created.json.data as { scan: { id: string; kind: string; tools: string[]; target: string } }).scan;
-    expect(made).toMatchObject({ kind: "image", tools: ["trivy"], target: "ghcr.io/acme/api" });
+    // v0.7 wave 2: image scans run Trivy and Gitleaks (secrets in the layers).
+    expect(made).toMatchObject({ kind: "image", tools: ["trivy", "gitleaks"], target: "ghcr.io/acme/api", pulled: false });
     db.scans.splice(db.scans.findIndex((s) => s.id === made.id), 1);
   });
 });
@@ -738,6 +739,10 @@ describe("v0.4 screens: component inventory, malicious packages, SPDX", () => {
       expect.objectContaining({ target: "", kind: "source" }),
       // v0.4 wave 2: the history scans' target.
       expect.objectContaining({ target: "(history)", kind: "history" }),
+      // v0.8: one per imported tool and category.
+      expect.objectContaining({ target: "(import) codeql /language:python/", kind: "import" }),
+      expect.objectContaining({ target: "(import) gitlab-sast", kind: "import" }),
+      expect.objectContaining({ target: "(import) semgrep", kind: "import" }),
       expect.objectContaining({ target: "ghcr.io/acme/api", kind: "image" }),
     ]);
     // Another org's project looks missing.
@@ -976,13 +981,14 @@ describe("v0.4 wave 2 screens: secrets in git history, integrations, CI setup", 
     }
   });
 
-  it("CI setup: the two switches, off by default; snippets never contain a token", async () => {
+  it("CI setup: the switches, off by default; snippets never contain a token", async () => {
     const html = await render(`${org()}/projects/${web().id}/settings`);
     const t = text(html);
     expect(html).toContain('id="ci-setup"');
     expect(t).toContain("Comment on pull requests / merge requests");
     expect(t).toContain("Scan git history");
-    expect(html.match(/role="switch"/g)).toHaveLength(2);
+    // v0.8 adds a third: Import CodeQL / GitLab SAST results.
+    expect(html.match(/role="switch"/g)).toHaveLength(3);
     expect(t).not.toContain("--comment auto\n");
     expect(html).not.toMatch(/wdn_[a-z2-7]{8}_[a-z2-7]{20,}|whsec_/);
     expect(t).toContain("Warden itself keeps no GitHub or GitLab credentials.");
@@ -1157,6 +1163,7 @@ describe("v0.5 wave 2: export, verify, filters", () => {
   });
 
   it("issue list: Export CSV for everyone who sees the list; the mock exports with the list's filters", async () => {
+    const { checkComplete } = await import("../lib/issueExport");
     const asMember = { ...db.me, orgs: db.me.orgs.map((o) => (o.id === db.ORG_ID ? { ...o, role: "member" as const } : o)) };
     expect(text(await render(`${org()}/issues`))).toContain("Export CSV");
     expect(text(await render(`${org()}/issues`, (qc) => qc.setQueryData(qk.me, asMember)))).toContain("Export CSV");
@@ -1173,20 +1180,34 @@ describe("v0.5 wave 2: export, verify, filters", () => {
       expect(r.headers.get("X-Warden-Truncated")).toBeNull();
       const lines = (await r.text()).trim().split("\r\n");
       expect(lines[0]).toBe("key,project,title,severity,status,tool,rule_id,file_path,line,target,cve,kev,epss,assignee,due_at,created_at,updated_at");
-      // The same filters as the list: two issues match (see "issue list with filters from the URL").
-      expect(lines).toHaveLength(3);
+      // The same filters as the list: two issues match (see "issue list with filters from the URL"),
+      // then (v0.7) the end line with their count.
+      expect(lines).toHaveLength(4);
+      expect(lines[3]).toBe("#warden:end rows=2");
       // A cell a spreadsheet would run as a formula starts with an apostrophe.
       expect(lines.join("\n")).toContain(`"'=HYPERLINK(""https://evil.example"",""x"")"`);
     } finally {
       issue.title = title;
     }
-    for (const [flag, status] of [["truncated", 200], ["rate_limited", 429], ["invalid", 422]] as const) {
+    // A cell with line breaks stays on one line (the server makes them spaces), so the file is complete.
+    issue.title = "first line\r\nsecond line\nthird";
+    try {
+      const r = await call("GET", `/orgs/${db.ORG_ID}/issues/export.csv`);
+      const body = await r.blob();
+      expect(await body.text()).toContain("first line  second line third");
+      expect(await checkComplete(body)).toBe(true);
+    } finally {
+      issue.title = title;
+    }
+    for (const [flag, status] of [["truncated", 200], ["rate_limited", 429], ["invalid", 422], ["cut", 200], ["miscount", 200]] as const) {
       db.mockFlags.export = flag;
       try {
         const r = await call("GET", `/orgs/${db.ORG_ID}/issues/export.csv`);
         expect(r.status).toBe(status);
         if (flag === "truncated") expect(r.headers.get("X-Warden-Truncated")).toBe("true");
         if (flag === "rate_limited") expect(r.headers.get("Retry-After")).toBe("120");
+        // v0.7: a truncated export is still complete; cut and miscount aren't.
+        if (status === 200) expect(await checkComplete(await r.blob())).toBe(flag === "truncated");
       } finally {
         db.mockFlags.export = null;
       }
@@ -1210,7 +1231,7 @@ describe("v0.5 wave 2: export, verify, filters", () => {
     // The mock follows the contract: issue-list visibility, archived projects left out, ?kind=.
     const all = await json(await call("GET", `/orgs/${db.ORG_ID}/targets`));
     const items = all.data!.items! as { project_id: string; project_key: string; target: string; kind: string }[];
-    expect(new Set(items.map((t) => t.kind))).toEqual(new Set(["source", "image", "history"]));
+    expect(new Set(items.map((t) => t.kind))).toEqual(new Set(["source", "image", "history", "import"]));
     expect(items.map((t) => t.project_key)).toEqual([...items.map((t) => t.project_key)].sort());
     const archived = db.projects.filter((p) => p.archived_at).map((p) => p.id);
     expect(items.some((t) => archived.includes(t.project_id))).toBe(false);

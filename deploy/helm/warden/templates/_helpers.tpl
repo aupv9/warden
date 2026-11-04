@@ -202,7 +202,7 @@ WARDEN_SCAN__IMAGES__{{ upper $t }}: {{ include "warden.scannerImage" (dict "ctx
 {{- if regexMatch "(DSN|PASSWORD|SECRET|_KEY|_KEYS|TOKEN)" $k -}}
 {{- fail (printf "extraEnv.%s looks like a secret: put it in existingSecret, never in values" $k) -}}
 {{- end -}}
-{{- if regexMatch "^WARDEN_(SERVER__|SCAN__KUBE__|SCAN__SANDBOX_|WEBHOOK__ALLOW_HOSTS|CONFIG_FILE|DATABASE__)" $k -}}
+{{- if regexMatch "^WARDEN_(SERVER__|SCAN__KUBE__|SCAN__SANDBOX_|WEBHOOK__ALLOW_HOSTS|REGISTRY__ALLOW_HOSTS|CONFIG_FILE|DATABASE__)" $k -}}
 {{- fail (printf "extraEnv.%s can't be set through this chart" $k) -}}
 {{- end -}}
 {{- end -}}
@@ -250,6 +250,60 @@ WARDEN_SCAN__IMAGES__{{ upper $t }}: {{ include "warden.scannerImage" (dict "ctx
 {{- end }}
 {{- end -}}
 
+{{/* The addresses the worker may reach the Kubernetes API server on, as a
+     JSON list of CIDRs: networkPolicy.egress.kubeAPI.cidrs, or else what the
+     cluster says at install/upgrade (the endpoints of default/kubernetes, and
+     its ClusterIP for CNIs that match before Service translation). Never an
+     open rule: with neither, the render fails. */}}
+{{- define "warden.kubeAPICIDRs" -}}
+{{- $k := .Values.networkPolicy.egress.kubeAPI -}}
+{{- if $k.to -}}
+{{- fail "networkPolicy.egress.kubeAPI.to was replaced by networkPolicy.egress.kubeAPI.cidrs: list the API server's addresses (e.g. [172.18.0.2/32])" -}}
+{{- end -}}
+{{- $cidrs := list -}}
+{{- if $k.cidrs -}}
+{{- $cidrs = $k.cidrs -}}
+{{- else -}}
+{{- $slice := lookup "discovery.k8s.io/v1" "EndpointSlice" "default" "kubernetes" -}}
+{{- range $ep := dig "endpoints" (list) $slice -}}
+{{- range $a := $ep.addresses | default list -}}
+{{- $cidrs = append $cidrs (printf "%s/%s" $a (ternary "128" "32" (contains ":" $a))) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $cidrs -}}
+{{- $eps := lookup "v1" "Endpoints" "default" "kubernetes" -}}
+{{- range $sub := dig "subsets" (list) $eps -}}
+{{- range $a := $sub.addresses | default list -}}
+{{- $cidrs = append $cidrs (printf "%s/%s" $a.ip (ternary "128" "32" (contains ":" $a.ip))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not $cidrs -}}
+{{- fail "networkPolicy.egress.kubeAPI.cidrs is required: the Kubernetes API server's addresses, e.g. [172.18.0.2/32] (kubectl get endpointslice -n default kubernetes -o jsonpath='{.endpoints[*].addresses[*]}'). helm install/upgrade reads them from the cluster when it can; helm template and offline renders can't. The worker's egress is never left open to every address" -}}
+{{- end -}}
+{{- $svc := lookup "v1" "Service" "default" "kubernetes" -}}
+{{- range $ip := dig "spec" "clusterIPs" (list) $svc -}}
+{{- $cidrs = append $cidrs (printf "%s/%s" $ip (ternary "128" "32" (contains ":" $ip))) -}}
+{{- end -}}
+{{- end -}}
+{{- range $c := $cidrs -}}
+{{- $bits := regexReplaceAll "^.*/" $c "" | int -}}
+{{- $min := ternary 48 16 (contains ":" $c) -}}
+{{- if or (not (contains "/" $c)) (lt $bits $min) -}}
+{{- fail (printf "networkPolicy.egress.kubeAPI.cidrs: %s is wider than /%d: list the API server's addresses, not a network" $c $min) -}}
+{{- end -}}
+{{- end -}}
+{{- $cidrs | uniq | toJson -}}
+{{- end -}}
+
+{{- define "warden.kubeAPIRule" -}}
+{{- $to := list -}}
+{{- range (include "warden.kubeAPICIDRs" . | fromJsonArray) -}}
+{{- $to = append $to (dict "ipBlock" (dict "cidr" .)) -}}
+{{- end -}}
+{{- include "warden.egressRule" (dict "to" $to "ports" .Values.networkPolicy.egress.kubeAPI.ports) -}}
+{{- end -}}
+
 {{/* Checks that need more than the schema. */}}
 {{- define "warden.validate" -}}
 {{- $v := .Values -}}
@@ -287,14 +341,23 @@ WARDEN_SCAN__IMAGES__{{ upper $t }}: {{ include "warden.scannerImage" (dict "ctx
 {{- if and $v.mirror.cronjob.enabled (not $v.mirror.cronjob.image) -}}
 {{- fail "mirror.cronjob.image is required: an image with bash, curl, jq and Warden's scripts under /opt/warden, pinned by digest (deploy/helm/mirror/Dockerfile)" -}}
 {{- end -}}
+{{- /* A sandbox namespace the chart doesn't create: read it and check its
+     Pod Security label. Fail closed when it can't be read (helm template,
+     offline GitOps renders, not created yet), unless the operator states
+     that they own the label (sandbox.podSecurityConfirmed). */ -}}
 {{- if not $v.sandbox.createNamespace -}}
 {{- $ns := lookup "v1" "Namespace" "" $v.sandbox.namespace -}}
 {{- if $ns -}}
-{{- $labels := $ns.metadata.labels | default dict -}}
+{{- $labels := dig "metadata" "labels" (dict) $ns -}}
 {{- if ne (index $labels "pod-security.kubernetes.io/enforce" | default "") "restricted" -}}
 {{- fail (printf "namespace %s must carry the label pod-security.kubernetes.io/enforce=restricted" $v.sandbox.namespace) -}}
 {{- end -}}
+{{- else if not $v.sandbox.podSecurityConfirmed -}}
+{{- fail (printf "sandbox.createNamespace=false, and namespace %s can't be read to check its Pod Security label (helm template, an offline render, or it doesn't exist yet). Label it pod-security.kubernetes.io/enforce=restricted and set sandbox.podSecurityConfirmed=true: you then own that label" $v.sandbox.namespace) -}}
 {{- end -}}
+{{- end -}}
+{{- if $v.networkPolicy.enabled -}}
+{{- $_ := include "warden.kubeAPICIDRs" . -}}
 {{- end -}}
 {{- $_ := include "warden.workerGraceSeconds" . -}}
 {{- $_ := include "warden.extraEnv" . -}}

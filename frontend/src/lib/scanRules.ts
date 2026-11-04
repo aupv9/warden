@@ -337,9 +337,18 @@ export function orgRuleLink(orgId: string, r: { scan_rule_id: string | null; nam
   return `/orgs/${orgId}/settings/scan-rules/${r.scan_rule_id}`;
 }
 
-/** The org rules a scan ran, each with the org's current rule of that id if it still exists. */
+/** The org rules a scan ran, each with the org's current rule if it still exists. v0.7: a ref
+ *  with `scan_rule_id` matches by that id only, so a rule deleted and added again with the same
+ *  key is the deleted rule, not the new one. Only a scan recorded before v0.7 (`scan_rule_id`
+ *  null) falls back to the scanner and rule id. */
 export function ranRules(refs: readonly ScanRuleRef[], rules: readonly ScanRule[] | undefined): { ref: ScanRuleRef; rule: ScanRule | null }[] {
-  return refs.map((ref) => ({ ref, rule: rules?.find((r) => r.tool === ref.tool && r.rule_id === ref.rule_id) ?? null }));
+  return refs.map((ref) => ({
+    ref,
+    rule:
+      (ref.scan_rule_id !== null
+        ? rules?.find((r) => r.id === ref.scan_rule_id)
+        : rules?.find((r) => r.tool === ref.tool && r.rule_id === ref.rule_id)) ?? null,
+  }));
 }
 
 export function diffStats(d: readonly DiffLine[]): { added: number; removed: number } {

@@ -58,11 +58,23 @@ type NewScan struct {
 	Tools     []string
 	// ViaToken is the API token that created the scan, if any.
 	ViaToken *uuid.UUID
-	// Kind is source, image or history; Target is the image repository or
-	// HistoryTarget, ImageRef is for images only.
+	// Kind is source, image, history or import; Target is the image
+	// repository, HistoryTarget or ImportTarget, ImageRef is for images only.
 	Kind     string
 	Target   string
 	ImageRef *string
+	// Pulled: the worker pulls ImageRef itself; there is no upload, so
+	// FileSize and SHA256 are unset (NULL).
+	Pulled bool
+	// Import is set for (and only for) import scans: scan.import_tool,
+	// import_category and import_format.
+	Import *NewScanImport
+}
+
+// NewScanImport is what an import scan is created with; the counts are the
+// worker's.
+type NewScanImport struct {
+	Tool, Category, Format string
 }
 
 // ScanCursor positions a newest-first scan list.
@@ -114,10 +126,13 @@ type IssueQuery struct {
 	// scored at least this.
 	KEV     bool
 	EPSSMin *float64
-	// Source: "", "code" (target ''), "image" (an image's target) or
-	// "history" (target (history)); Target: one image.
+	// Source: "", "code" (target ''), "image" (an image's target),
+	// "history" (target (history)) or "import" (tool external); Target: one
+	// image.
 	Source string
 	Target string
+	// ExternalTool: imported issues of this tool (Tool is then "external").
+	ExternalTool string
 	// Text search (title, rule_id, file_path), or an issue key.
 	Text       string
 	KeyProject string
@@ -292,6 +307,7 @@ type Repo interface {
 	ComponentRepo     // components.go (v0.4)
 	WebhookRepo       // webhooks.go (v0.4 wave 2)
 	ScanRuleRepo      // scanrules.go (v0.6)
+	RegistryRepo      // registries.go (v0.7 wave 2)
 	// v0.2: notifications, policy and automation, metrics (notifications.go, policy.go, metrics.go).
 	v02Repo
 }

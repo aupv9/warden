@@ -1,0 +1,1201 @@
+{
+ "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "CodeQL",
+     "organization": "GitHub",
+     "semanticVersion": "2.15.0",
+     "rules": [
+      {
+       "id": "cpp/badly-bounded-write"
+      },
+      {
+       "id": "cpp/very-likely-overrunning-write"
+      },
+      {
+       "id": "cpp/memset-may-be-deleted"
+      },
+      {
+       "id": "cpp/sql-injection"
+      },
+      {
+       "id": "cpp/weak-cryptographic-algorithm"
+      },
+      {
+       "id": "cpp/openssl-heartbleed"
+      },
+      {
+       "id": "cpp/suspicious-add-sizeof"
+      },
+      {
+       "id": "cpp/cgi-xss"
+      },
+      {
+       "id": "cpp/insufficient-key-size"
+      },
+      {
+       "id": "cpp/incorrect-string-type-conversion"
+      },
+      {
+       "id": "cpp/dangerous-cin"
+      },
+      {
+       "id": "cpp/dangerous-function-overflow"
+      },
+      {
+       "id": "cpp/hresult-boolean-conversion"
+      },
+      {
+       "id": "cpp/cleartext-storage-file"
+      },
+      {
+       "id": "cpp/cleartext-transmission"
+      },
+      {
+       "id": "cpp/non-https-url"
+      },
+      {
+       "id": "cpp/command-line-injection"
+      },
+      {
+       "id": "cpp/external-entity-expansion"
+      },
+      {
+       "id": "cpp/unsafe-dacl-security-descriptor"
+      },
+      {
+       "id": "cpp/open-call-with-mode-argument"
+      },
+      {
+       "id": "cpp/tainted-format-string-through-global"
+      },
+      {
+       "id": "cpp/tainted-format-string"
+      },
+      {
+       "id": "cpp/toctou-race-condition"
+      },
+      {
+       "id": "cpp/system-data-exposure"
+      },
+      {
+       "id": "cpp/no-space-for-terminator"
+      },
+      {
+       "id": "cpp/comparison-with-wider-type"
+      },
+      {
+       "id": "cpp/uncontrolled-arithmetic"
+      },
+      {
+       "id": "cpp/unused-local-variable"
+      },
+      {
+       "id": "cpp/unused-static-function",
+       "name": "cpp/unused-static-function",
+       "shortDescription": {
+        "text": "Unused static function"
+       },
+       "fullDescription": {
+        "text": "A static function that is never called or accessed may be an indication that the code is incomplete or has a typo."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "note"
+       },
+       "properties": {
+        "tags": [
+         "efficiency",
+         "useless-code",
+         "external/cwe/cwe-561"
+        ],
+        "kind": "problem",
+        "precision": "high"
+       }
+      },
+      {
+       "id": "cpp/unused-static-variable"
+      },
+      {
+       "id": "cpp/rule-of-two"
+      },
+      {
+       "id": "cpp/use-of-goto",
+       "name": "cpp/use-of-goto",
+       "shortDescription": {
+        "text": "Use of goto"
+       },
+       "fullDescription": {
+        "text": "The goto statement can make the control flow of a function hard to understand, when used for purposes other than error handling."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "warning"
+       },
+       "properties": {
+        "tags": [
+         "maintainability",
+         "readability",
+         "language-features"
+        ],
+        "kind": "problem",
+        "precision": "high"
+       }
+      },
+      {
+       "id": "cpp/slicing"
+      },
+      {
+       "id": "cpp/empty-block"
+      },
+      {
+       "id": "cpp/long-switch",
+       "name": "cpp/long-switch",
+       "shortDescription": {
+        "text": "Long switch case"
+       },
+       "fullDescription": {
+        "text": "A switch statement with too much code in its cases can make the control flow hard to follow. Consider wrapping the code for each case in a function and just using the switch statement to invoke the appropriate function in each case."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "note"
+       },
+       "properties": {
+        "tags": [
+         "maintainability",
+         "readability"
+        ],
+        "kind": "problem",
+        "precision": "high"
+       }
+      },
+      {
+       "id": "cpp/declaration-hides-variable"
+      },
+      {
+       "id": "cpp/local-variable-hides-global-variable"
+      },
+      {
+       "id": "cpp/declaration-hides-parameter"
+      },
+      {
+       "id": "cpp/complex-condition"
+      },
+      {
+       "id": "cpp/complex-block"
+      },
+      {
+       "id": "cpp/catch-by-value"
+      },
+      {
+       "id": "cpp/catch-missing-free"
+      },
+      {
+       "id": "cpp/throwing-pointer"
+      },
+      {
+       "id": "cpp/rethrow-no-exception"
+      },
+      {
+       "id": "cpp/short-global-name"
+      },
+      {
+       "id": "cpp/duplicate-include-guard"
+      },
+      {
+       "id": "cpp/commented-out-code",
+       "name": "cpp/commented-out-code",
+       "shortDescription": {
+        "text": "Commented-out code"
+       },
+       "fullDescription": {
+        "text": "Commented-out code makes the remaining code more difficult to read."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "note"
+       },
+       "properties": {
+        "tags": [
+         "maintainability",
+         "documentation"
+        ],
+        "kind": "problem",
+        "precision": "high"
+       }
+      },
+      {
+       "id": "cpp/fixme-comment"
+      },
+      {
+       "id": "cpp/redundant-null-check-simple"
+      },
+      {
+       "id": "cpp/constructor-delegation"
+      },
+      {
+       "id": "cpp/virtual-destructor"
+      },
+      {
+       "id": "cpp/unsafe-use-of-this"
+      },
+      {
+       "id": "cpp/throw-in-destructor"
+      },
+      {
+       "id": "cpp/continue-in-false-loop"
+      },
+      {
+       "id": "cpp/member-const-no-effect"
+      },
+      {
+       "id": "cpp/compare-where-assign-meant"
+      },
+      {
+       "id": "cpp/assign-where-compare-meant"
+      },
+      {
+       "id": "cpp/string-copy-return-value-as-boolean"
+      },
+      {
+       "id": "cpp/empty-if"
+      },
+      {
+       "id": "cpp/logical-operator-applied-to-flag"
+      },
+      {
+       "id": "cpp/dubious-null-check"
+      },
+      {
+       "id": "cpp/inconsistent-loop-direction"
+      },
+      {
+       "id": "cpp/useless-expression"
+      },
+      {
+       "id": "cpp/upcast-array-pointer-arithmetic"
+      },
+      {
+       "id": "cpp/array-arg-size-mismatch"
+      },
+      {
+       "id": "cpp/implicit-bitfield-downcast"
+      },
+      {
+       "id": "cpp/lossy-pointer-cast"
+      },
+      {
+       "id": "cpp/use-in-own-initializer"
+      },
+      {
+       "id": "cpp/return-c-str-of-std-string"
+      },
+      {
+       "id": "cpp/return-stack-allocated-memory"
+      },
+      {
+       "id": "cpp/alloca-in-loop"
+      },
+      {
+       "id": "cpp/using-expired-stack-address"
+      },
+      {
+       "id": "cpp/pointer-overflow-check"
+      },
+      {
+       "id": "cpp/unsigned-comparison-zero"
+      },
+      {
+       "id": "cpp/integer-multiplication-cast-to-long",
+       "name": "cpp/integer-multiplication-cast-to-long",
+       "shortDescription": {
+        "text": "Multiplication result converted to larger type"
+       },
+       "fullDescription": {
+        "text": "A multiplication result that is converted to a larger type can be a sign that the result can overflow the type converted from."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "warning"
+       },
+       "properties": {
+        "tags": [
+         "reliability",
+         "security",
+         "correctness",
+         "types",
+         "external/cwe/cwe-190",
+         "external/cwe/cwe-192",
+         "external/cwe/cwe-197",
+         "external/cwe/cwe-681"
+        ],
+        "security-severity": "8.1",
+        "kind": "problem",
+        "precision": "high"
+       }
+      },
+      {
+       "id": "cpp/signed-overflow-check"
+      },
+      {
+       "id": "cpp/bitwise-sign-check"
+      },
+      {
+       "id": "cpp/comparison-precedence"
+      },
+      {
+       "id": "cpp/constant-comparison"
+      },
+      {
+       "id": "cpp/equality-on-floats"
+      },
+      {
+       "id": "cpp/bad-addition-overflow-check"
+      },
+      {
+       "id": "cpp/comparison-of-identical-expressions"
+      },
+      {
+       "id": "cpp/non-member-const-no-effect"
+      },
+      {
+       "id": "cpp/implicit-function-declaration"
+      },
+      {
+       "id": "cpp/too-few-arguments"
+      },
+      {
+       "id": "cpp/futile-params"
+      },
+      {
+       "id": "cpp/ambiguously-signed-bit-field"
+      },
+      {
+       "id": "cpp/wrong-number-format-arguments"
+      },
+      {
+       "id": "cpp/overflowing-snprintf"
+      },
+      {
+       "id": "cpp/non-constant-format"
+      },
+      {
+       "id": "cpp/too-many-format-arguments"
+      },
+      {
+       "id": "cpp/wrong-type-format-argument"
+      },
+      {
+       "id": "cpp/static-buffer-overflow"
+      },
+      {
+       "id": "cpp/new-delete-array-mismatch"
+      },
+      {
+       "id": "cpp/dead-code-goto"
+      },
+      {
+       "id": "cpp/double-free"
+      },
+      {
+       "id": "cpp/large-parameter"
+      },
+      {
+       "id": "cpp/new-array-delete-mismatch"
+      },
+      {
+       "id": "cpp/new-free-mismatch"
+      },
+      {
+       "id": "cpp/use-after-free"
+      },
+      {
+       "id": "cpp/irregular-enum-init"
+      },
+      {
+       "id": "cpp/array-in-interface"
+      },
+      {
+       "id": "cpp/undisciplined-multiple-inheritance"
+      },
+      {
+       "id": "cpp/virtual-call-in-constructor"
+      },
+      {
+       "id": "cpp/resource-not-released-in-destructor"
+      },
+      {
+       "id": "cpp/redefined-default-parameter"
+      },
+      {
+       "id": "cpp/assignment-does-not-return-this"
+      },
+      {
+       "id": "cpp/inconsistent-virtual-inheritance"
+      },
+      {
+       "id": "cpp/include-non-header"
+      },
+      {
+       "id": "cpp/function-in-block"
+      },
+      {
+       "id": "cpp/missing-return",
+       "name": "cpp/missing-return",
+       "shortDescription": {
+        "text": "Missing return statement"
+       },
+       "fullDescription": {
+        "text": "All functions that are not void should return a value on every exit path."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "error"
+       },
+       "properties": {
+        "tags": [
+         "reliability",
+         "readability",
+         "language-features",
+         "external/jsf"
+        ],
+        "kind": "problem",
+        "precision": "high"
+       }
+      },
+      {
+       "id": "cpp/missing-header-guard"
+      },
+      {
+       "id": "cpp/trivial-switch"
+      },
+      {
+       "id": "cpp/loop-variable-changed"
+      },
+      {
+       "id": "cpp/loop-variable-float"
+      },
+      {
+       "id": "cpp/sizeof-side-effect"
+      },
+      {
+       "id": "cpp/tainted-permissions-check"
+      },
+      {
+       "id": "cpp/unbounded-write"
+      },
+      {
+       "id": "cpp/overrunning-write"
+      },
+      {
+       "id": "cpp/overrunning-write-with-float"
+      },
+      {
+       "id": "cpp/incorrect-allocation-error-handling",
+       "name": "cpp/incorrect-allocation-error-handling",
+       "shortDescription": {
+        "text": "Incorrect allocation-error handling"
+       },
+       "fullDescription": {
+        "text": "Mixing up the failure conditions of 'operator new' and 'operator new(std::nothrow)' can result in unexpected behavior."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "warning"
+       },
+       "properties": {
+        "tags": [
+         "correctness",
+         "security",
+         "external/cwe/cwe-570",
+         "external/cwe/cwe-252",
+         "external/cwe/cwe-755"
+        ],
+        "security-severity": "7.5",
+        "kind": "problem",
+        "precision": "medium"
+       }
+      },
+      {
+       "id": "cpp/unterminated-variadic-call"
+      },
+      {
+       "id": "cpp/suspicious-pointer-scaling"
+      },
+      {
+       "id": "cpp/suspicious-pointer-scaling-void"
+      },
+      {
+       "id": "cpp/user-controlled-bypass"
+      },
+      {
+       "id": "cpp/potentially-dangerous-function"
+      },
+      {
+       "id": "cpp/unsafe-create-process-call"
+      },
+      {
+       "id": "cpp/cleartext-storage-database"
+      },
+      {
+       "id": "cpp/uncontrolled-process-operation"
+      },
+      {
+       "id": "cpp/path-injection"
+      },
+      {
+       "id": "cpp/cleartext-storage-buffer"
+      },
+      {
+       "id": "cpp/world-writable-file-creation"
+      },
+      {
+       "id": "cpp/overrun-write"
+      },
+      {
+       "id": "cpp/potential-system-data-exposure"
+      },
+      {
+       "id": "cpp/certificate-not-checked"
+      },
+      {
+       "id": "cpp/certificate-result-conflation"
+      },
+      {
+       "id": "cpp/unsigned-difference-expression-compared-zero"
+      },
+      {
+       "id": "cpp/invalid-pointer-deref"
+      },
+      {
+       "id": "cpp/uncontrolled-allocation-size"
+      },
+      {
+       "id": "cpp/offset-use-before-range-check"
+      },
+      {
+       "id": "cpp/comma-before-misleading-indentation"
+      },
+      {
+       "id": "cpp/poorly-documented-function",
+       "name": "cpp/poorly-documented-function",
+       "shortDescription": {
+        "text": "Poorly documented large function"
+       },
+       "fullDescription": {
+        "text": "Large functions that have no or almost no comments are likely to be too complex to understand and maintain. The larger a function is, the more problematic the lack of comments."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "warning"
+       },
+       "properties": {
+        "tags": [
+         "maintainability",
+         "documentation",
+         "statistical",
+         "non-attributable"
+        ],
+        "kind": "problem",
+        "precision": "medium"
+       }
+      },
+      {
+       "id": "cpp/missing-case-in-switch"
+      },
+      {
+       "id": "cpp/incorrect-not-operator-usage"
+      },
+      {
+       "id": "cpp/nested-loops-with-same-variable"
+      },
+      {
+       "id": "cpp/leap-year/unchecked-after-arithmetic-year-modification"
+      },
+      {
+       "id": "cpp/leap-year/adding-365-days-per-year"
+      },
+      {
+       "id": "cpp/leap-year/unchecked-return-value-for-time-conversion-function"
+      },
+      {
+       "id": "cpp/lossy-function-result-cast"
+      },
+      {
+       "id": "cpp/inconsistent-null-check"
+      },
+      {
+       "id": "cpp/uninitialized-local",
+       "name": "cpp/uninitialized-local",
+       "shortDescription": {
+        "text": "Potentially uninitialized local variable"
+       },
+       "fullDescription": {
+        "text": "Reading from a local variable that has not been assigned to will typically yield garbage."
+       },
+       "defaultConfiguration": {
+        "enabled": true,
+        "level": "warning"
+       },
+       "properties": {
+        "tags": [
+         "security",
+         "external/cwe/cwe-665",
+         "external/cwe/cwe-457"
+        ],
+        "security-severity": "7.8",
+        "kind": "problem",
+        "precision": "medium"
+       }
+      },
+      {
+       "id": "cpp/bad-strncpy-size"
+      },
+      {
+       "id": "cpp/unsafe-strcat"
+      },
+      {
+       "id": "cpp/suspicious-sizeof"
+      },
+      {
+       "id": "cpp/stack-address-escape"
+      },
+      {
+       "id": "cpp/unsafe-strncat"
+      },
+      {
+       "id": "cpp/incomplete-parity-check"
+      },
+      {
+       "id": "cpp/inconsistent-call-on-result"
+      },
+      {
+       "id": "cpp/mistyped-function-arguments"
+      },
+      {
+       "id": "cpp/allocation-too-small"
+      },
+      {
+       "id": "cpp/suspicious-allocation-size"
+      },
+      {
+       "id": "cpp/missing-check-scanf"
+      },
+      {
+       "id": "cpp/integer-used-for-enum"
+      },
+      {
+       "id": "cpp/summary/lines-of-user-code"
+      },
+      {
+       "id": "cpp/summary/lines-of-code"
+      }
+     ]
+    },
+    "extensions": [
+     {
+      "name": "codeql/cpp-queries",
+      "semanticVersion": "0.8.1-dev+d56a9f0781306aa4eca59d34401f3bae562ce0c1",
+      "locations": [
+       {
+        "uri": "file:///usr/local/codeql-home/codeql-repo/cpp/ql/src/",
+        "description": {
+         "text": "The QL pack root directory."
+        }
+       },
+       {
+        "uri": "file:///usr/local/codeql-home/codeql-repo/cpp/ql/src/qlpack.yml",
+        "description": {
+         "text": "The QL pack definition file."
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "results": [
+    {
+     "ruleId": "cpp/unused-static-function",
+     "ruleIndex": 28,
+     "rule": {
+      "id": "cpp/unused-static-function",
+      "index": 28
+     },
+     "message": {
+      "text": "Static function yyinput is unreachable"
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/tokens.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 1333,
+         "startColumn": 16,
+         "endColumn": 23
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "440bebb72c42a7ca:1",
+      "primaryLocationStartColumnFingerprint": "11"
+     }
+    },
+    {
+     "ruleId": "cpp/unused-static-function",
+     "ruleIndex": 28,
+     "rule": {
+      "id": "cpp/unused-static-function",
+      "index": 28
+     },
+     "message": {
+      "text": "Static function yyunput is unreachable"
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/tokens.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 1292,
+         "startColumn": 17,
+         "endColumn": 24
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "c55d979e8ae37cca:1",
+      "primaryLocationStartColumnFingerprint": "12"
+     }
+    },
+    {
+     "ruleId": "cpp/use-of-goto",
+     "ruleIndex": 31,
+     "rule": {
+      "id": "cpp/use-of-goto",
+      "index": 31
+     },
+     "message": {
+      "text": "Multiple forward and backward goto statements may make function yyparse hard to understand."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/parser.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 1
+        },
+        "region": {
+         "startLine": 1212,
+         "endColumn": 8
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "64a1f76b863e7c3a:1",
+      "primaryLocationStartColumnFingerprint": "0"
+     }
+    },
+    {
+     "ruleId": "cpp/long-switch",
+     "ruleIndex": 34,
+     "rule": {
+      "id": "cpp/long-switch",
+      "index": 34
+     },
+     "message": {
+      "text": "Switch has at least one case that is too long: [37 (121 lines)](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/tokens.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 765,
+         "startColumn": 3,
+         "endLine": 1085,
+         "endColumn": 3
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "11ef60d579a71347:1",
+      "primaryLocationStartColumnFingerprint": "0"
+     },
+     "relatedLocations": [
+      {
+       "id": 1,
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/tokens.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 960,
+         "startColumn": 2,
+         "endColumn": 24
+        }
+       },
+       "message": {
+        "text": "37 (121 lines)"
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "cpp/commented-out-code",
+     "ruleIndex": 46,
+     "rule": {
+      "id": "cpp/commented-out-code",
+      "index": 46
+     },
+     "message": {
+      "text": "This comment appears to contain commented-out code."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/value.hpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 2
+        },
+        "region": {
+         "startLine": 46,
+         "startColumn": 2,
+         "endColumn": 51
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "bbbfcba75457e4ec:1",
+      "primaryLocationStartColumnFingerprint": "0"
+     }
+    },
+    {
+     "ruleId": "cpp/commented-out-code",
+     "ruleIndex": 46,
+     "rule": {
+      "id": "cpp/commented-out-code",
+      "index": 46
+     },
+     "message": {
+      "text": "This comment appears to contain commented-out code."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/value.hpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 2
+        },
+        "region": {
+         "startLine": 34,
+         "startColumn": 2,
+         "endColumn": 28
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "82e26db588564ec9:1",
+      "primaryLocationStartColumnFingerprint": "0"
+     }
+    },
+    {
+     "ruleId": "cpp/integer-multiplication-cast-to-long",
+     "ruleIndex": 74,
+     "rule": {
+      "id": "cpp/integer-multiplication-cast-to-long",
+      "index": 74
+     },
+     "message": {
+      "text": "Multiplication result may overflow 'int' before it is converted to 'long long'."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/value.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 3
+        },
+        "region": {
+         "startLine": 204,
+         "startColumn": 11,
+         "endColumn": 16
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "5b5d94081f81c97:1",
+      "primaryLocationStartColumnFingerprint": "8"
+     }
+    },
+    {
+     "ruleId": "cpp/missing-return",
+     "ruleIndex": 110,
+     "rule": {
+      "id": "cpp/missing-return",
+      "index": 110
+     },
+     "message": {
+      "text": "Function yywrap should return a value of type int but does not return a value here"
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/tokens.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 0
+        },
+        "region": {
+         "startLine": 495,
+         "startColumn": 25,
+         "endColumn": 28
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "8e7a9e4c621548d9:1",
+      "primaryLocationStartColumnFingerprint": "24"
+     }
+    },
+    {
+     "ruleId": "cpp/incorrect-allocation-error-handling",
+     "ruleIndex": 120,
+     "rule": {
+      "id": "cpp/incorrect-allocation-error-handling",
+      "index": 120
+     },
+     "message": {
+      "text": "This allocation cannot return null. [This check](1) is unnecessary."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/builtins.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 4
+        },
+        "region": {
+         "startLine": 108,
+         "startColumn": 13,
+         "endColumn": 33
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "6c34a320fc0b0338:1",
+      "primaryLocationStartColumnFingerprint": "11"
+     },
+     "relatedLocations": [
+      {
+       "id": 1,
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/builtins.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 4
+        },
+        "region": {
+         "startLine": 110,
+         "startColumn": 7,
+         "endColumn": 16
+        }
+       },
+       "message": {
+        "text": "This check"
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "cpp/incorrect-allocation-error-handling",
+     "ruleIndex": 120,
+     "rule": {
+      "id": "cpp/incorrect-allocation-error-handling",
+      "index": 120
+     },
+     "message": {
+      "text": "This allocation cannot return null. [This check](1) is unnecessary."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/value.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 3
+        },
+        "region": {
+         "startLine": 454,
+         "startColumn": 14,
+         "endColumn": 26
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "9322f2488a996f9b:6",
+      "primaryLocationStartColumnFingerprint": "12"
+     },
+     "relatedLocations": [
+      {
+       "id": 1,
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/value.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 3
+        },
+        "region": {
+         "startLine": 456,
+         "startColumn": 7,
+         "endColumn": 17
+        }
+       },
+       "message": {
+        "text": "This check"
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "cpp/poorly-documented-function",
+     "ruleIndex": 141,
+     "rule": {
+      "id": "cpp/poorly-documented-function",
+      "index": 141
+     },
+     "message": {
+      "text": "Poorly documented function: fewer than 2% comments for a function of 128 lines."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/main.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 5
+        },
+        "region": {
+         "startLine": 206,
+         "startColumn": 5,
+         "endColumn": 9
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "daa9ee3bbe0237b9:1",
+      "primaryLocationStartColumnFingerprint": "4"
+     }
+    },
+    {
+     "ruleId": "cpp/uninitialized-local",
+     "ruleIndex": 150,
+     "rule": {
+      "id": "cpp/uninitialized-local",
+      "index": 150
+     },
+     "message": {
+      "text": "The variable [fname](1) may not be initialized at this access."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/main.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 5
+        },
+        "region": {
+         "startLine": 267,
+         "startColumn": 15,
+         "endColumn": 20
+        }
+       }
+      }
+     ],
+     "partialFingerprints": {
+      "primaryLocationLineHash": "7db63a79956ad90:1",
+      "primaryLocationStartColumnFingerprint": "12"
+     },
+     "relatedLocations": [
+      {
+       "id": 1,
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "ruaronicola/codeql-codebases/garfield/challenge_src/src/main.cpp",
+         "uriBaseId": "%SRCROOT%",
+         "index": 5
+        },
+        "region": {
+         "startLine": 213,
+         "startColumn": 8,
+         "endColumn": 13
+        }
+       },
+       "message": {
+        "text": "fname"
+       }
+      }
+     ]
+    }
+   ],
+   "columnKind": "utf16CodeUnits",
+   "properties": {
+    "metricResults": [
+     {
+      "rule": {
+       "id": "cpp/summary/lines-of-user-code",
+       "index": 163
+      },
+      "ruleId": "cpp/summary/lines-of-user-code",
+      "ruleIndex": 163,
+      "value": 2102,
+      "baseline": 4769
+     },
+     {
+      "rule": {
+       "id": "cpp/summary/lines-of-code",
+       "index": 164
+      },
+      "ruleId": "cpp/summary/lines-of-code",
+      "ruleIndex": 164,
+      "value": 53071
+     }
+    ],
+    "semmle.formatSpecifier": "sarif-latest"
+   }
+  }
+ ]
+}

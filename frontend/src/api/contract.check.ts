@@ -122,7 +122,7 @@ type FilterKeys = keyof import("../lib/issueFilters").IssueFilterQuery;
 export type Q10 = Fits<keyof ExportQuery, FilterKeys>;
 export type Q11 = Fits<keyof IssueListQuery, FilterKeys>;
 type OrgTargetsQuery = NonNullable<Ops["listOrgTargets"]["parameters"]["query"]>;
-export type Q12 = Fits<NonNullable<OrgTargetsQuery["kind"]>, "image">;
+export type Q12 = Fits<NonNullable<OrgTargetsQuery["kind"]>, "image" | "import">;
 // v0.6 wave 1: the org's own scan rules.
 export type C67 = Fits<T.ScanRuleTool, S["ScanRuleTool"]>;
 export type C68 = Fits<S["ScanRuleTool"], T.ScanRuleTool>;
@@ -154,3 +154,56 @@ type RuleDeleteQuery = Ops["deleteScanRule"]["parameters"]["query"];
 export type Q14 = Fits<RuleDeleteQuery, { version: number }>;
 type VersionsQuery = NonNullable<Ops["listScanRuleVersions"]["parameters"]["query"]>;
 export type Q15 = Fits<keyof VersionsQuery, "limit" | "cursor">;
+// v0.7 wave 1: a scan's org rule links to the rule that ran by id (null before v0.7). Both
+// directions, so a field the UI treats as nullable can't silently become required or vanish.
+export type C86 = Fits<T.ScanRuleRef["scan_rule_id"], S["ScanRuleRef"]["scan_rule_id"]>;
+export type C87 = Fits<S["ScanRuleRef"]["scan_rule_id"], T.ScanRuleRef["scan_rule_id"]>;
+// v0.7 wave 2: registry credentials, scans of pulled images, secrets in image layers. Fields the
+// UI shows or branches on are checked both ways, so they can't silently become optional or vanish.
+export type C88 = Fits<T.RegistryCredential, S["RegistryCredential"]>;
+export type C89 = Fits<S["RegistryCredential"], T.RegistryCredential>;
+export type C90 = Fits<T.RegistryError, NonNullable<S["RegistryCredential"]["last_error"]>>;
+export type C91 = Fits<NonNullable<S["RegistryCredential"]["last_error"]>, T.RegistryError>;
+export type C92 = Fits<T.ItemList<T.RegistryCredential>, Json<"listRegistryCredentials", 200>>;
+export type C93 = Fits<T.RegistryCredential, Json<"createRegistryCredential", 201>>;
+export type C94 = Fits<T.RegistryCredential, Json<"updateRegistryCredential", 200>>;
+export type C95 = Fits<T.RegistryTestResult, Json<"testRegistryCredential", 200>>;
+export type C96 = Fits<Json<"testRegistryCredential", 200>, T.RegistryTestResult>;
+export type C97 = Fits<T.Scan, Json<"createPullScan", 201>>;
+export type C98 = Fits<T.Scan["pulled"], S["Scan"]["pulled"]>;
+export type C99 = Fits<S["Scan"]["pulled"], T.Scan["pulled"]>;
+export type C100 = Fits<T.IssueImageLayer, NonNullable<S["Issue"]["image_layer"]>>;
+export type C101 = Fits<NonNullable<S["Issue"]["image_layer"]>, T.IssueImageLayer>;
+export type C102 = Fits<T.Issue["image_layer"], S["Issue"]["image_layer"]>;
+export type C103 = Fits<S["Issue"]["image_layer"], T.Issue["image_layer"]>;
+export type R19 = Fits<S["CreateRegistryCredentialRequest"], T.CreateRegistryCredentialBody>;
+export type R20 = Fits<S["UpdateRegistryCredentialRequest"], T.UpdateRegistryCredentialBody>;
+export type R21 = Fits<S["PullScanRequest"], T.PullScanBody>;
+type PullBody = Ops["createPullScan"]["requestBody"]["content"]["application/json"];
+export type R22 = Fits<PullBody, T.PullScanBody>;
+type RegistryUpdateBody = Ops["updateRegistryCredential"]["requestBody"]["content"]["application/json"];
+export type R23 = Fits<RegistryUpdateBody, T.UpdateRegistryCredentialBody>;
+// v0.8 wave 1: results imported from another tool (SARIF, GitLab SAST). Both directions for every
+// field the UI shows or branches on, so none can silently become optional, widen or vanish.
+export type C104 = Fits<T.Tool, S["Tool"]>;
+export type C105 = Fits<S["Tool"], T.Tool>;
+export type C106 = Fits<T.ScanImport, S["ScanImport"]>;
+export type C107 = Fits<S["ScanImport"], T.ScanImport>;
+export type C108 = Fits<T.Scan["import"], S["Scan"]["import"]>;
+export type C109 = Fits<S["Scan"]["import"], T.Scan["import"]>;
+export type C110 = Fits<T.Issue["external_tool"], S["Issue"]["external_tool"]>;
+export type C111 = Fits<S["Issue"]["external_tool"], T.Issue["external_tool"]>;
+export type C117 = Fits<T.IssueSummary["external_tool"], S["IssueSummary"]["external_tool"]>;
+export type C118 = Fits<S["IssueSummary"]["external_tool"], T.IssueSummary["external_tool"]>;
+export type C112 = Fits<T.ImportFormat, S["ScanImport"]["format"]>;
+export type C113 = Fits<S["ScanImport"]["format"], T.ImportFormat>;
+export type C114 = Fits<T.CreateScanResponse, Json<"createImportScan", 201>>;
+export type R24 = Fits<S["ImportScanRequest"], T.ImportScanBody>;
+type ImportBody = Ops["createImportScan"]["requestBody"]["content"]["application/json"];
+export type R25 = Fits<ImportBody, T.ImportScanBody>;
+// The issue list's Source filter covers every source the server has, and the imported-tool filter
+// is the contract's parameter.
+export type Q16 = Fits<import("../lib/issueFilters").IssueSourceFilter, NonNullable<IssueListQuery["source"]>>;
+export type Q18 = Fits<import("../lib/issueFilters").IssueSourceFilter, NonNullable<ExportQuery["source"]>>;
+export type Q19 = Fits<NonNullable<ExportQuery["external_tool"]>, NonNullable<import("../lib/issueFilters").IssueFilterQuery["external_tool"]>>;
+export type Q17 = Fits<NonNullable<IssueListQuery["external_tool"]>, NonNullable<import("../lib/issueFilters").IssueFilterQuery["external_tool"]>>;

@@ -335,3 +335,8 @@ func ParseRule(tool rules.Tool, body []byte) (rules.Rule, []rules.Problem) {
 	r.Canonical = []byte(strings.Join(lines, "\n") + "\n")
 	return r, nil
 }
+
+// SetScanOrgRules sets scan.org_rules, as the worker records them.
+func (f *Fake) SetScanOrgRules(id uuid.UUID, refs service.ScanRuleRefs) {
+	f.setScan(id, func(r *scanRow) { r.OrgRules = refs })
+}

@@ -143,12 +143,15 @@ type NewRuleTest struct {
 	CreatedAt time.Time
 }
 
-// ScanRuleRef is one org rule a scan ran (scan.org_rules, written by the worker).
+// ScanRuleRef is one org rule a scan ran (scan.org_rules, written by the
+// worker). ScanRuleID is the scan_rule row that ran; null on scans recorded
+// before v0.7, whose entries don't carry it.
 type ScanRuleRef struct {
-	RuleID  string `json:"rule_id"`
-	Tool    string `json:"tool"`
-	Version int    `json:"version"`
-	SHA256  string `json:"sha256"`
+	RuleID     string     `json:"rule_id"`
+	Tool       string     `json:"tool"`
+	Version    int        `json:"version"`
+	SHA256     string     `json:"sha256"`
+	ScanRuleID *uuid.UUID `json:"scan_rule_id"`
 }
 
 // ScanRuleRefs renders as [] when empty.

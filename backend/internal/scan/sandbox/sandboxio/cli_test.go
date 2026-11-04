@@ -19,25 +19,7 @@ import (
 // lets the scanner start only once nothing connects, and probe -within
 // retries until the network is cut off.
 func TestCLINetworkGate(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	open := ln.Addr().String()
-	var mu sync.Mutex
-	accepted := 0
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			c.Close()
-			mu.Lock()
-			accepted++
-			mu.Unlock()
-		}
-	}()
+	open, _, _ := countingListener(t)
 	marker := filepath.Join(t.TempDir(), "ready")
 	must(t, os.WriteFile(marker, nil, 0o444))
 
@@ -47,22 +29,18 @@ func TestCLINetworkGate(t *testing.T) {
 		t.Fatalf("open network: exit %d: %s", code, msg)
 	}
 
-	// Cut off after the first round (the policy applied late): accepted.
-	mu.Lock()
-	accepted = 0
-	mu.Unlock()
+	// Cut off after the first round (the policy applied late): accepted. A
+	// listener of its own: the first one may still hold connections from the
+	// run above in its backlog, which would close it before this probe's first
+	// round (the flake the v0.6.0-alpha.3 release hit).
+	late, accepted, ln := countingListener(t)
 	go func() {
-		for {
-			mu.Lock()
-			n := accepted
-			mu.Unlock()
-			if n > 0 {
-				ln.Close()
-				return
-			}
+		for accepted() == 0 {
 			time.Sleep(5 * time.Millisecond)
 		}
+		ln.Close()
 	}()
+	open = late
 	code, out, _ := run(t, context.Background(), nil, "probe", "-connect", open, "-within", "10s", "-timeout", "500ms")
 	var r ProbeReport
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
@@ -74,6 +52,32 @@ func TestCLINetworkGate(t *testing.T) {
 	if code, _, msg := run(t, context.Background(), nil, "wait", "-marker", marker, "-connect", open, "-within", "5s", "-timeout", "500ms"); code != ExitOK {
 		t.Fatalf("closed network: exit %d: %s", code, msg)
 	}
+}
+
+// countingListener accepts and closes connections on a loopback port and
+// counts them; the listener closes when the test ends.
+func countingListener(t *testing.T) (addr string, accepted func() int, ln net.Listener) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var mu sync.Mutex
+	n := 0
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+			mu.Lock()
+			n++
+			mu.Unlock()
+		}
+	}()
+	return ln.Addr().String(), func() int { mu.Lock(); defer mu.Unlock(); return n }, ln
 }
 
 func run(t *testing.T, ctx context.Context, stdin []byte, args ...string) (int, string, string) {

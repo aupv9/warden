@@ -62,6 +62,21 @@ func HistoryResult(rule, uri string, line int, secret string, c Commit) M {
 	}
 }
 
+// ImageResult is one result as warden-layers hands it to warden-redact
+// (internal/scan/layerscan): `gitleaks dir` over the layer's directory, the
+// path rewritten to the image's and the layer index added.
+func ImageResult(rule, path string, line int, secret string, layer int) M {
+	return M{
+		"ruleId":    rule,
+		"message":   M{"text": rule + " has detected secret for file " + path + "."},
+		"locations": []any{Loc(path, line, secret)},
+		"partialFingerprints": M{
+			"commitSha": "", "email": "", "author": "", "date": "", "commitMessage": "",
+		},
+		"properties": M{"tags": []any{}, sarif.LayerIndexProp: json.Number(itoa(layer))},
+	}
+}
+
 // RoundTrip serializes and re-decodes a fixture the way Load would see it.
 func RoundTrip(doc M) M {
 	b, err := json.Marshal(doc)

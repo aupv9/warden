@@ -117,6 +117,11 @@ func TestBuildIssueList(t *testing.T) {
 			[]string{"i.tool = 'trivy' AND i.rule_id LIKE 'malicious:%'", "i.license_category"}},
 		{service.IssueQuery{Kind: service.KindLicense, Source: "image", Target: "ghcr.io/acme/api"},
 			[]string{"i.tool = 'trivy' AND i.rule_id LIKE 'license:%'", "i.target <> ''", "i.target = $"}},
+		// Imports: source=import is tool external, and image leaves them out.
+		{service.IssueQuery{Source: "import", Tool: service.ToolExternal, ExternalTool: "codeql"},
+			[]string{"i.tool = $", "i.external_tool = $", "i.license_category, i.external_tool"}},
+		{service.IssueQuery{Source: "image"},
+			[]string{"i.target <> '' AND i.target <> $", "AND i.tool <> $"}},
 	} {
 		c.q.Vis, c.q.Now, c.q.Limit = base.Vis, now, 10
 		sql, a := buildIssueList(c.q)
@@ -168,7 +173,8 @@ func TestBuildTargetsAndProjectComponents(t *testing.T) {
 		"":                  "FROM t JOIN vp ON vp.id = t.project_id\n",
 		service.KindSource:  "WHERE t.target = ''",
 		service.KindHistory: "WHERE t.target = $",
-		service.KindImage:   "WHERE t.target <> '' AND t.target <> $",
+		service.KindImage:   "WHERE t.target <> '' AND t.target <> $2 AND NOT starts_with(t.target, $3)",
+		service.KindImport:  "WHERE starts_with(t.target, $2)",
 	} {
 		a = nil
 		sql := buildTargets(&a, `SELECT p.id, p.key, p.name FROM project p WHERE `+visible(&a, vis), kind, 10)

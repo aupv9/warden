@@ -8,6 +8,10 @@ import { SEVERITY_LABELS, TOOL_LABELS, userName } from "./format";
 // project member, ≤ 50 rules); the server checks again.
 
 export const MAX_RULES = 50;
+/** What a rule can match on: a Warden scanner, or (v0.8) `external`, any imported result. Every
+ *  value the contract has, so editing a rule never drops its scanner and widens it. */
+export const RULE_TOOLS: Tool[] = [...TOOLS, "external"];
+export const RULE_TOOL_LABELS: Record<Tool, string> = { ...TOOL_LABELS, external: "Imported (any tool)" };
 export const GLOB_MAX = 200;
 
 export interface RuleDraft {
@@ -39,7 +43,7 @@ export function toDraft(r: AssignRule): RuleDraft {
   return {
     key: newKey(),
     path_glob: r.match.path_glob ?? "",
-    tool: r.match.tool && TOOLS.includes(r.match.tool) ? r.match.tool : "",
+    tool: RULE_TOOLS.find((t) => t === r.match.tool) ?? "",
     severity_at_least: r.match.severity_at_least && SEVERITIES.includes(r.match.severity_at_least) ? r.match.severity_at_least : "",
     assignee_id: r.assignee_id,
   };
@@ -116,7 +120,8 @@ export function serverRuleErrors(fields: Record<string, string>, count: number):
 export function describeRule(r: AssignRule, members: ProjectMember[]): { when: string; who: string; left: boolean } {
   const parts: string[] = [];
   if (r.match.path_glob) parts.push(`path matches ${r.match.path_glob}`);
-  if (r.match.tool) parts.push(`found by ${TOOL_LABELS[r.match.tool] ?? r.match.tool}`);
+  if (r.match.tool === "external") parts.push("imported from another tool");
+  else if (r.match.tool) parts.push(`found by ${TOOL_LABELS[r.match.tool] ?? r.match.tool}`);
   if (r.match.severity_at_least) {
     const s = r.match.severity_at_least;
     parts.push(s === "info" ? "any severity" : s === "critical" ? "severity is Critical" : `severity is ${SEVERITY_LABELS[s]} or above`);

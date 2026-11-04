@@ -104,6 +104,9 @@ type fakeSandbox struct {
 	// failed tool's exit status.
 	docs     map[string]st.M
 	exitCode int
+	// docFns: the SARIF a tool writes, computed from what its scan directory
+	// holds when it runs (an import's screening file); wins over docs.
+	docFns map[string]func(scanDir string) st.M
 	// mounted: what the tool's mounts held when it ran, by path under the
 	// scan directory (org rules, a rule test's snippet), with their modes.
 	mounted map[string]mountedFile
@@ -149,6 +152,9 @@ func (f *fakeSandbox) Run(ctx context.Context, spec sandbox.ToolSpec, c sandbox.
 	doc := st.Doc([]any{st.M{"ruleId": "r1", "message": st.M{"text": "m"}, "locations": []any{st.Loc("/src/app/a.py", 1)}}})
 	if d, ok := f.docs[spec.Name]; ok {
 		doc = d
+	}
+	if fn, ok := f.docFns[spec.Name]; ok {
+		doc = fn(c.ScanDir)
 	}
 	if f.empty {
 		doc = st.Doc([]any{})

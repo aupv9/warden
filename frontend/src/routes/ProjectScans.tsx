@@ -22,12 +22,15 @@ import {
   userName,
 } from "../lib/format";
 import { commitsText, HISTORY_TARGET } from "../lib/history";
+import { IMPORT_FORMAT_LABELS, importCountsText, importSourceText, isImportTool, scanToolLabel } from "../lib/imports";
 import { isImageTarget } from "../lib/intel";
-import { isRejected, scanErrorMessages } from "../lib/scanErrors";
+import { pulledFromText } from "../lib/registries";
+import { isPullFailure, isRejected, scanErrorMessages } from "../lib/scanErrors";
 import { can } from "../lib/permissions";
 import { ranRules, SCAN_RULE_TOOL_LABELS } from "../lib/scanRules";
 import { showToast } from "../lib/toast";
 import { NewScan, useLimits } from "./NewScan";
+import type { NewScanMode } from "./NewScan";
 import { useProjectCtx } from "./projectCtx";
 
 export function ProjectScansTab() {
@@ -40,7 +43,19 @@ export function ProjectScansTab() {
   // An archived project takes no new scans (the API answers 409 PROJECT_ARCHIVED).
   const canRun = can("run_scan", org.role, project.my_role) && !archived;
   const picker = useRef<HTMLInputElement>(null);
-  const [kind, setKind] = useState<UploadKind>("source");
+  // ?new=image or ?new=pull opens the New scan card on that kind (a link can point at it).
+  const [kind, setKind] = useState<NewScanMode>(() => {
+    const k = params.get("new");
+    return k === "image" || k === "pull" ? k : "source";
+  });
+  // v0.7 wave 2: "Pull again" from a failed pulled scan fills Image from a registry with its reference.
+  const [pullSeed, setPullSeed] = useState<{ ref: string; n: number } | null>(null);
+  const pullAgain = canRun
+    ? (ref: string) => {
+        setKind("pull");
+        setPullSeed((prev) => ({ ref, n: (prev?.n ?? 0) + 1 }));
+      }
+    : undefined;
 
   // The right-hand card shows the scan named in ?scan=, else the newest one still in progress.
   const selectedId =
@@ -68,7 +83,7 @@ export function ProjectScansTab() {
     <div className="page-body">
       <div className="grid grid-2">
         {canRun ? (
-          <NewScan pickerRef={picker} kind={kind} setKind={setKind} onStarted={(scan) => select(scan.id)} />
+          <NewScan pickerRef={picker} kind={kind} setKind={setKind} pullSeed={pullSeed} onStarted={(scan) => select(scan.id)} />
         ) : archived ? (
           <Card title="New scan" titleId="new-scan-h">
             <div className="dropzone is-disabled" aria-hidden="true">
@@ -94,7 +109,7 @@ export function ProjectScansTab() {
             </p>
           </Card>
         )}
-        <ScanPanel scanId={selectedId} canRun={canRun} onUploadNew={openPicker} onClear={() => select(null)} />
+        <ScanPanel scanId={selectedId} canRun={canRun} onUploadNew={openPicker} onPullAgain={pullAgain} onClear={() => select(null)} />
       </div>
 
       <Card title="Scan history" titleId="history-h" flush>
@@ -174,14 +189,66 @@ function historyStatus(s: Scan, limits: Limits): { pill: React.ReactNode; note?:
 
 /** v0.3: an image scan's kind and the image it scanned (the reference given at upload, else the
  *  repository its issues are tracked under). Text from the uploader, shown as text. */
-function ImageLine({ scan: s }: { scan: Scan }) {
+function ImageLine({ scan: s, pulledFrom = true }: { scan: Scan; pulledFrom?: boolean }) {
   return (
     <span className="scan-image">
       <Pill>Image</Pill>
-      <span className="mono" title={s.image_ref && s.image_ref !== s.target ? `Issues tracked under ${s.target}` : undefined}>
+      <span className="mono pull-ref" title={s.image_ref && s.image_ref !== s.target ? `Issues tracked under ${s.target}` : undefined}>
         {s.image_ref || s.target}
       </span>
+      {/* v0.7 wave 2: the worker pulled it (by digest) instead of an upload. */}
+      {s.pulled && pulledFrom && <span className="muted pulled-from">{pulledFromText(s)}</span>}
     </span>
+  );
+}
+
+/** v0.8: an import scan (another tool's report, from `warden import` in CI): the tool and its
+ *  category. Both come from the uploader, shown as text. */
+function ImportLine({ scan: s }: { scan: Scan }) {
+  return (
+    <span className="scan-image">
+      <Pill>Imported</Pill>
+      {s.import && <span className="import-source">{importSourceText(s.import)}</span>}
+    </span>
+  );
+}
+
+/** v0.8: what an import read: the format and the tool's version, then (once processed) results
+ *  read, dropped and screened, each said in words. */
+function ImportDetails({ imp }: { imp: NonNullable<Scan["import"]> }) {
+  const counts = importCountsText(imp);
+  return (
+    <div className="stack small">
+      <div className="scan-image-line">
+        <span className="scan-image">
+          <Pill>Imported</Pill>
+          <span className="import-source">{importSourceText(imp)}</span>
+        </span>
+        <span className="muted">
+          {IMPORT_FORMAT_LABELS[imp.format] ?? imp.format}
+          {imp.tool_version && (
+            <>
+              {" · version "}
+              <span className="mono">{imp.tool_version}</span>
+            </>
+          )}
+        </span>
+      </div>
+      {counts && (
+        <>
+          <ul className="import-counts" aria-label="What the import read">
+            <li>{counts.results}</li>
+            <li>{counts.dropped}</li>
+            <li>{counts.screened}</li>
+          </ul>
+          <p className="faint import-note">
+            Dropped: results Warden refused (a path outside the source root, or over a limit). Screened: strings left out
+            because they looked like secrets; Gitleaks checked every text and path from the report before anything was stored.
+          </p>
+        </>
+      )}
+      <span className="muted">An import fixes only issues of its own tool and category, never those Warden's scanners found.</span>
+    </div>
   );
 }
 
@@ -210,9 +277,11 @@ function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boo
         </button>
       </td>
       <td data-label="File" className="mono" style={{ fontSize: 13, wordBreak: "break-all" }}>
-        {s.file_name}
+        {/* A pulled image has no file of its own: its reference (below) says what was scanned. */}
+        {!s.pulled && s.file_name}
         {s.kind === "image" && <ImageLine scan={s} />}
         {s.kind === "history" && <HistoryLine scan={s} />}
+        {s.kind === "import" && <ImportLine scan={s} />}
       </td>
       <td data-label="By">
         <span className="nowrap">{userName(s.created_by)}</span>
@@ -252,11 +321,14 @@ function ScanPanel({
   scanId,
   canRun,
   onUploadNew,
+  onPullAgain,
   onClear,
 }: {
   scanId: string | undefined;
   canRun: boolean;
   onUploadNew?: (kind: UploadKind) => void;
+  /** v0.7 wave 2: fill Image from a registry with this reference. */
+  onPullAgain?: (ref: string) => void;
   onClear: () => void;
 }) {
   const { orgId } = useOrgCtx();
@@ -303,20 +375,33 @@ function ScanPanel({
       ? `?${new URLSearchParams({ target: s.target })}`
       : s.kind === "history"
         ? `?${new URLSearchParams({ source: "history" })}`
-        : ""
+        : s.kind === "import"
+          ? // v0.8: the imported tool's issues (all its categories; the tag on each says which tool).
+            `?${new URLSearchParams(s.import && isImportTool(s.import.tool) ? { source: "import", external_tool: s.import.tool } : { source: "import" })}`
+          : ""
   }`;
   const history = s.kind === "history";
+  const imported = s.kind === "import";
 
-  const title = rejected
+  const pullFailed = isPullFailure(s);
+  const title = pullFailed
+    ? "Pull failed"
+    : rejected
     ? s.kind === "image"
       ? "Image rejected"
       : history
         ? "Bundle rejected"
-        : "Archive rejected"
+        : imported
+          ? "Report rejected"
+          : "Archive rejected"
     : s.status === "cancelled"
-      ? "Scan cancelled"
+      ? imported
+        ? "Import cancelled"
+        : "Scan cancelled"
       : s.status === "failed"
-        ? "Scan failed"
+        ? imported
+          ? "Import failed"
+          : "Scan failed"
         : inProgress
           ? "Scan in progress"
           : "Scan finished";
@@ -329,7 +414,7 @@ function ScanPanel({
     <ScanStatusMark status="queued">Queued · waiting for a worker</ScanStatusMark>
   ) : s.status === "partial" && failedTool ? (
     <ScanStatusMark status="partial">
-      {`Partial · ${TOOL_LABELS[failedTool.tool]} ${failedTool.status === "timeout" ? "timed out" : "failed"}`}
+      {`Partial · ${scanToolLabel(s, failedTool.tool)} ${failedTool.status === "timeout" ? "timed out" : "failed"}`}
     </ScanStatusMark>
   ) : (
     <ScanStatusMark status={s.status} />
@@ -343,7 +428,16 @@ function ScanPanel({
     >
       <div className="stack" style={{ gap: 14 }}>
         <p className="muted" style={{ fontSize: 13 }}>
-          <span className="mono">{s.file_name}</span> · {formatBytes(s.file_size)}
+          {s.pulled ? (
+            <>
+              {pulledFromText(s)}
+              {s.file_size > 0 && <> · {formatBytes(s.file_size)}</>}
+            </>
+          ) : (
+            <>
+              <span className="mono">{s.file_name}</span> · {formatBytes(s.file_size)}
+            </>
+          )}
           {s.status === "cancelled"
             ? ` · cancelled ${formatDateTime(s.finished_at)}${duration !== null ? `, after ${formatDuration(duration)}` : ""}`
             : inProgress
@@ -364,9 +458,10 @@ function ScanPanel({
             )}
           </div>
         )}
+        {imported && s.import && <ImportDetails imp={s.import} />}
         {s.kind === "image" && (
           <p className="scan-image-line small">
-            <ImageLine scan={s} />
+            <ImageLine scan={s} pulledFrom={false} />
             {s.target && s.image_ref && s.image_ref !== s.target && (
               <span className="muted">
                 Issues tracked under <span className="mono">{s.target}</span>
@@ -392,11 +487,11 @@ function ScanPanel({
         )}
         {runs.length > 0 && !rejected && (
           <Table
-            caption="Scanners"
+            caption={imported ? "Imported tool" : "Scanners"}
             stack={false}
             head={
               <tr>
-                <th>Scanner</th>
+                <th>{imported ? "Tool" : "Scanner"}</th>
                 <th>Status</th>
                 <th className="num">Findings</th>
                 <th className="num">Time</th>
@@ -406,7 +501,8 @@ function ScanPanel({
             {runs.map((r) => (
               <tr key={r.tool}>
                 <td>
-                  <strong>{TOOL_LABELS[r.tool]}</strong>{" "}
+                  {/* v0.8: an import's run names the imported tool, not "external". */}
+                  <strong>{scanToolLabel(s, r.tool)}</strong>{" "}
                   {r.tool_version && (
                     <span className="mono muted" style={{ fontSize: 12 }}>
                       {r.tool_version}
@@ -435,9 +531,12 @@ function ScanPanel({
         )}
         {s.org_rules.length > 0 && !rejected && <OrgRulesRan scan={s} />}
         {s.sbom && (s.status === "completed" || s.status === "partial") && <SbomRow scan={s} sbom={s.sbom} />}
-        {rejected && <p className="muted">Nothing was scanned and no issues changed.</p>}
+        {(rejected || pullFailed) && <p className="muted">Nothing was scanned and no issues changed.</p>}
         {history && (rejected || s.status === "failed" || s.status === "cancelled") && (
           <p className="muted small">History scans run from CI with warden scan --history; run the job again once it is fixed.</p>
+        )}
+        {imported && (rejected || s.status === "failed" || s.status === "cancelled") && (
+          <p className="muted small">Imports run from CI with warden import; run the job again once it is fixed.</p>
         )}
         {s.status === "cancelled" && <p className="muted">A cancelled scan doesn't change any issue.</p>}
         <ActionError error={cancel.error} overrides={{ CONFLICT: "This scan already finished." }} />
@@ -457,7 +556,12 @@ function ScanPanel({
               View issues
             </ButtonLink>
           )}
-          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && (
+          {(rejected || s.status === "cancelled" || s.status === "failed") && s.pulled && onPullAgain && s.image_ref && (
+            <Button variant="primary" onClick={() => onPullAgain(s.image_ref!)}>
+              Pull again
+            </Button>
+          )}
+          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && !imported && !s.pulled && (
             <Button variant="primary" onClick={() => onUploadNew(s.kind as UploadKind)}>
               {s.kind === "image" ? "Upload a new .tar" : "Upload a new .zip"}
             </Button>
@@ -469,8 +573,10 @@ function ScanPanel({
 }
 
 /** v0.6: the org's own rules this scan ran, at the version it ran. A rule that still exists links
- *  to its page (by id); a deleted one is its rule id as text. Only these rules' issues can be
- *  fixed by this scan. */
+ *  to its page (by id); a deleted one is its rule id as text. v0.7: the rule that ran is found by
+ *  `scan_rule_id`, so one deleted and added again with the same key reads as deleted (scans
+ *  from before v0.7 fall back to scanner and rule id; see ranRules). Only these rules' issues
+ *  can be fixed by this scan. */
 function OrgRulesRan({ scan: s }: { scan: Scan }) {
   const { orgId } = useOrgCtx();
   const rules = useScanRules(orgId);

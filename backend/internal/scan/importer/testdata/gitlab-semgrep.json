@@ -1,0 +1,432 @@
+{
+ "version": "15.2.2",
+ "vulnerabilities": [
+  {
+   "id": ":AUTO_SKIP:",
+   "category": "sast",
+   "name": "Deserialization of untrusted data",
+   "description": "The application was found using an unsafe version of `yaml` load which is vulnerable to\ndeserialization attacks. Deserialization attacks exploit the process of reading serialized\ndata and turning it back\ninto an object. By constructing malicious objects and serializing them, an adversary may\nattempt to:\n\n- Inject code that is executed upon object construction, which occurs during the\ndeserialization process.\n- Exploit mass assignment by including fields that are not normally a part of the serialized\ndata but are read in during deserialization.\n\nTo remediate this issue, use `safe_load()` or cal",
+   "cve": "semgrep_id:bandit.B506:329:329",
+   "severity": "High",
+   "scanner": {
+    "id": "semgrep",
+    "name": "Semgrep"
+   },
+   "location": {
+    "file": "app/app.py",
+    "start_line": 329
+   },
+   "identifiers": [
+    {
+     "type": "semgrep_id",
+     "name": "bandit.B506",
+     "value": "bandit.B506",
+     "url": "https://semgrep.dev/r/gitlab.bandit.B506"
+    },
+    {
+     "type": "cwe",
+     "name": "CWE-502",
+     "value": "502",
+     "url": "https://cwe.mitre.org/data/definitions/502.html"
+    },
+    {
+     "type": "owasp",
+     "name": "A08:2021 - Software and Data Integrity Failures",
+     "value": "A08:2021"
+    },
+    {
+     "type": "owasp",
+     "name": "A08:2025 - Software or Data Integrity Failures",
+     "value": "A08:2025"
+    },
+    {
+     "type": "owasp",
+     "name": "A8:2017 - Insecure Deserialization",
+     "value": "A8:2017"
+    },
+    {
+     "type": "bandit_test_id",
+     "name": "Bandit Test ID B506",
+     "value": "B506"
+    }
+   ],
+   "tracking": {
+    "type": "source",
+    "items": [
+     {
+      "file": "app/app.py",
+      "line_start": 329,
+      "line_end": 329,
+      "signatures": [
+       {
+        "algorithm": "scope_offset_compressed",
+        "value": "app/app.py|yaml_hammer[0]:11"
+       },
+       {
+        "algorithm": "scope_offset",
+        "value": "app/app.py|yaml_hammer[0]:13"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": ":AUTO_SKIP:",
+   "category": "sast",
+   "name": "Improper neutralization of special elements used in an SQL Command ('SQL Injection')",
+   "description": "SQL Injection is a critical vulnerability that can lead to data or system compromise. By\ndynamically generating SQL query strings, user input may be able to influence the logic of\nthe SQL statement. This could lead to an adversary accessing information they should\nnot have access to, or in some circumstances, being able to execute OS functionality or code.\n\nReplace all dynamically generated SQL queries with parameterized queries. In situations where\ndynamic queries must be created, never use direct user input, but instead use a map or\ndictionary of valid values and resolve them using a user su",
+   "cve": "semgrep_id:bandit.B608:265:265",
+   "severity": "High",
+   "scanner": {
+    "id": "semgrep",
+    "name": "Semgrep"
+   },
+   "location": {
+    "file": "app/app.py",
+    "start_line": 265
+   },
+   "identifiers": [
+    {
+     "type": "semgrep_id",
+     "name": "bandit.B608",
+     "value": "bandit.B608",
+     "url": "https://semgrep.dev/r/gitlab.bandit.B608"
+    },
+    {
+     "type": "cwe",
+     "name": "CWE-89",
+     "value": "89",
+     "url": "https://cwe.mitre.org/data/definitions/89.html"
+    },
+    {
+     "type": "owasp",
+     "name": "A03:2021 - Injection",
+     "value": "A03:2021"
+    },
+    {
+     "type": "owasp",
+     "name": "A05:2025 - Injection",
+     "value": "A05:2025"
+    },
+    {
+     "type": "owasp",
+     "name": "A1:2017 - Injection",
+     "value": "A1:2017"
+    },
+    {
+     "type": "bandit_test_id",
+     "name": "Bandit Test ID B608",
+     "value": "B608"
+    }
+   ],
+   "tracking": {
+    "type": "source",
+    "items": [
+     {
+      "file": "app/app.py",
+      "line_start": 265,
+      "line_end": 265,
+      "signatures": [
+       {
+        "algorithm": "scope_offset_compressed",
+        "value": "app/app.py|search_customer[0]:15"
+       },
+       {
+        "algorithm": "scope_offset",
+        "value": "app/app.py|search_customer[0]:18"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": ":AUTO_SKIP:",
+   "category": "sast",
+   "name": "Use of a broken or risky cryptographic algorithm",
+   "description": "The application was found using an insecure or risky digest or signature algorithm. MD2, MD4,\n MD5  and SHA1 hash algorithms have been found to be vulnerable to producing collisions.\n\nThis means\nthat two different values, when hashed, can lead to the same hash value. If the application is\ntrying\nto use these hash methods for storing passwords, then it is recommended to switch to a\npassword hashing\nalgorithm such as Argon2id or PBKDF2.\n\nNote that the `Crypto` and `Cryptodome` Python packages are no longer recommended for\nnew applications, instead consider using the [cryptography](https://crypto",
+   "cve": "semgrep_id:bandit.B303-1:141:141",
+   "severity": "Medium",
+   "scanner": {
+    "id": "semgrep",
+    "name": "Semgrep"
+   },
+   "location": {
+    "file": "app/app.py",
+    "start_line": 141
+   },
+   "identifiers": [
+    {
+     "type": "semgrep_id",
+     "name": "bandit.B303-1",
+     "value": "bandit.B303-1",
+     "url": "https://semgrep.dev/r/gitlab.bandit.B303-1"
+    },
+    {
+     "type": "cwe",
+     "name": "CWE-327",
+     "value": "327",
+     "url": "https://cwe.mitre.org/data/definitions/327.html"
+    },
+    {
+     "type": "owasp",
+     "name": "A02:2021 - Cryptographic Failures",
+     "value": "A02:2021"
+    },
+    {
+     "type": "owasp",
+     "name": "A04:2025 - Cryptographic Failures",
+     "value": "A04:2025"
+    },
+    {
+     "type": "owasp",
+     "name": "A3:2017 - Sensitive Data Exposure",
+     "value": "A3:2017"
+    },
+    {
+     "type": "bandit_test_id",
+     "name": "Bandit Test ID B303",
+     "value": "B303"
+    }
+   ],
+   "tracking": {
+    "type": "source",
+    "items": [
+     {
+      "file": "app/app.py",
+      "line_start": 141,
+      "line_end": 141,
+      "signatures": [
+       {
+        "algorithm": "scope_offset",
+        "value": "app/app.py|reg_customer[0]:6"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": ":AUTO_SKIP:",
+   "category": "sast",
+   "name": "Use of cryptographically weak pseudo-random number generator (PRNG)",
+   "description": "Depending on the context, generating weak random numbers may expose cryptographic functions,\nwhich rely on these numbers, to be exploitable. When generating numbers for sensitive values\nsuch as tokens, nonces, and cryptographic keys, it is recommended that the `secrets` module\nbe used instead.\n\nExample using the secrets module:\n```\nimport secrets\n\n# Generate a secure random 64 byte array\nrandom_bytes = secrets.token_bytes(64)\nprint(random_bytes)\n\n# Generate a secure random 64 byte array as a hex string\nrandom_bytes_hex = secrets.token_hex(64)\n\n# Generate a secure random 64 byte array base64 en",
+   "cve": "semgrep_id:bandit.B311:295:295",
+   "severity": "Low",
+   "scanner": {
+    "id": "semgrep",
+    "name": "Semgrep"
+   },
+   "location": {
+    "file": "app/app.py",
+    "start_line": 295
+   },
+   "identifiers": [
+    {
+     "type": "semgrep_id",
+     "name": "bandit.B311",
+     "value": "bandit.B311",
+     "url": "https://semgrep.dev/r/gitlab.bandit.B311"
+    },
+    {
+     "type": "cwe",
+     "name": "CWE-338",
+     "value": "338",
+     "url": "https://cwe.mitre.org/data/definitions/338.html"
+    },
+    {
+     "type": "owasp",
+     "name": "A02:2021 - Cryptographic Failures",
+     "value": "A02:2021"
+    },
+    {
+     "type": "owasp",
+     "name": "A04:2025 - Cryptographic Failures",
+     "value": "A04:2025"
+    },
+    {
+     "type": "owasp",
+     "name": "A3:2017 - Sensitive Data Exposure",
+     "value": "A3:2017"
+    },
+    {
+     "type": "bandit_test_id",
+     "name": "Bandit Test ID B311",
+     "value": "B311"
+    }
+   ],
+   "tracking": {
+    "type": "source",
+    "items": [
+     {
+      "file": "app/app.py",
+      "line_start": 295,
+      "line_end": 295,
+      "signatures": [
+       {
+        "algorithm": "scope_offset_compressed",
+        "value": "app/app.py|hello[0]:3"
+       },
+       {
+        "algorithm": "scope_offset",
+        "value": "app/app.py|hello[0]:4"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": ":AUTO_SKIP:",
+   "category": "sast",
+   "name": "Use of cryptographically weak pseudo-random number generator (PRNG)",
+   "description": "Depending on the context, generating weak random numbers may expose cryptographic functions,\nwhich rely on these numbers, to be exploitable. When generating numbers for sensitive values\nsuch as tokens, nonces, and cryptographic keys, it is recommended that the `secrets` module\nbe used instead.\n\nExample using the secrets module:\n```\nimport secrets\n\n# Generate a secure random 64 byte array\nrandom_bytes = secrets.token_bytes(64)\nprint(random_bytes)\n\n# Generate a secure random 64 byte array as a hex string\nrandom_bytes_hex = secrets.token_hex(64)\n\n# Generate a secure random 64 byte array base64 en",
+   "cve": "semgrep_id:bandit.B311:319:319",
+   "severity": "Low",
+   "scanner": {
+    "id": "semgrep",
+    "name": "Semgrep"
+   },
+   "location": {
+    "file": "app/app.py",
+    "start_line": 319
+   },
+   "identifiers": [
+    {
+     "type": "semgrep_id",
+     "name": "bandit.B311",
+     "value": "bandit.B311",
+     "url": "https://semgrep.dev/r/gitlab.bandit.B311"
+    },
+    {
+     "type": "cwe",
+     "name": "CWE-338",
+     "value": "338",
+     "url": "https://cwe.mitre.org/data/definitions/338.html"
+    },
+    {
+     "type": "owasp",
+     "name": "A02:2021 - Cryptographic Failures",
+     "value": "A02:2021"
+    },
+    {
+     "type": "owasp",
+     "name": "A04:2025 - Cryptographic Failures",
+     "value": "A04:2025"
+    },
+    {
+     "type": "owasp",
+     "name": "A3:2017 - Sensitive Data Exposure",
+     "value": "A3:2017"
+    },
+    {
+     "type": "bandit_test_id",
+     "name": "Bandit Test ID B311",
+     "value": "B311"
+    }
+   ],
+   "tracking": {
+    "type": "source",
+    "items": [
+     {
+      "file": "app/app.py",
+      "line_start": 319,
+      "line_end": 319,
+      "signatures": [
+       {
+        "algorithm": "scope_offset",
+        "value": "app/app.py|yaml_hammer[0]:3"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": ":AUTO_SKIP:",
+   "category": "sast",
+   "name": "Regular expression with non-literal value",
+   "description": "The `RegExp` constructor was called with a non-literal value. If an adversary were able to\nsupply a malicious regex, they could cause a Regular Expression Denial of Service (ReDoS)\nagainst the application. In Node applications, this could cause the entire application to no\nlonger be responsive to other users' requests.\n\nTo remediate this issue, never allow user-supplied regular expressions. Instead, the regular \nexpression should be  hardcoded. If this is not possible, consider using an alternative regular\nexpression engine such as [node-re2](https://www.npmjs.com/package/re2). RE2 is a safe a",
+   "cve": "semgrep_id:eslint.detect-non-literal-regexp:15:15",
+   "severity": "Medium",
+   "scanner": {
+    "id": "semgrep",
+    "name": "Semgrep"
+   },
+   "location": {
+    "file": "app/static/main.js",
+    "start_line": 15
+   },
+   "identifiers": [
+    {
+     "type": "semgrep_id",
+     "name": "eslint.detect-non-literal-regexp",
+     "value": "eslint.detect-non-literal-regexp",
+     "url": "https://semgrep.dev/r/gitlab.eslint.detect-non-literal-regexp"
+    },
+    {
+     "type": "cwe",
+     "name": "CWE-185",
+     "value": "185",
+     "url": "https://cwe.mitre.org/data/definitions/185.html"
+    },
+    {
+     "type": "owasp",
+     "name": "A03:2021 - Injection",
+     "value": "A03:2021"
+    },
+    {
+     "type": "owasp",
+     "name": "A1:2017 - Injection",
+     "value": "A1:2017"
+    },
+    {
+     "type": "eslint_rule_id",
+     "name": "ESLint rule ID/detect-non-literal-regexp",
+     "value": "detect-non-literal-regexp"
+    }
+   ],
+   "tracking": {
+    "type": "source",
+    "items": [
+     {
+      "file": "app/static/main.js",
+      "line_start": 15,
+      "line_end": 15,
+      "signatures": [
+       {
+        "algorithm": "scope_offset",
+        "value": "app/static/main.js|dangerous_regexp[0]:1"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "scan": {
+  "analyzer": {
+   "id": "semgrep",
+   "name": "Semgrep",
+   "url": "https://gitlab.com/gitlab-org/security-products/analyzers/semgrep",
+   "vendor": {
+    "name": "GitLab"
+   },
+   "version": ":AUTO_SKIP:"
+  },
+  "scanner": {
+   "id": "semgrep",
+   "name": "Semgrep",
+   "url": "https://github.com/returntocorp/semgrep",
+   "vendor": {
+    "name": "GitLab"
+   },
+   "version": ":AUTO_SKIP:"
+  },
+  "type": "sast",
+  "start_time": ":AUTO_SKIP:",
+  "end_time": ":AUTO_SKIP:",
+  "status": "success"
+ }
+}

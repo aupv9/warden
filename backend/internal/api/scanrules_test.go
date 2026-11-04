@@ -438,6 +438,27 @@ func TestOrgRulesOnScansAndIssues(t *testing.T) {
 	}
 
 	rule := e.createRule(lead, "opengrep", "no-eval", nil)
+	// Each ref names the scan_rule row that ran; null on scans recorded
+	// before v0.7, whose entries don't carry it.
+	ruleRow := uuid.MustParse(rule["id"].(string))
+	e.f.SetScanOrgRules(scan, service.ScanRuleRefs{
+		{RuleID: "org.no-eval", Tool: "opengrep", Version: 1, SHA256: rule["sha256"].(string), ScanRuleID: &ruleRow},
+		{RuleID: "org.old", Tool: "gitleaks", Version: 2, SHA256: "s"},
+	})
+	r = e.do("GET", "/scans/"+scan.String(), dev, nil)
+	e.expect(r, 200, "")
+	refs, _ := r.obj()["org_rules"].([]any)
+	if len(refs) != 2 {
+		t.Fatal(r.body)
+	}
+	if m := refs[0].(map[string]any); m["scan_rule_id"] != rule["id"] || m["rule_id"] != "org.no-eval" {
+		t.Fatal(r.body)
+	}
+	if m := refs[1].(map[string]any); m["scan_rule_id"] != nil {
+		t.Fatal(r.body)
+	} else if _, present := m["scan_rule_id"]; !present {
+		t.Fatal("scan_rule_id must be present (null):", r.body)
+	}
 	iss := e.f.AddIssue(e.web, "high", "open", nil)
 	e.f.SetIssue(iss, func(i *servicetest.IssueRow) { i.Tool, i.RuleID = "opengrep", "org.no-eval" })
 	plain := e.f.AddIssue(e.web, "high", "open", nil)
