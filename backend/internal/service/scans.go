@@ -76,7 +76,7 @@ func (s *Service) validateScanInput(in CreateScanInput) fieldErrors {
 	fe := fieldErrors{}
 	image, history := in.Kind == KindImage, in.Kind == KindHistory
 	if in.Kind != "" && in.Kind != KindSource && !image && !history {
-		fe.add("kind", "must be source, image or history")
+		fe.add("kind", "must be source, image or history (imports: POST …/scans/import)")
 	}
 	ext, maxBytes := ".zip", s.cfg.UploadMaxBytes
 	switch {
@@ -233,20 +233,29 @@ func (s *Service) CreateScan(ctx context.Context, a *Actor, projectID uuid.UUID,
 		}); err != nil {
 			return err
 		}
-		// Presigning is a local computation; doing it inside the transaction
-		// means a failure leaves no orphan scan behind.
-		expires := s.now().Add(s.cfg.UploadURLTTL)
-		url, headers, err := s.objects.PresignPut(ctx, key, in.FileSize, sum, s.cfg.UploadURLTTL)
+		up, err := s.presignUpload(ctx, key, in.FileSize, sum)
 		if err != nil {
-			return fmt.Errorf("presign upload: %w", err)
+			return err
 		}
-		if headers == nil {
-			headers = map[string]string{}
-		}
-		out = CreatedScan{Scan: scan, Upload: Upload{Method: "PUT", URL: url, Headers: headers, ExpiresAt: Time(expires)}}
+		out = CreatedScan{Scan: scan, Upload: up}
 		return nil
 	})
 	return out, err
+}
+
+// presignUpload is the PUT a client uploads a scan's file with. Presigning is
+// a local computation; callers do it inside the transaction that records the
+// scan, so a failure leaves no orphan scan behind.
+func (s *Service) presignUpload(ctx context.Context, key string, size int64, sum string) (Upload, error) {
+	expires := s.now().Add(s.cfg.UploadURLTTL)
+	url, headers, err := s.objects.PresignPut(ctx, key, size, sum, s.cfg.UploadURLTTL)
+	if err != nil {
+		return Upload{}, fmt.Errorf("presign upload: %w", err)
+	}
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	return Upload{Method: "PUT", URL: url, Headers: headers, ExpiresAt: Time(expires)}, nil
 }
 
 // PullScanInput is POST …/scans/pull: an image Warden pulls itself.

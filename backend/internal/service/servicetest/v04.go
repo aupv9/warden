@@ -37,6 +37,9 @@ func targetKind(target string) string {
 	case service.HistoryTarget:
 		return service.KindHistory
 	default:
+		if strings.HasPrefix(target, service.ImportTargetPrefix) {
+			return service.KindImport
+		}
 		return service.KindImage
 	}
 }
