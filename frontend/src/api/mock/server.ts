@@ -2018,7 +2018,7 @@ function exportCsv(orgId: string, url: URL): Response {
       i.title,
       i.severity,
       i.status,
-      i.tool,
+      i.external_tool ? `external:${i.external_tool}` : i.tool,
       i.rule_id,
       i.file_path,
       i.start_line,
@@ -2054,7 +2054,7 @@ function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
 }
 
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, image_layer: _il, external_tool: _et, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, image_layer: _il, ...rest } = i;
   return rest;
 }
 

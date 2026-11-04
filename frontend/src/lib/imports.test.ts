@@ -21,8 +21,7 @@ import {
 import {
   DEFAULT_FILTERS,
   describeFilters,
-  exportBlockedReason,
-  issueExportQuery,
+  issueFilterQuery,
   issueFiltersToApiQuery,
   issueFiltersToSearch,
   parseIssueFilters,
@@ -59,15 +58,15 @@ describe("v0.8: imported tools", () => {
     }
   });
 
-  it("an issue's tool: external_tool on the full issue, else from its target; Warden's own issues keep their scanner", () => {
-    const row = { tool: "external" as const, target: "(import) codeql /language:go/" };
+  it("an issue's tool is its external_tool (list rows and the full issue); Warden's own issues keep their scanner", () => {
+    const row = { tool: "external" as const, external_tool: "codeql" };
     expect(isImportIssue(row)).toBe(true);
     expect(importToolOf(row)).toBe("codeql");
-    expect(importToolOf({ ...row, external_tool: "semgrep" })).toBe("semgrep");
     expect(issueToolLabel(row)).toBe("CodeQL");
-    expect(issueToolLabel({ tool: "external", target: "(import) ???" })).toBe("Imported");
-    expect(issueToolLabel({ tool: "gitleaks", target: "(import) codeql" })).toBe("Gitleaks");
-    expect(importToolOf({ tool: "trivy", target: "", external_tool: "codeql" })).toBeNull();
+    expect(issueToolLabel({ tool: "external", external_tool: "external.bandit" })).toBe("bandit");
+    expect(issueToolLabel({ tool: "external", external_tool: null })).toBe("Imported");
+    expect(issueToolLabel({ tool: "gitleaks", external_tool: null })).toBe("Gitleaks");
+    expect(importToolOf({ tool: "trivy", external_tool: "codeql" })).toBeNull();
   });
 
   const imp: ScanImport = { tool: "codeql", category: "/language:python/", format: "sarif", tool_version: "2.23.1", results: 14, dropped: 1, screened: 2 };
@@ -129,12 +128,9 @@ describe("v0.8: issue filters for imports", () => {
     expect(describeFilters({ ...DEFAULT_FILTERS, source: "import", externalTool: "external.bandit" })).toEqual(["Active", "Imported", "Imported from bandit"]);
   });
 
-  it("the CSV export doesn't take them yet: it is turned off, and never sent external_tool", () => {
-    expect(exportBlockedReason(DEFAULT_FILTERS)).toBeNull();
-    expect(exportBlockedReason({ ...DEFAULT_FILTERS, source: "image" })).toBeNull();
-    expect(exportBlockedReason({ ...DEFAULT_FILTERS, source: "import" })).toMatch(/Imported filters/);
-    expect(exportBlockedReason({ ...DEFAULT_FILTERS, externalTool: "codeql" })).toMatch(/Imported filters/);
-    expect(issueExportQuery({ ...DEFAULT_FILTERS, externalTool: "codeql" })).not.toHaveProperty("external_tool");
+  it("the CSV export takes them like the list", () => {
+    const q = issueFilterQuery({ ...DEFAULT_FILTERS, source: "import", externalTool: "codeql" });
+    expect(q).toMatchObject({ source: "import", external_tool: "codeql" });
   });
 });
 
@@ -170,6 +166,9 @@ describe("v0.8: CI setup imports", () => {
     expect(s).toContain('--category "/language:${{ matrix.language }}/"');
     expect(s).toContain('"codeql-results/${{ matrix.language }}.sarif"');
     expect(s).toContain("--project proj-1");
+    // The gate applies to an import as to a scan: both jobs fail on High; the file comes last.
+    expect(s.match(/--fail-on high/g)).toHaveLength(2);
+    expect(s).toMatch(/--fail-on high\n {10}"codeql-results\/\$\{\{ matrix\.language \}\}\.sarif"$/);
     // The import job reads the token from the CI secret, like the scan job.
     expect(s.match(/WARDEN_TOKEN: \$\{\{ secrets\.WARDEN_TOKEN \}\}/g)).toHaveLength(2);
     // With the nightly history job, the CodeQL job skips scheduled runs.
@@ -180,7 +179,7 @@ describe("v0.8: CI setup imports", () => {
     expect(gitlabCiSnippet(p)).not.toContain("warden import");
     const s = gitlabCiSnippet({ ...p, imports: true });
     expect(s).toContain("template: Jobs/SAST.gitlab-ci.yml");
-    expect(s).toContain("./warden import --tool gitlab-sast --format gitlab-sast --url https://warden.example --org org-1 --project proj-1 gl-sast-report.json");
+    expect(s).toContain("./warden import --tool gitlab-sast --format gitlab-sast --url https://warden.example --org org-1 --project proj-1 --fail-on high gl-sast-report.json");
     expect(s).toContain("needs: [semgrep-sast]");
   });
 
