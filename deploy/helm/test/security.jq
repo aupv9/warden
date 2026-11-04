@@ -122,7 +122,7 @@ def https_port: (.port | type) == "string" or .port == 443 or .port == 6443
     (if ([$all[] | select(.kind == "ResourceQuota" and .metadata.namespace == $sandbox)] | length) != 1 then "sandbox namespace: no ResourceQuota" else empty end),
     (if ([$all[] | select(.kind == "LimitRange" and .metadata.namespace == $sandbox)] | length) != 1 then "sandbox namespace: no LimitRange" else empty end),
 
-    # The worker calls user-given webhook URLs: none of its egress rules may
+    # The worker calls user-given webhook URLs and registries: none of its egress rules may
     # reach private addresses on 443/6443 (the API server's own addresses are
     # listed one by one), so the webhook rule's exclusions mean something.
     ($all[] | select(.kind == "NetworkPolicy" and component == "worker") | id as $n |

@@ -23,14 +23,10 @@ const (
 	userAgent   = "Warden-Webhooks/1"
 )
 
-// errBlocked: the address to dial is refused (Blocked).
-var errBlocked = errors.New("webhook: refused address")
-
 // Client sends webhook requests. Build it with NewClient.
 type Client struct {
 	policy Policy
 	http   *http.Client
-	lookup func(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 // ClientOptions are for tests.
@@ -45,26 +41,17 @@ type ClientOptions struct {
 //   - Proxy is nil: an HTTPS_PROXY in the worker's environment would otherwise
 //     make the proxy, not Warden, connect, and the address check would see only
 //     the proxy.
-//   - DialContext resolves the host itself, refuses blocked addresses, and
-//     dials the checked IP; the dialer's Control re-checks the socket address,
-//     so nothing reaches a refused address whatever the resolver returned
-//     (DNS rebinding: the check is on the address dialled, not one looked up
-//     earlier).
+//   - DialContext is the address guard (Dialer): it refuses blocked
+//     addresses at dial time, whatever DNS answered.
 //   - Redirects are never followed (a 3xx is a failed delivery), so a public
 //     endpoint can't bounce Warden to an internal one.
 //   - TLS 1.2 or later, certificates verified; one connection per delivery.
 func NewClient(p Policy, o ClientOptions) *Client {
 	c := &Client{policy: p}
-	var r Resolver = net.DefaultResolver
-	if o.Resolver != nil {
-		r = o.Resolver
-	}
-	c.lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
-		return r.LookupNetIP(ctx, "ip", host)
-	}
+	guard := &Dialer{Allowed: p.Allowed, Resolver: o.Resolver}
 	tr := &http.Transport{
 		Proxy:                  nil,
-		DialContext:            c.dial,
+		DialContext:            guard.DialContext,
 		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: o.RootCAs},
 		TLSHandshakeTimeout:    Timeout,
 		ResponseHeaderTimeout:  Timeout,
@@ -83,23 +70,48 @@ func NewClient(p Policy, o ClientOptions) *Client {
 	return c
 }
 
-// dial connects to addr ("host:port" from the request URL) through a checked IP.
-func (c *Client) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+// Dialer is the address guard: it resolves the host itself, refuses blocked
+// addresses (Blocked) unless Allowed(host), and dials the checked IP; the
+// socket's Control re-checks the address actually connected to, so nothing
+// reaches a refused address whatever the resolver returned (DNS rebinding:
+// the check is on the address dialled, not one looked up earlier). Webhooks
+// and registry pulls (internal/registry) connect only through it.
+type Dialer struct {
+	// Allowed reports hosts exempt from the check (webhook.allow_hosts,
+	// registry.allow_hosts); nil allows none.
+	Allowed func(host string) bool
+	// Resolver replaces DNS (tests); nil is net.DefaultResolver.
+	Resolver Resolver
+	// Timeout bounds one connect (0: none beyond the context).
+	Timeout time.Duration
+}
+
+// ErrRefused: the address to dial is refused (Blocked).
+var ErrRefused = errors.New("refused address (internal or reserved)")
+
+// DialContext connects to addr ("host:port") through a checked IP.
+func (g *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
-	allowed := c.policy.Allowed(host)
+	allowed := g.Allowed != nil && g.Allowed(host)
 	var ips []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
 		ips = []netip.Addr{ip}
-	} else if ips, err = c.lookup(ctx, host); err != nil {
-		return nil, err
+	} else {
+		var r Resolver = net.DefaultResolver
+		if g.Resolver != nil {
+			r = g.Resolver
+		}
+		if ips, err = r.LookupNetIP(ctx, "ip", host); err != nil {
+			return nil, err
+		}
 	}
-	d := &net.Dialer{Control: func(_, address string, _ syscall.RawConn) error {
+	d := &net.Dialer{Timeout: g.Timeout, Control: func(_, address string, _ syscall.RawConn) error {
 		ap, err := netip.ParseAddrPort(address)
 		if err != nil || (!allowed && Blocked(ap.Addr())) {
-			return errBlocked
+			return ErrRefused
 		}
 		return nil
 	}}
@@ -121,8 +133,8 @@ func (c *Client) dial(ctx context.Context, network, addr string) (net.Conn, erro
 	}
 	if blocked {
 		// Some address was refused: say so, even if another one failed to
-		// connect, so the delivery log explains the real problem.
-		return nil, errBlocked
+		// connect, so the log explains the real problem.
+		return nil, ErrRefused
 	}
 	return nil, firstErr
 }
@@ -207,7 +219,7 @@ func classify(err error) string {
 		invErr   x509.CertificateInvalidError
 	)
 	switch {
-	case errors.Is(err, errBlocked):
+	case errors.Is(err, ErrRefused):
 		return ErrBlockedAddress
 	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
 		return ErrTimeout

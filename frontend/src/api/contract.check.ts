@@ -158,3 +158,28 @@ export type Q15 = Fits<keyof VersionsQuery, "limit" | "cursor">;
 // directions, so a field the UI treats as nullable can't silently become required or vanish.
 export type C86 = Fits<T.ScanRuleRef["scan_rule_id"], S["ScanRuleRef"]["scan_rule_id"]>;
 export type C87 = Fits<S["ScanRuleRef"]["scan_rule_id"], T.ScanRuleRef["scan_rule_id"]>;
+// v0.7 wave 2: registry credentials, scans of pulled images, secrets in image layers. Fields the
+// UI shows or branches on are checked both ways, so they can't silently become optional or vanish.
+export type C88 = Fits<T.RegistryCredential, S["RegistryCredential"]>;
+export type C89 = Fits<S["RegistryCredential"], T.RegistryCredential>;
+export type C90 = Fits<T.RegistryError, NonNullable<S["RegistryCredential"]["last_error"]>>;
+export type C91 = Fits<NonNullable<S["RegistryCredential"]["last_error"]>, T.RegistryError>;
+export type C92 = Fits<T.ItemList<T.RegistryCredential>, Json<"listRegistryCredentials", 200>>;
+export type C93 = Fits<T.RegistryCredential, Json<"createRegistryCredential", 201>>;
+export type C94 = Fits<T.RegistryCredential, Json<"updateRegistryCredential", 200>>;
+export type C95 = Fits<T.RegistryTestResult, Json<"testRegistryCredential", 200>>;
+export type C96 = Fits<Json<"testRegistryCredential", 200>, T.RegistryTestResult>;
+export type C97 = Fits<T.Scan, Json<"createPullScan", 201>>;
+export type C98 = Fits<T.Scan["pulled"], S["Scan"]["pulled"]>;
+export type C99 = Fits<S["Scan"]["pulled"], T.Scan["pulled"]>;
+export type C100 = Fits<T.IssueImageLayer, NonNullable<S["Issue"]["image_layer"]>>;
+export type C101 = Fits<NonNullable<S["Issue"]["image_layer"]>, T.IssueImageLayer>;
+export type C102 = Fits<T.Issue["image_layer"], S["Issue"]["image_layer"]>;
+export type C103 = Fits<S["Issue"]["image_layer"], T.Issue["image_layer"]>;
+export type R19 = Fits<S["CreateRegistryCredentialRequest"], T.CreateRegistryCredentialBody>;
+export type R20 = Fits<S["UpdateRegistryCredentialRequest"], T.UpdateRegistryCredentialBody>;
+export type R21 = Fits<S["PullScanRequest"], T.PullScanBody>;
+type PullBody = Ops["createPullScan"]["requestBody"]["content"]["application/json"];
+export type R22 = Fits<PullBody, T.PullScanBody>;
+type RegistryUpdateBody = Ops["updateRegistryCredential"]["requestBody"]["content"]["application/json"];
+export type R23 = Fits<RegistryUpdateBody, T.UpdateRegistryCredentialBody>;

@@ -153,6 +153,95 @@ func TestCollapseHistory(t *testing.T) {
 	}
 }
 
+var (
+	layer0 = "sha256:" + strings.Repeat("0", 64)
+	layer1 = "sha256:" + strings.Repeat("1", 64)
+	layer2 = "sha256:" + strings.Repeat("2", 64)
+)
+
+func imageOpts() sarif.Options {
+	return sarif.Options{ImageTarget: "ghcr.io/acme/api", ImageLayers: []string{layer0, layer1, layer2}}
+}
+
+// Image mode: the path in the image under the target, the layer from
+// warden-layers' index; the key has neither the path nor the layer.
+func TestGitleaksImageParse(t *testing.T) {
+	doc := redacted(t, st.ImageResult("aws-access-token", "/app/.env", 2, st.FakeSecret, 1))
+	f := one(t, parse(t, doc, "gitleaks", imageOpts()))
+	if f.FilePath != "ghcr.io/acme/api::/app/.env" || f.Line() != 2 || f.Commit != nil ||
+		f.ImageLayer == nil || *f.ImageLayer != (sarif.ImageLayer{Digest: layer1, Index: 1, Count: 1}) {
+		t.Fatalf("%+v %+v", f, f.ImageLayer)
+	}
+	if k := f.Key(); k.FilePath != "ghcr.io/acme/api::"+sarif.ImageSecretPath || k.ContentKey == "" {
+		t.Fatal(k)
+	}
+	moved := one(t, parse(t, redacted(t, st.ImageResult("aws-access-token", "/srv/other.env", 9, st.FakeSecret, 0)), "gitleaks",
+		sarif.Options{ImageTarget: "ghcr.io/acme/api", ImageLayers: []string{layer2}}))
+	if moved.Key() != f.Key() {
+		t.Fatal("a rebuilt image with the secret elsewhere must keep the key")
+	}
+	// Another image of the project is another issue.
+	other := one(t, parse(t, doc, "gitleaks", sarif.Options{ImageTarget: "ghcr.io/acme/web", ImageLayers: []string{layer0, layer1}}))
+	if other.Key() == f.Key() {
+		t.Fatal("two images share a key")
+	}
+	// The source and history scans are unchanged.
+	if f := one(t, parse(t, doc, "gitleaks", sarif.Options{})); f.ImageLayer != nil || f.FilePath != "app/.env" {
+		t.Fatalf("%+v", f)
+	}
+}
+
+// A result without a valid layer (none, out of range, negative, a string) or
+// path is refused: warden-layers always writes both.
+func TestGitleaksImageRejectsBadLayers(t *testing.T) {
+	for name, mut := range map[string]func(st.M){
+		"no layer":     func(r st.M) { delete(r["properties"].(st.M), sarif.LayerIndexProp) },
+		"out of range": func(r st.M) { r["properties"].(st.M)[sarif.LayerIndexProp] = json.Number("3") },
+		"negative":     func(r st.M) { r["properties"].(st.M)[sarif.LayerIndexProp] = json.Number("-1") },
+		"fraction":     func(r st.M) { r["properties"].(st.M)[sarif.LayerIndexProp] = json.Number("1.5") },
+		"string":       func(r st.M) { r["properties"].(st.M)[sarif.LayerIndexProp] = "1" },
+		"no path":      func(r st.M) { r["locations"] = []any{st.Loc("/", 1, st.FakeSecret)} },
+	} {
+		r := st.ImageResult("aws-access-token", "/app/.env", 2, st.FakeSecret, 1)
+		mut(r)
+		doc := redacted(t, r)
+		if _, err := sarif.Parse(st.RoundTrip(doc), "gitleaks", imageOpts()); !errors.Is(err, sarif.ErrSARIF) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// One finding per rule and secret in an image: the lowest layer's, counting
+// the layers that hold it (a file a later layer deleted counts: it is still
+// in the image).
+func TestCollapseImageLayers(t *testing.T) {
+	other := "ghp_" + strings.Repeat("Q", 36)
+	doc := redacted(t,
+		st.ImageResult("aws-access-token", "/app/b.env", 4, st.FakeSecret, 2),
+		st.ImageResult("aws-access-token", "/app/a.env", 7, st.FakeSecret, 1),
+		st.ImageResult("aws-access-token", "/app/a.env", 3, st.FakeSecret, 1),
+		st.ImageResult("aws-access-token", "/app/c.env", 1, st.FakeSecret, 2),
+		st.ImageResult("github-pat", "/x", 2, other, 2),
+		st.ImageResult("generic-api-key", "/app/a.env", 3, st.FakeSecret, 0),
+	)
+	fs := sarif.CollapseImageLayers(parse(t, doc, "gitleaks", imageOpts()))
+	if len(fs) != 3 {
+		t.Fatalf("%d findings", len(fs))
+	}
+	aws := fs[0]
+	if aws.RuleID != "aws-access-token" || aws.FilePath != "ghcr.io/acme/api::/app/a.env" || aws.Line() != 3 ||
+		*aws.ImageLayer != (sarif.ImageLayer{Digest: layer1, Index: 1, Count: 2}) {
+		t.Fatalf("%+v %+v", aws, aws.ImageLayer)
+	}
+	if fs[1].RuleID != "github-pat" || fs[1].ImageLayer.Count != 1 || fs[2].RuleID != "generic-api-key" || fs[2].ImageLayer.Index != 0 {
+		t.Fatalf("%+v %+v", fs[1], fs[2])
+	}
+	plain := sarif.Finding{Tool: "gitleaks", RuleID: "r", ContentKey: "k", FilePath: "a"}
+	if got := sarif.CollapseImageLayers([]sarif.Finding{plain, plain}); len(got) != 2 {
+		t.Fatal(got)
+	}
+}
+
 func TestOpengrepParseReadsSourceLines(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "src")
 	_ = os.MkdirAll(filepath.Join(root, "svc-main"), 0o755)

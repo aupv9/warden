@@ -94,13 +94,21 @@ func TestToolNamesMatchTools(t *testing.T) {
 
 // Trivy runs a constant script through sh: one JSON report, from which the
 // SARIF and the SBOM are converted offline.
-// Image scans run Trivy only, on the read-only tarball, with the same
-// isolation and bigger limits.
+// Image scans run Trivy and Gitleaks, on the read-only tarball, with the
+// same isolation and bigger limits.
 func TestImageTrivy(t *testing.T) {
-	if len(ImageTools) != 1 {
-		t.Fatal("image scans run trivy only")
+	if !slices.Equal(ImageToolNames, []string{"gitleaks", "trivy"}) {
+		t.Fatal(ImageToolNames)
 	}
-	spec := ImageTools["trivy"]
+	for _, tool := range []string{"opengrep", "checkov", "sh"} {
+		if _, ok := ImageTool(tool, ImageLimits{MaxBytes: 1 << 30}); ok {
+			t.Errorf("%s scans images", tool)
+		}
+	}
+	spec, ok := ImageTool("trivy", ImageLimits{MaxBytes: 1 << 30})
+	if !ok {
+		t.Fatal("no image trivy")
+	}
 	a := argv(t, spec, "/scan")
 	for _, want := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "--memory=3g", "/scan/src:/src:ro"} {
 		if !slices.Contains(a, want) {
@@ -117,6 +125,43 @@ func TestImageTrivy(t *testing.T) {
 	}
 	if tmp := argv(t, Tools["trivy"], "/scan")[slices.Index(argv(t, Tools["trivy"], "/scan"), "--tmpfs")+1]; !strings.Contains(tmp, "size=256m") {
 		t.Fatal(tmp)
+	}
+}
+
+// Image scans run Gitleaks in image mode (warden-layers unpacks the layers in
+// the sandbox) on the read-only tarball, with the same isolation, the key and
+// the redactor; /tmp and memory don't grow with the image, the expansion cap
+// does, and the timeout never exceeds the scan's.
+func TestImageGitleaks(t *testing.T) {
+	spec, ok := ImageTool("gitleaks", ImageLimits{MaxBytes: 2048 << 20, ScanTimeout: 30 * time.Minute})
+	if !ok {
+		t.Fatal("no image gitleaks")
+	}
+	a := argv(t, spec, "/scan")
+	for _, want := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+		"--user", "65532:65532", "/scan/src:/src:ro", "/scan/secrets/hmac:/run/warden/hmac:ro", "--memory=2g", "--memory-swap=2g"} {
+		if !slices.Contains(a, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if tmp := a[slices.Index(a, "--tmpfs")+1]; tmp != "/tmp:rw,noexec,nosuid,size=768m,mode=1777" {
+		t.Fatal(tmp)
+	}
+	if got := a[slices.Index(a, "--entrypoint")+1:]; !slices.Equal(got, []string{"warden-gitleaks", digest, "image", "8589934592"}) {
+		t.Fatal(got)
+	}
+	if spec.Name != "gitleaks" || spec.Timeout != 20*time.Minute || !spec.NeedsHMACKey ||
+		spec.Artifacts[ArtifactLayers].File != "layers.json" || spec.Artifacts[ArtifactLayers].MaxBytes > 64<<10 {
+		t.Fatalf("%+v", spec)
+	}
+	small, _ := ImageTool("gitleaks", ImageLimits{MaxBytes: 1 << 20, ScanTimeout: 10 * time.Minute})
+	if small.Timeout != 10*time.Minute || small.Command[2] != "1073741824" || small.TmpfsSize != spec.TmpfsSize || small.Memory != spec.Memory {
+		t.Fatalf("%+v", small)
+	}
+	// Org rules: the mode goes first, as for source scans.
+	r, err := WithOrgRules(spec)
+	if err != nil || !slices.Equal(r.Command, []string{"warden-gitleaks", "org-rules", "image", "8589934592"}) {
+		t.Fatal(r.Command, err)
 	}
 }
 

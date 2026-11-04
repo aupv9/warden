@@ -56,6 +56,9 @@ export const qk = {
   scanRule: (orgId: string, ruleId: string) => ["org", orgId, "scan-rules", "rule", ruleId] as const,
   scanRuleVersions: (orgId: string, ruleId: string) => ["org", orgId, "scan-rules", "rule", ruleId, "versions"] as const,
   ruleTest: (orgId: string, testId: string) => ["org", orgId, "rule-tests", testId] as const,
+  // v0.7 wave 2: registry credentials. No key holds a password (registries.test.ts); the server
+  // never returns one.
+  registries: (orgId: string) => ["org", orgId, "registries"] as const,
   // Notifications belong to the user, not to an org.
   notificationsAll: ["notifications"] as const,
   unreadCount: ["notifications", "unread-count"] as const,

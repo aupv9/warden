@@ -59,6 +59,8 @@ must_fail "short grace period" "at least scan.timeout + 10m" "${R[@]}" --set wor
 must_fail "secret in extraEnv" "looks like a secret" "${R[@]}" --set extraEnv.WARDEN_SCAN__HMAC_KEY=x
 must_fail "managed key in extraEnv" "set by the chart" "${R[@]}" --set extraEnv.WARDEN_APP__ENV=local
 must_fail "dev webhook hosts in extraEnv" "can't be set" "${R[@]}" --set extraEnv.WARDEN_WEBHOOK__ALLOW_HOSTS=localhost
+must_fail "dev registry hosts in extraEnv" "can't be set" "${R[@]}" --set extraEnv.WARDEN_REGISTRY__ALLOW_HOSTS=localhost
+must_fail "no registries egress" "registries" "${R[@]}" --set networkPolicy.egress.registries=null
 must_fail "bad timeout" "scan/timeout" "${R[@]}" --set-string scan.timeout=30
 must_fail "nfs without server" "mirror.storage.nfs" "${R[@]}" --set mirror.storage.type=nfs
 # The worker's way to the API server: its addresses, never "anywhere on 443".
@@ -141,6 +143,9 @@ mutant webhook-private "del($WNP | .spec.egress[].to[]?.ipBlock.except)"
 mutant webhook-partial-except "($WNP | .spec.egress[].to[]?.ipBlock.except[]? | select(. == \"10.0.0.0/8\")) = \"10.0.0.0/9\""
 mutant webhook-ipv6-private "($WNP | .spec.egress[].to[]?.ipBlock.except) |= ((. // []) - [\"fe80::/10\"])"
 mutant https-rules-open "($WNP | .spec.egress[] | select((.ports | length) == 1 and .ports[0].port == 443) | .to) = []"
+# The registries rule (the worker's last) reaching private addresses: an
+# image pull could then reach internal services on 443.
+mutant registries-private "del($WNP | .spec.egress[-1].to[]?.ipBlock.except)"
 mutant public-service "(select(.kind == \"Service\" and .metadata.name == \"t-warden-api\") | .spec.type) = \"LoadBalancer\""
 { cat "$out/required.yaml"; printf -- '---\napiVersion: v1\nkind: Secret\nmetadata: {name: leaked}\nstringData: {k: v}\n'; } >"$out/mutants/secret.yaml"
 "$HERE/check-security.sh" "$out/mutants/secret.yaml" >/dev/null 2>&1 && fail "mutant secret: check-security.sh accepted it"

@@ -48,4 +48,11 @@ describe("permission matrix", () => {
     expect(canComment("member", "viewer")).toBe(false);
     expect(canComment("member", "developer")).toBe(true);
   });
+
+  it("v0.7 wave 2: registry credentials are for org admins and security leads only", () => {
+    expect(can("manage_registries", "org_admin")).toBe(true);
+    expect(can("manage_registries", "security_lead")).toBe(true);
+    expect(can("manage_registries", "member", "owner")).toBe(false);
+    expect(can("manage_registries", "member", "developer")).toBe(false);
+  });
 });

@@ -40,7 +40,8 @@ that threat model instead of bolting it on:
   change the schema, or rewrite the audit log.
 - **Uploaded source is short-lived.** The extracted source and the uploaded object are
   deleted on every exit path of a scan. Image tarballs are validated without being unpacked,
-  and Warden never pulls from a registry or holds registry credentials.
+  and Warden pulls from a registry only by digest, through the same address guard as webhooks,
+  and keeps registry credentials only encrypted.
 
 ## How it works
 
@@ -64,6 +65,10 @@ that threat model instead of bolting it on:
 
 Findings keep their identity when code moves: fingerprints hash the tool, rule, file and
 the whitespace-normalized flagged lines, plus the finding's order within the file.
+
+Severities come from each scanner, except Checkov's: open-source Checkov reports none, so Warden
+ships a table for the checks of the pinned Checkov release
+(`backend/internal/domain/severity/checkov_severity.json`); a check missing from it is Medium.
 
 ## Quick start
 
@@ -92,7 +97,8 @@ go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@exampl
 the release image too: with the production Compose, `docker compose -f docker-compose.prod.yml
 run --rm --entrypoint /usr/local/bin/warden-admin api org create …`.
 `warden-admin audit verify --org <org id>` checks an organization's audit-log hash chain.
-`warden-admin secrets rotate` re-encrypts every webhook URL and secret under the current
+`warden-admin secrets rotate` re-encrypts every webhook URL and secret, and every registry
+password, under the current
 `WARDEN_SECRETS__KEY` (see "Webhooks and Slack").
 `warden-admin org set-role --org <org id> --email them@example.com --role org_admin` is the
 break-glass path when nobody who manages members can sign in (for example, an admin lost
@@ -267,6 +273,8 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest source upload; the presigned URL pins the exact size and the worker refuses larger objects |
 | `WARDEN_SCAN__UNZIP_MAX_MB` / `WARDEN_SCAN__UNZIP_MAX_FILES` | `1024` / `100000` | Unpacked size and file count a source archive may have |
 | `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB` | `2048` | Largest `docker save` tarball for image scans |
+| `WARDEN_SCAN__PULL_MAX_MB` / `WARDEN_SCAN__PULL_PLATFORM` | `2048` / `linux/amd64` | Largest image the worker pulls from a registry (manifests and layers as sent, checked before any layer is fetched); the platform picked from a multi-platform image (`os/arch[/variant]`) |
+| `WARDEN_REGISTRY__ALLOW_HOSTS` | | Registry hosts (exact names or IPs, no port) that pulls may reach over `http`, at private addresses, or without a dot in the name, e.g. an internal registry. In prod it may not name localhost, a loopback, link-local (cloud metadata) or unspecified address |
 | `WARDEN_SCAN__HISTORY_UPLOAD_MAX_MB` / `WARDEN_SCAN__HISTORY_MAX_COMMITS` | `1024` / `50000` | Largest git bundle for history scans; commits Gitleaks reads (the newest are kept and the scan is marked truncated). The sandbox's `/tmp` and memory grow with the bundle limit (about 1.25 × the limit + 256 MiB of `/tmp`, and that + 1.5 GiB of memory) |
 | `WARDEN_SCAN__SBOM_RETENTION` | `8760h` | How long a scan's SBOM is kept before the purge job deletes it (at least `1h`) |
 | `WARDEN_SCAN__SCRATCH_DIR` / `WARDEN_SCAN__MIRROR_DIR` | `/scratch` / `/mirror` | Worker's per-scan working directory; offline scanner data (`make mirror`) |
@@ -281,7 +289,7 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SMTP__IMPLICIT_TLS` | `false` | TLS from the first byte (port 465) instead of STARTTLS |
 | `WARDEN_SMTP__PUBLIC_BASE_URL` | `http://localhost:5173` | Web UI address; links in emails are built from it |
 | `WARDEN_SMTP__DIGEST_HOUR` | `8` | UTC hour of the daily SLA digest |
-| `WARDEN_SECRETS__KEY` | | Encrypts webhook URLs and signing secrets: `<key id>:<base64 of 32 bytes>`, key id `[a-z0-9_-]{1,32}` (e.g. `k1:$(openssl rand -base64 32)`). Without it webhooks are unavailable |
+| `WARDEN_SECRETS__KEY` | | Encrypts webhook URLs and signing secrets, and registry passwords: `<key id>:<base64 of 32 bytes>`, key id `[a-z0-9_-]{1,32}` (e.g. `k1:$(openssl rand -base64 32)`). Without it webhooks and registry credentials are unavailable |
 | `WARDEN_SECRETS__OLD_KEYS` | | Comma-separated older keys, used only to decrypt (see "Webhooks and Slack") |
 | `WARDEN_WEBHOOK__ALLOW_HOSTS` | | Development only: exact host names or IPs (no scheme or port) that webhooks may reach over `http` and at private addresses. The worker logs a warning when it is set |
 | `WARDEN_WEBHOOK__FAILURE_LIMIT` | `10` | Failed deliveries in a row before a webhook is turned off (1–1000) |
@@ -615,12 +623,34 @@ Limits: 200 rules per scanner, 64 KiB per rule and 1 MiB per org.
 **Container images.** An image scan takes the tarball from `docker save` (Docker and OCI
 layouts), at most `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB`. Warden checks it before Trivy sees it
 (`imagecheck`: one image, at most 4096 entries and 256 layers, only files and directories, every
-referenced blob present, safe names; it is never unpacked by Warden) and runs only Trivy, in the
-same sandbox as any scanner. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
+referenced blob present, safe names; the worker never unpacks it) and runs Trivy and Gitleaks,
+each in its own sandbox. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
 `IMAGE_MULTIPLE`. Issues are tracked per `target` (the image repository): an image scan only
-auto-fixes issues of the same target, never source-code issues or another image's. Secrets in
-image layers are not scanned, because Gitleaks is the only secret scanner (its output is the only
-output Warden redacts).
+auto-fixes issues of the same target, never source-code issues or another image's.
+
+**Secrets in image layers.** Inside the Gitleaks sandbox, `warden-layers` unpacks each layer in
+turn (regular files only, no links or devices, bytes and entries capped at four times the image
+limit) and Gitleaks reads it; the findings go through `warden-redact` like any other. A secret is
+reported once per image, at the lowest layer that holds it (`Issue.image_layer`: the layer's
+digest, its index and how many layers hold it), also when a later layer deletes the file: it is
+still in the image for anyone who pulls it. Rotate the secret; rebuilding without it is not
+enough while the old image exists. The issue's fingerprint doesn't include the digest, so a
+rebuilt image that still holds the secret keeps its issue.
+
+**Pulling from a registry.** `POST …/projects/{id}/scans/pull` (or *New scan → Image from a
+registry*) scans an image the worker pulls itself, by digest only (`repo@sha256:…`, never a
+tag), at most `WARDEN_SCAN__PULL_MAX_MB`, picking `WARDEN_SCAN__PULL_PLATFORM` from a
+multi-platform list. Every blob and the manifest are checked against their digests; every
+connection, including redirects to a CDN and token realms, refuses internal addresses, no proxy is
+used, and credentials go only to the registry's host (Basic) or to a token realm on the same site
+(same host or registrable domain, e.g. `auth.docker.io` for Docker Hub); a realm on another site
+ends the scan with `PULL_BLOCKED` and never gets them. Warden never runs the image, and checks it
+with `imagecheck` like an upload. A registry at a private address, over `http` or with a
+single-label name needs `WARDEN_REGISTRY__ALLOW_HOSTS`; with Helm, pulls and the credential test
+reach public addresses on 443 (`networkPolicy.egress.registries`). Org admins and security leads keep one credential per registry host under
+*Settings → Registries* (`/orgs/{org_id}/registries`): the password is write-only and stored
+encrypted under `WARDEN_SECRETS__KEY`. Failures end the scan with `PULL_UNAUTHORIZED`,
+`PULL_NOT_FOUND`, `PULL_TOO_LARGE`, `PULL_BLOCKED`, `PULL_PLATFORM` or `PULL_FAILED`.
 
 **SBOM.** Trivy writes one JSON report per scan; Warden converts it to SARIF for findings, to a
 CycloneDX SBOM (spec 1.7) named after the project key with a `warden:scan_id` property, and to an
@@ -915,7 +945,9 @@ Changes that weaken one of these need an explicit discussion in the pull request
 - Archives are only ever extracted by `zipcheck.Extract`; the one other tar reader is
   `sandboxio`, which moves a scan's input into and reports out of a scanner Pod (Kubernetes
   backend) with the same refusals. Image tarballs are checked by
-  `imagecheck` and never extracted by Warden; Trivy reads them inside the sandbox.
+  `imagecheck` and never extracted by the worker; Trivy reads them, and `warden-layers`
+  (`layerscan`) unpacks their layers for Gitleaks, only inside the sandbox, with the same
+  refusals and caps.
 - A history upload is a git bundle checked by `bundlecheck` without unpacking; git reads it only
   in the Gitleaks sandbox, fetched into a fresh bare repository with no system or global config,
   no hooks and `fsck` on. The scan mode and commit limit come from the sandbox, never the upload.
@@ -961,6 +993,13 @@ Changes that weaken one of these need an explicit discussion in the pull request
   allow-listed columns as emails.
 - The CLI sends a CI token only to the CI's own `https` API, never to Warden. Text from scanned
   code is escaped in pull/merge request comments, with mentions and links broken.
+- Images are pulled only by digest, by one client that refuses internal addresses at dial time
+  and on every redirect and token realm, uses no proxy, and checks every manifest and blob
+  against its digest within `scan.pull_max_mb`; a pulled image is never run, and only
+  `imagecheck` and the sandbox read it. Registry passwords are stored only
+  AES-256-GCM-encrypted under `secrets.key`, bound to their org, row and column; they are sent
+  only to the registry's host or a token realm on the same site, never to a redirect target,
+  never returned by the API and never logged.
 - The identity provider (issuer, audience, keys) is server configuration only; no API or
   org setting can change it. An org's sign-in policy can only add requirements. Accounts are
   never linked by email: only `warden-admin user relink` moves one to a new subject.

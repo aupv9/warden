@@ -124,16 +124,73 @@ var Tools = map[string]ToolSpec{
 // ToolNames is the canonical order.
 var ToolNames = []string{"gitleaks", "opengrep", "trivy", "checkov"}
 
-// ImageTools are the scanners of image scans (kind image): only Trivy, reading
-// the verified `docker save` tarball mounted read-only at /src/image.tar.
-// Images are larger than source trees: more /tmp, memory and time.
-var ImageTools = map[string]ToolSpec{
-	"trivy": {
-		Name: "trivy", Timeout: 15 * time.Minute, CPUs: "1", Memory: "3g", TmpfsSize: "1g",
-		Command:   []string{"sh", "-c", trivyScript("image --input /src/image.tar")},
-		Artifacts: trivyArtifacts,
-	},
+// ImageToolNames are the scanners of image scans (kind image), in canonical
+// order: Trivy and Gitleaks, each reading the verified `docker save` tarball
+// mounted read-only at /src/image.tar (see ImageTool).
+var ImageToolNames = []string{"gitleaks", "trivy"}
+
+// ImageLimits size the image scan's sandboxes.
+type ImageLimits struct {
+	MaxBytes int64 // the largest image tarball (scan.image_upload_max_mb)
+	// ScanTimeout bounds the whole scan (scan.timeout); Gitleaks gets at most that.
+	ScanTimeout time.Duration
 }
+
+// ArtifactLayers is the layer report of an image scan's Gitleaks run: the
+// layers' digests by index (layerscan.Report).
+const ArtifactLayers = "layers"
+
+// Exit codes of warden-gitleaks in image mode for layers Warden won't read.
+const (
+	ExitImageTooLarge   = 5 // the layers expand past the limit, or hold too many entries
+	ExitImageUnreadable = 6 // a layer is not a (gzip or zstd compressed) tar
+)
+
+// imageExpansion: layers may hold this many times the tarball's size
+// uncompressed (gzip packs an image to about a third), and this much at least.
+const (
+	imageExpansion    = 4
+	minImageExpansion = 1 << 30
+)
+
+// ImageTool is a scanner of image scans (kind image), or false for a tool
+// that doesn't scan images. Images are larger than source trees: more /tmp,
+// memory and time.
+//
+//   - Trivy reads the tarball itself.
+//   - Gitleaks (warden-gitleaks image) unpacks the layers in its sandbox,
+//     never in the worker, a batch of at most 256 MB at a time, so /tmp and
+//     memory don't grow with the image; the image limit sets how much the
+//     layers may expand to (a decompression bomb ends the scan as
+//     IMAGE_TOO_LARGE). Findings go through warden-redact as always.
+func ImageTool(tool string, l ImageLimits) (ToolSpec, bool) {
+	switch tool {
+	case "trivy":
+		return ToolSpec{
+			Name: "trivy", Timeout: 15 * time.Minute, CPUs: "1", Memory: "3g", TmpfsSize: "1g",
+			Command:   []string{"sh", "-c", trivyScript("image --input /src/image.tar")},
+			Artifacts: trivyArtifacts,
+		}, true
+	case "gitleaks":
+		timeout := imageGitleaksTimeout
+		if l.ScanTimeout > 0 && l.ScanTimeout < timeout {
+			timeout = l.ScanTimeout
+		}
+		expand := max(l.MaxBytes*imageExpansion, minImageExpansion)
+		return ToolSpec{
+			// /tmp: a batch (256 MB) and Gitleaks' raw SARIF of the batch and
+			// of the image; memory: that and Gitleaks reading the batch.
+			Name: "gitleaks", Timeout: timeout, CPUs: "1", Memory: "2g", TmpfsSize: "768m",
+			Command:      []string{"warden-gitleaks", "image", strconv.FormatInt(expand, 10)},
+			NeedsHMACKey: true,
+			Artifacts:    map[string]ArtifactSpec{ArtifactLayers: {File: "layers.json", MaxBytes: 64 << 10}},
+		}, true
+	}
+	return ToolSpec{}, false
+}
+
+// imageGitleaksTimeout: every layer is read, deleted files included.
+const imageGitleaksTimeout = 20 * time.Minute
 
 // ArtifactHistory is a history scan's commit count (see HistoryStats).
 const ArtifactHistory = "history"

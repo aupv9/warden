@@ -11,6 +11,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/klauspost/compress v1.19.2
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/prometheus/client_golang v1.24.1
@@ -22,6 +23,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	go.uber.org/fx v1.22.2
 	go.yaml.in/yaml/v3 v3.0.5
+	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	k8s.io/api v0.37.1
@@ -102,7 +104,6 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/knadh/koanf/maps v0.1.1 // indirect
 	github.com/knadh/koanf/parsers/yaml v0.1.0 // indirect
@@ -181,7 +182,6 @@ require (
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
