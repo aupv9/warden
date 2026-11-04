@@ -28,10 +28,12 @@ var tokenRoutes = map[string][]string{
 	"POST " + Prefix + "/orgs/:org_id/projects/:project_id/scans": {service.ScopeScanWrite},
 	// The image is pulled by digest; credentials for its host stay the org's.
 	"POST " + Prefix + "/orgs/:org_id/projects/:project_id/scans/pull": {service.ScopeScanWrite},
-	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/start":            {service.ScopeScanWrite},
-	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/cancel":           {service.ScopeScanWrite},
-	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id":                   {service.ScopeScanWrite},
-	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/gate":              {service.ScopeScanWrite},
+	// Another tool's SARIF (warden import): an upload like any other.
+	"POST " + Prefix + "/orgs/:org_id/projects/:project_id/scans/import": {service.ScopeScanWrite},
+	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/start":              {service.ScopeScanWrite},
+	"POST " + Prefix + "/orgs/:org_id/scans/:scan_id/cancel":             {service.ScopeScanWrite},
+	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id":                     {service.ScopeScanWrite},
+	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/gate":                {service.ScopeScanWrite},
 	// The CLI fetches the SBOM after its scan; a reporting job may too.
 	"GET " + Prefix + "/orgs/:org_id/scans/:scan_id/sbom": {service.ScopeScanWrite, service.ScopeIssuesRead},
 	"GET " + Prefix + "/orgs/:org_id/issues":              {service.ScopeIssuesRead},

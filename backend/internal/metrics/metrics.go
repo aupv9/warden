@@ -65,7 +65,7 @@ func Handler() http.Handler {
 // Label sets. Anything else is recorded as "other".
 var (
 	scanStatuses = []string{"completed", "partial", "failed", "cancelled"}
-	scanKinds    = []string{"source", "image", "history"}
+	scanKinds    = []string{"source", "image", "history", "import"}
 	tools        = []string{"gitleaks", "opengrep", "trivy", "checkov"}
 	toolStatuses = []string{"succeeded", "failed", "timeout", "skipped"}
 	// Delivery outcomes: delivered, a failure that will be retried, and a
