@@ -30,7 +30,7 @@ func issueFilter(c *gin.Context) service.IssueFilter {
 		ProjectID: c.Query("project_id"), Status: c.QueryArray("status"), Severity: c.QueryArray("severity"),
 		Assignee: c.Query("assignee"), Tool: c.Query("tool"), PastSLA: c.Query("past_sla"), Q: c.Query("q"),
 		Kind: c.Query("kind"), KEV: c.Query("kev"), EPSSMin: c.Query("epss_min"), Source: c.Query("source"), Target: c.Query("target"),
-		Sort: c.Query("sort"), PageParams: page(c),
+		ExternalTool: c.Query("external_tool"), Sort: c.Query("sort"), PageParams: page(c),
 	}
 }
 
@@ -137,7 +137,15 @@ func exportRecord(r service.IssueExportRow) []string {
 	if r.EPSS != nil {
 		epss = strconv.FormatFloat(*r.EPSS, 'f', -1, 64)
 	}
-	rec := []string{r.Key, r.ProjectName, r.Title, r.Severity, r.Status, r.Tool, r.RuleID, opt(r.FilePath), line,
+	// An imported issue names its tool in the tool cell (external:codeql)
+	// rather than in a new column, so the export's columns stay as they were.
+	// The value is one of ImportTool's (checked by the database), and csvCell
+	// treats it as hostile anyway.
+	tool := r.Tool
+	if r.ExternalTool != nil {
+		tool += ":" + *r.ExternalTool
+	}
+	rec := []string{r.Key, r.ProjectName, r.Title, r.Severity, r.Status, tool, r.RuleID, opt(r.FilePath), line,
 		r.Target, strings.Join(r.CVE, " "), strconv.FormatBool(r.KEV), epss, opt(r.Assignee), at(r.DueAt), at(&r.CreatedAt), at(&r.UpdatedAt)}
 	for k, v := range rec {
 		rec[k] = csvCell(v)

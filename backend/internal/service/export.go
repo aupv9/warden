@@ -35,17 +35,20 @@ type IssueExportRow struct {
 	Severity    string
 	Status      string
 	Tool        string
-	RuleID      string
-	FilePath    *string
-	Line        *int
-	Target      string
-	CVE         []string
-	KEV         bool
-	EPSS        *float64
-	Assignee    *string // email
-	DueAt       *Time
-	CreatedAt   Time
-	UpdatedAt   Time
+	// ExternalTool: an imported issue's tool; the CSV's tool cell reads
+	// external:<tool>.
+	ExternalTool *string
+	RuleID       string
+	FilePath     *string
+	Line         *int
+	Target       string
+	CVE          []string
+	KEV          bool
+	EPSS         *float64
+	Assignee     *string // email
+	DueAt        *Time
+	CreatedAt    Time
+	UpdatedAt    Time
 }
 
 // IssueExport describes an export that was checked and recorded and is about
@@ -130,7 +133,7 @@ func exportSummary(q IssueQuery, ex IssueExport) map[string]any {
 	case q.AssigneeID != nil:
 		d["assignee"] = q.AssigneeID.String()
 	}
-	for k, v := range map[string]string{"tool": q.Tool, "kind": q.Kind, "source": q.Source, "target": q.Target} {
+	for k, v := range map[string]string{"tool": q.Tool, "kind": q.Kind, "source": q.Source, "target": q.Target, "external_tool": q.ExternalTool} {
 		if v != "" {
 			d[k] = v
 		}

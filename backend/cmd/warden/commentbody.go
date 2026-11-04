@@ -117,10 +117,14 @@ func mdCode(s string, limit int) string {
 // Image scans of the project get their own comment per target (a hash, so
 // the marker holds no repository text).
 // commentTarget is the target the scan's issues are tracked under, so source,
-// image and history scans of one project each keep their own comment.
+// image, history scans and each import (tool and category) of one project
+// keep their own comment.
 func (o *options) commentTarget() string {
-	if o.history {
+	switch {
+	case o.history:
 		return "(history)"
+	case o.importFile != "":
+		return importTarget(o.importTool, o.importCategory)
 	}
 	return o.target
 }
@@ -158,7 +162,10 @@ func (c client) commentBody(g gate, scanID string) string {
 		which += " or known exploited (CISA KEV)"
 	}
 	var head strings.Builder
-	head.WriteString(commentMarker(o.project, o.target) + "\n")
+	// The same marker comment() looks for: with o.target alone, a history
+	// scan's comment carried the source marker, so the source scan's run
+	// replaced it and the history scan posted a new one each time.
+	head.WriteString(commentMarker(o.project, o.commentTarget()) + "\n")
 	nBlocking := 0
 	for _, s := range []string{"critical", "high", "medium", "low"} {
 		nBlocking += g.Counts[s]
@@ -249,6 +256,12 @@ func (c client) commentRow(i issue, isNew bool, server, org string) string {
 		}
 		loc = mdCode(l, maxLocation)
 	}
+	// An imported issue's rule is another tool's: name the tool. Both come
+	// from the report and go through the same code span.
+	rule := i.RuleID
+	if i.ExternalTool != nil && *i.ExternalTool != "" {
+		rule = cleanText(*i.ExternalTool, maxRule/2) + ": " + rule
+	}
 	return fmt.Sprintf("| %s | %s | %s %s | %s | %s |\n", strings.Join(mark, " "), sev, key, mdText(i.Title, maxTitle),
-		mdCode(i.RuleID, maxRule), loc)
+		mdCode(rule, maxRule), loc)
 }

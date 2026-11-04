@@ -41,8 +41,10 @@ type IssueFilter struct {
 	EPSSMin   string
 	Source    string
 	Target    string
-	Q         string
-	Sort      string
+	// ExternalTool: imported issues of this tool (implies tool external).
+	ExternalTool string
+	Q            string
+	Sort         string
 	PageParams
 }
 
@@ -95,10 +97,21 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 		}
 	}
 	if f.Tool != "" {
-		if !slices.Contains(allTools, f.Tool) {
+		// Issues may have tool external (imports); scans can't choose it.
+		if !slices.Contains(allTools, f.Tool) && f.Tool != ToolExternal {
 			fe.add("tool", "unknown tool")
 		}
 		q.Tool = f.Tool
+	}
+	if f.ExternalTool != "" {
+		switch {
+		case !ImportToolPattern.MatchString(f.ExternalTool):
+			fe.add("external_tool", "unknown tool")
+		case q.Tool != "" && q.Tool != ToolExternal:
+			fe.add("external_tool", "is only for tool external")
+		default:
+			q.Tool, q.ExternalTool = ToolExternal, f.ExternalTool
+		}
 	}
 	switch f.PastSLA {
 	case "", "false":
@@ -131,10 +144,10 @@ func (s *Service) issueQuery(a *Actor, f IssueFilter) (IssueQuery, error) {
 		}
 	}
 	switch f.Source {
-	case "", "code", "image", "history":
+	case "", "code", "image", "history", "import":
 		q.Source = f.Source
 	default:
-		fe.add("source", "must be code, image or history")
+		fe.add("source", "must be code, image, history or import")
 	}
 	if f.Target != "" {
 		if len(f.Target) > maxTarget || !ImageTarget.MatchString(f.Target) {

@@ -20,7 +20,7 @@ func TestAppGraph(t *testing.T) {
 	}
 	sc := ServiceConfig(cfg)
 	if sc.UploadMaxBytes != int64(cfg.Scan.UploadMaxMB)<<20 || sc.UploadURLTTL != 15*time.Minute || sc.Limits.ScanTimeoutMinutes != 30 ||
-		len(sc.RequireMFARoles) != 2 || sc.RequireMFARoles[0] != "org_admin" {
+		len(sc.RequireMFARoles) != 2 || sc.RequireMFARoles[0] != "org_admin" || sc.ImportMaxBytes != 50<<20 {
 		t.Fatalf("%+v", sc)
 	}
 }

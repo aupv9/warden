@@ -661,7 +661,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository for image scans (no tag); (history) for history scans; empty for source scans."
+            "description": "Image repository for image scans (no tag); (history) for history scans; '(import) <tool>[ <category>]' for import scans; empty for source scans."
           },
           "image_ref": {
             "type": [
@@ -939,6 +939,17 @@
               null
             ],
             "description": "Trivy license category, for license-policy issues."
+          },
+          "external_tool": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportTool"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tool an imported issue (tool external) came from; null otherwise."
           }
         },
         "required": [
@@ -962,7 +973,8 @@
           "target",
           "kev",
           "epss",
-          "license_category"
+          "license_category",
+          "external_tool"
         ],
         "additionalProperties": false
       },
@@ -2133,7 +2145,7 @@
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind",
-            "description": "Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs."
+            "description": "Default source. history: a `git bundle` of the repository (`warden scan --history`), checked without being unpacked and read by git only in the Gitleaks sandbox. Only Gitleaks runs. import is a 422: imports are created with POST \u2026/scans/import."
           },
           "target": {
             "type": "string",
@@ -3190,7 +3202,7 @@
         "properties": {
           "target": {
             "type": "string",
-            "description": "Image repository, (history), or empty for source code."
+            "description": "Image repository, (history), '(import) <tool>[ <category>]', or empty for source code."
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind"
@@ -3927,7 +3939,7 @@
           },
           "target": {
             "type": "string",
-            "description": "Image repository, (history), or empty for source code."
+            "description": "Image repository, (history), '(import) <tool>[ <category>]', or empty for source code."
           },
           "kind": {
             "$ref": "#/components/schemas/ScanKind"
@@ -12235,7 +12247,7 @@
         ],
         "operationId": "exportIssuesCSV",
         "summary": "The issue list as CSV (same filters and visibility)",
-        "description": "Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.",
+        "description": "Columns: key, project, title, severity, status, tool, rule_id, file_path, line, target, cve, kev, epss, assignee, due_at, created_at, updated_at. An imported issue's tool cell reads external:<tool> (e.g. external:codeql). No descriptions, snippets or comments. At most 50,000 rows; X-Warden-Truncated: true when there were more. Cells that a spreadsheet would read as a formula (starting with =, +, -, @, tab or carriage return) are prefixed with an apostrophe. Not available to API tokens. At most 30 exports per user per hour (429). The export is recorded as issues.exported with its filters and row count. The last line of a complete export is exactly `#warden:end rows=<N>`, N being the number of data rows above it (header excluded): a file without that line, or whose row count differs, is incomplete (the server failed mid-stream; over HTTP/2 the response may just end). The line is one cell starting with #, so spreadsheets show it as a last row.",
         "parameters": [
           {
             "name": "project_id",
@@ -12350,10 +12362,11 @@
               "enum": [
                 "code",
                 "image",
-                "history"
+                "history",
+                "import"
               ]
             },
-            "description": "Issues from source scans, image scans, or history scans (secrets in git history)."
+            "description": "Issues from source scans, image scans, history scans (secrets in git history), or imports (tool external)."
           },
           {
             "name": "target",
@@ -12365,6 +12378,15 @@
               "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
             },
             "description": "Issues from image scans of this repository. History issues are filtered with source=history."
+          },
+          {
+            "name": "external_tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ImportTool"
+            },
+            "description": "Imported issues of this tool (implies tool=external)."
           },
           {
             "name": "q",

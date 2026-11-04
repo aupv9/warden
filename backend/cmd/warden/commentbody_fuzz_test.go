@@ -29,6 +29,9 @@ func FuzzCommentBody(f *testing.F) {
 		for i := range int(n % 40) {
 			is := issue{ID: uuid.NewSHA1(uuid.Nil, []byte{byte(i)}).String(), Key: title, Title: title + rule, Severity: rule,
 				RuleID: rule, KEV: i%3 == 0}
+			if i%3 == 1 { // imported: the tool name is hostile too
+				is.ExternalTool = &pkgVersion
+			}
 			if i%5 == 0 {
 				is.ID = path // not a UUID: never a link
 			}
