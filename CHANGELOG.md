@@ -6,6 +6,8 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-alpha.1] - 2026-11-04
+
 ### Added
 
 - Nightly workflow: every fuzz target for 10 minutes (an issue per failing target, with links
@@ -316,7 +318,8 @@ Tagged, but the release workflow failed, so no binaries or image were published 
   - a visual system of its own
   - audit log, states, upload flow, dialogs and phone layout (images 07–14)
 
-[Unreleased]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.3...HEAD
+[Unreleased]: https://github.com/aupv9/warden/compare/v0.7.0-alpha.1...HEAD
+[0.7.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.3...v0.7.0-alpha.1
 [0.6.0-alpha.3]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.2...v0.6.0-alpha.3
 [0.6.0-alpha.2]: https://github.com/aupv9/warden/compare/v0.6.0-alpha.1...v0.6.0-alpha.2
 [0.6.0-alpha.1]: https://github.com/aupv9/warden/compare/v0.5.0-alpha.2...v0.6.0-alpha.1
