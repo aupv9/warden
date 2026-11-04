@@ -169,21 +169,6 @@ export function issueFilterQuery(f: IssueFilters, fixedProject?: string): IssueF
   };
 }
 
-/** v0.8: the CSV export's query. The contract's export operation doesn't take `external_tool` or
- *  `source=import` yet (only the list does), so the export is turned off while either is set
- *  (exportBlockedReason) rather than saving a file wider than the list. */
-export type IssueExportQuery = Omit<IssueFilterQuery, "external_tool">;
-
-export function issueExportQuery(f: IssueFilters, fixedProject?: string): IssueExportQuery {
-  const { external_tool: _omit, ...q } = issueFilterQuery(f, fixedProject);
-  return q;
-}
-
-/** Why Export CSV is off for these filters, or null when it can run. */
-export function exportBlockedReason(f: IssueFilters): string | null {
-  return f.externalTool || f.source === "import" ? "The CSV export doesn't take the Imported filters yet. Remove them to export." : null;
-}
-
 /** The Image filter's choices, grouped by project when no project is in scope. */
 export interface TargetGroup {
   /** "WEB · Web storefront"; null for the one ungrouped list (a project in scope). */

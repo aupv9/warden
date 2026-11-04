@@ -1092,8 +1092,8 @@ rendered as text, never as markup or a link (`src/test/imports.test.tsx` renders
 
 ### Issue list
 
-- An imported issue carries **Imported · CodeQL** beside its title (a list row has no
-  `external_tool`, so the tool comes from its target). Its target is never shown as an image;
+- An imported issue carries **Imported · CodeQL** beside its title (from `external_tool`, on list
+  rows and the issue alike). Its target is never shown as an image;
   the Source column and the compact rows name the tool ("CodeQL").
 - **Source** gains **Imported** (`source=import`).
 - **Imported from** (`external_tool=<tool>`) is a filter of its own, apart from **Scanner**, which
@@ -1105,10 +1105,8 @@ rendered as text, never as markup or a link (`src/test/imports.test.tsx` renders
   tool already in the URL stays listed. Picking one clears Scanner, and the other way round (an
   issue is either). On a phone both are selects in the Filters sheet. The URL value must match
   the contract's ImportTool pattern, or it is dropped.
-- **Export CSV** is turned off, with the reason in its tooltip ("The CSV export doesn't take the
-  Imported filters yet. Remove them to export."), while Source is Imported or Imported from is set:
-  the contract's export doesn't take those filters yet (see "Open decisions"), and a file wider
-  than the list would mislead.
+- **Export CSV** takes both filters like every other; an imported issue's tool cell reads
+  `external:<tool>` (`external:codeql`), as the server writes it.
 
 ### Issue page
 
@@ -1134,8 +1132,10 @@ rendered as text, never as markup or a link (`src/test/imports.test.tsx` renders
   SAST results** on GitLab CI. GitHub: a `codeql` job with a language matrix runs
   `github/codeql-action/init` and `analyze` (`category: "/language:<lang>/"`, `output:
   codeql-results`, `upload: never`; both pinned by commit SHA by the user, as the comment says),
-  then `warden import --tool codeql --category "/language:<lang>/" codeql-results/<lang>.sarif`
-  with the same `--url`, `--org`, `--project` and `WARDEN_TOKEN` as the scan job; one category per
+  then `warden import --tool codeql --category "/language:<lang>/" … codeql-results/<lang>.sarif`
+  with the same `--url`, `--org`, `--project`, `--fail-on` (the gate applies to an import as to a
+  scan) and `WARDEN_TOKEN` as the scan job, the file last; the category is explicit, though the
+  CLI would take it from the SARIF's `automationDetails.id` without it; one category per
   language, so each import fixes only its own language's issues. GitLab: `include:` of
   `Jobs/SAST.gitlab-ci.yml` and a `warden-import-sast` job (`needs: [semgrep-sast]`) running
   `warden import --tool gitlab-sast --format gitlab-sast … gl-sast-report.json`. The note names
@@ -1573,12 +1573,6 @@ and a rule deleted and added again with the same key no longer links to the new 
 page and scan panel").
 
 Still in the design but not in the API contract:
-
-- v0.8: `GET …/issues/export.csv` doesn't take `source=import` or `external_tool` (only the list
-  does), so Export CSV is off while those filters are set. When the contract adds them, drop
-  `exportBlockedReason` and the `IssueExportQuery` split (contract.check.ts Q10).
-- v0.8: `IssueSummary` has no `external_tool`; a list row reads the tool from its target
-  (`(import) <tool>[ <category>]`). Adding it to the summary would remove the parsing.
 
 - v0.6: there is no list of a user's snippet tests (only `GET …/tests/{id}`), so a test whose
   dialog was closed can't be found again; the UI doesn't need it, as results are dropped with the

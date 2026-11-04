@@ -69,15 +69,14 @@ export function isImportScan(s: Pick<Scan, "kind">): boolean {
   return s.kind === "import";
 }
 
-/** The tool an imported issue came from: `external_tool` on the full issue, else (a list row,
- *  which doesn't carry it) the tool in its target. null for Warden's own issues. */
-export function importToolOf(i: Pick<IssueSummary, "tool" | "target"> & { external_tool?: string | null }): string | null {
-  if (!isImportIssue(i)) return null;
-  return i.external_tool || parseImportTarget(i.target)?.tool || null;
+/** The tool an imported issue came from (`external_tool`, on list rows and the full issue); null
+ *  for Warden's own issues. */
+export function importToolOf(i: Pick<IssueSummary, "tool" | "external_tool">): string | null {
+  return isImportIssue(i) ? i.external_tool || null : null;
 }
 
 /** Who found the issue: a Warden scanner's name, or the imported tool's ("CodeQL"). */
-export function issueToolLabel(i: Pick<IssueSummary, "tool" | "target"> & { external_tool?: string | null }): string {
+export function issueToolLabel(i: Pick<IssueSummary, "tool" | "external_tool">): string {
   const t = importToolOf(i);
   if (t) return importToolLabel(t);
   return TOOL_LABELS[i.tool] ?? i.tool;

@@ -27,12 +27,11 @@ import {
   describeFilters,
   EPSS_PRESETS,
   epssMinText,
-  exportBlockedReason,
   hasActiveFilters,
   imageTargetGroups,
   ISSUE_KINDS,
   ISSUE_SOURCES,
-  issueExportQuery,
+  issueFilterQuery,
   issueFiltersToApiQuery,
   issueFiltersToSearch,
   issueHref,
@@ -654,23 +653,16 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
  *  export it (the server applies the same visibility); the file is saved, never shown. */
 function ExportButton({ orgId, filters, fixedProject, empty }: { orgId: string; filters: IssueFilters; fixedProject?: string; empty: boolean }) {
   const [busy, setBusy] = useState(false);
-  const blocked = exportBlockedReason(filters);
   const run = async () => {
     setBusy(true);
     try {
-      await runIssueExport(orgId, issueExportQuery(filters, fixedProject));
+      await runIssueExport(orgId, issueFilterQuery(filters, fixedProject));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <Button
-      size="sm"
-      busy={busy}
-      disabled={empty || !!blocked}
-      onClick={() => void run()}
-      title={blocked ?? (empty ? "No issues match these filters" : "Download these issues as a CSV file")}
-    >
+    <Button size="sm" busy={busy} disabled={empty} onClick={() => void run()} title={empty ? "No issues match these filters" : "Download these issues as a CSV file"}>
       <DownloadIcon /> {busy ? "Exporting…" : "Export CSV"}
     </Button>
   );

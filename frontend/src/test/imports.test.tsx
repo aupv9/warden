@@ -172,16 +172,14 @@ describe("v0.8 wave 1: imported issues", () => {
     expect(t).not.toContain("AWS access key in deploy config");
   });
 
-  it("Imported from: a chip of its own, apart from Scanner; the CSV export is off with the reason", async () => {
+  it("Imported from: a chip of its own, apart from Scanner; the CSV export takes it", async () => {
     const html = await render(`${org()}/issues?external_tool=codeql`);
     const t = text(html);
     expect(t).toContain("Imported from CodeQL");
     expect(t).not.toContain("Scanner is");
     expect(t).toContain("Uncontrolled data used in path expression");
     expect(t).not.toContain("Improper neutralization");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="The CSV export doesn&#x27;t take the Imported filters yet\. Remove them to export\."/);
-    // Without them it runs as before.
-    expect(await render(`${org()}/issues?tool=gitleaks`)).not.toContain("Imported filters");
+    expect(html).toContain('title="Download these issues as a CSV file"');
     // The choices come from the import targets (org-wide here).
     let qc: QueryClient | undefined;
     await render(`${org()}/issues`, (c) => (qc = c));
@@ -211,6 +209,16 @@ describe("v0.8 wave 1: imported issues", () => {
 
   it("an imported issue's tool from the server is text: hostile values never become markup", async () => {
     const i = { ...codeql(), external_tool: HOSTILE, target: `(import) ${HOSTILE}` };
+    // On the list too: the row's external_tool is the server's text.
+    const stored = codeql();
+    stored.external_tool = HOSTILE;
+    try {
+      const listHtml = await render(`${org()}/issues?source=import`);
+      expect(listHtml).not.toContain("<img");
+      expect(listHtml).toContain("&lt;img");
+    } finally {
+      stored.external_tool = "codeql";
+    }
     const html = await render(`${org()}/issues/${i.id}`, (qc) => qc.setQueryData(qk.issue(db.ORG_ID, i.id), i));
     expect(html).not.toContain("<img");
   });
@@ -286,12 +294,18 @@ describe("v0.8 wave 1: the mock follows the contract", () => {
     expect(pull.status).toBe(422);
   });
 
-  it("issue filters: source=import, external_tool; the list row has no external_tool, the issue has", async () => {
+  it("issue filters: source=import, external_tool, on the list and the CSV export; rows and the issue carry external_tool", async () => {
     const list = await call("GET", `${org()}/issues?source=import&limit=200`);
     const rows = list.json.data!.items!;
     expect(rows).toHaveLength(3);
     expect(rows.every((r) => r.tool === "external")).toBe(true);
-    expect(rows[0]).not.toHaveProperty("external_tool");
+    expect(rows.map((r) => r.external_tool).sort()).toEqual(["codeql", "codeql", "gitlab-sast"]);
+    const csv = await mockFetch(`/api/v1${org()}/issues/export.csv?external_tool=gitlab-sast`, { method: "GET" });
+    expect(csv.status).toBe(200);
+    const lines = (await csv.text()).trim().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toContain("external:gitlab-sast");
+    expect(lines[2]).toBe("#warden:end rows=1");
     const gl = await call("GET", `${org()}/issues?external_tool=gitlab-sast`);
     expect(gl.json.data!.items!.map((r) => r.rule_id)).toEqual(["bandit.B608"]);
     expect((await call("GET", `${org()}/issues?external_tool=gitleaks`)).status).toBe(422);

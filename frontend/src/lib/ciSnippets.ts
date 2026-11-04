@@ -26,12 +26,10 @@ export interface SnippetParams {
 export const CLI_VERSION = "v0.2.0";
 const CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
 
-function targetArgs(p: SnippetParams): string[] {
-  return [`--url ${p.url}`, `--org ${p.orgId}`, `--project ${p.projectId}`];
-}
-
+/** `warden scan` and (v0.8) `warden import`, whose gate works the same way. The file comes last:
+ *  the CLI stops reading flags at the first argument that isn't one. */
 function scanArgs(p: SnippetParams): string[] {
-  return [...targetArgs(p), `--fail-on ${p.failOn ?? "high"}`];
+  return [`--url ${p.url}`, `--org ${p.orgId}`, `--project ${p.projectId}`, `--fail-on ${p.failOn ?? "high"}`];
 }
 
 /** v0.8: the CodeQL action, by major version. Unlike checkout, Warden's own workflows don't use it,
@@ -125,7 +123,7 @@ export function githubActionsSnippet(p: SnippetParams): string {
       "        run: >-",
       '          "$RUNNER_TEMP/warden" import --tool codeql',
       '          --category "/language:${{ matrix.language }}/"',
-      ...targetArgs(p).map((a) => `          ${a}`),
+      ...scanArgs(p).map((a) => `          ${a}`),
       `          "${CODEQL_OUTPUT}/\${{ matrix.language }}.sarif"`,
     );
   }
@@ -204,7 +202,7 @@ export function gitlabCiSnippet(p: SnippetParams): string {
       `    WARDEN_VERSION: ${CLI_VERSION}`,
       "  script:",
       ...gitlabInstall(),
-      `    - ./warden import --tool gitlab-sast --format gitlab-sast ${targetArgs(p).join(" ")} ${GITLAB_SAST_REPORT}`,
+      `    - ./warden import --tool gitlab-sast --format gitlab-sast ${scanArgs(p).join(" ")} ${GITLAB_SAST_REPORT}`,
       "  rules:",
       ...(p.history ? ['    - if: $CI_PIPELINE_SOURCE == "schedule"', "      when: never"] : []),
       '    - if: $CI_COMMIT_REF_PROTECTED == "true"',
