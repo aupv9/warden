@@ -46,6 +46,18 @@ export function useOrgImageTargets(orgId: string, enabled: boolean) {
   });
 }
 
+/** v0.8: GET /orgs/{org}/targets?kind=import, every visible project's import targets
+ *  (`(import) <tool>[ <category>]`), for the issue list's "Imported from" filter when no project
+ *  is in scope. */
+export function useOrgImportTargets(orgId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.orgTargets(orgId, "import"),
+    queryFn: ({ signal }) => api<ItemList<OrgTarget>>(`${orgBase(orgId)}/targets`, { query: { kind: "import" }, signal }),
+    select: (d) => d.items,
+    enabled,
+  });
+}
+
 /** v0.5 wave 2: GET /orgs/{org}/components/ecosystems, with counts, for the ecosystem filter. */
 export function useComponentEcosystems(orgId: string) {
   return useQuery({

@@ -5,7 +5,7 @@ import { usePullScan } from "../api/hooks/registries";
 import { useUploadScan } from "../api/hooks/scans";
 import { isApiError } from "../api/client";
 import { TOOLS } from "../api/types";
-import type { Limits, Scan, ScanKind, Tool, UploadKind } from "../api/types";
+import type { Limits, Scan, ScanKind, ScannerTool, UploadKind } from "../api/types";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { CopyButton } from "../components/CopyButton";
@@ -13,6 +13,7 @@ import { AlertIcon, FileIcon, UploadIcon } from "../components/Icons";
 import { ActionError, Banner } from "../components/States";
 import { useOrgCtx } from "../layout/OrgLayout";
 import { formatBytes, formatMb, TOOL_KIND, TOOL_LABELS } from "../lib/format";
+import { onlyScanners } from "../lib/imports";
 import { can } from "../lib/permissions";
 import { PULL_REF_EXAMPLE, PULL_REF_MAX, validatePullRef } from "../lib/registries";
 import { withDefaults } from "../lib/scanErrors";
@@ -25,15 +26,15 @@ export function useLimits(): Limits {
   return withDefaults(useOrgCtx().me.limits);
 }
 
-export const KIND_LABELS: Record<ScanKind, string> = { source: "Source code", image: "Container image", history: "Git history" };
+export const KIND_LABELS: Record<ScanKind, string> = { source: "Source code", image: "Container image", history: "Git history", import: "Imported" };
 
 /** v0.7 wave 2: what the New scan card makes: an upload (source .zip, image .tar) or a scan of an
  *  image the worker pulls from its registry by digest. */
 export type NewScanMode = UploadKind | "pull";
 const MODE_LABELS: Record<NewScanMode, string> = { source: "Source code", image: "Container image", pull: "Image from a registry" };
 /** The scanners an image scan runs: Trivy for packages, Gitleaks for secrets in the layers. */
-export const IMAGE_TOOLS: Tool[] = ["trivy", "gitleaks"];
-const IMAGE_TOOL_KIND: Partial<Record<Tool, string>> = { trivy: "packages", gitleaks: "secrets in every layer" };
+export const IMAGE_TOOLS: ScannerTool[] = ["trivy", "gitleaks"];
+const IMAGE_TOOL_KIND: Partial<Record<ScannerTool, string>> = { trivy: "packages", gitleaks: "secrets in every layer" };
 
 /** What the file picker accepts per kind (the checks in lib/upload.ts decide). History scans
  *  (a git bundle) come only from the CLI: a browser can't build a bundle. */
@@ -46,10 +47,10 @@ function ToolChecks({
   choices = TOOLS,
   note = "(project defaults)",
 }: {
-  tools: Tool[];
-  setTools: (t: Tool[]) => void;
+  tools: ScannerTool[];
+  setTools: (t: ScannerTool[]) => void;
   disabled?: boolean;
-  choices?: Tool[];
+  choices?: ScannerTool[];
   note?: string;
 }) {
   const image = choices !== TOOLS;
@@ -185,8 +186,8 @@ function UploadScan({
   const limits = useLimits();
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [tools, setTools] = useState<Tool[]>(project.default_tools);
-  const [imageTools, setImageTools] = useState<Tool[]>(IMAGE_TOOLS);
+  const [tools, setTools] = useState<ScannerTool[]>(() => onlyScanners(project.default_tools));
+  const [imageTools, setImageTools] = useState<ScannerTool[]>(IMAGE_TOOLS);
   const [dragging, setDragging] = useState(false);
   const [target, setTarget] = useState("");
   const [imageRef, setImageRef] = useState("");
@@ -509,11 +510,13 @@ function UploadScan({
             )}
           </div>
         </div>
-        {/* v0.4 wave 2: history scans can't be made here (a browser can't build a git bundle). */}
+        {/* v0.4 wave 2: history scans can't be made here (a browser can't build a git bundle).
+            v0.8: neither can imports: another tool's report comes from the CI job that made it. */}
         <p className="faint small history-note">
           Secrets in git history are scanned from CI with <code>warden scan --history</code>, which needs the full history (
-          <code>fetch-depth: 0</code> on GitHub, <code>GIT_DEPTH: 0</code> on GitLab).{" "}
-          <Link to={`/orgs/${orgId}/projects/${project.id}/settings#ci-setup`}>Set it up in CI setup</Link>.
+          <code>fetch-depth: 0</code> on GitHub, <code>GIT_DEPTH: 0</code> on GitLab). Results of another tool (CodeQL, GitLab
+          SAST, any SARIF file) are imported from CI with <code>warden import</code>.{" "}
+          <Link to={`/orgs/${orgId}/projects/${project.id}/settings#ci-setup`}>Set them up in CI setup</Link>.
         </p>
       </div>
     </Card>
@@ -529,7 +532,7 @@ function PullScanForm({ initialRef, onStarted }: { initialRef: string; onStarted
   const limits = useLimits();
   const pull = usePullScan(orgId, project.id);
   const [ref, setRef] = useState(initialRef);
-  const [tools, setTools] = useState<Tool[]>(IMAGE_TOOLS);
+  const [tools, setTools] = useState<ScannerTool[]>(IMAGE_TOOLS);
   const [touched, setTouched] = useState(!!initialRef);
   const inputRef = useRef<HTMLInputElement>(null);
   const id = useId();

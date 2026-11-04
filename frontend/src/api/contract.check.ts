@@ -119,10 +119,12 @@ export type Q9 = Fits<T.WebhookDeliveryState, NonNullable<DeliveriesQuery["state
 // The CSV export takes the issue list's filters, and the list takes every one the UI sends.
 type ExportQuery = NonNullable<Ops["exportIssuesCSV"]["parameters"]["query"]>;
 type FilterKeys = keyof import("../lib/issueFilters").IssueFilterQuery;
-export type Q10 = Fits<keyof ExportQuery, FilterKeys>;
+// v0.8: the export doesn't take external_tool (or source=import) yet; IssueList turns it off
+// while those filters are set (exportBlockedReason).
+export type Q10 = Fits<keyof ExportQuery, keyof import("../lib/issueFilters").IssueExportQuery>;
 export type Q11 = Fits<keyof IssueListQuery, FilterKeys>;
 type OrgTargetsQuery = NonNullable<Ops["listOrgTargets"]["parameters"]["query"]>;
-export type Q12 = Fits<NonNullable<OrgTargetsQuery["kind"]>, "image">;
+export type Q12 = Fits<NonNullable<OrgTargetsQuery["kind"]>, "image" | "import">;
 // v0.6 wave 1: the org's own scan rules.
 export type C67 = Fits<T.ScanRuleTool, S["ScanRuleTool"]>;
 export type C68 = Fits<S["ScanRuleTool"], T.ScanRuleTool>;
@@ -183,3 +185,23 @@ type PullBody = Ops["createPullScan"]["requestBody"]["content"]["application/jso
 export type R22 = Fits<PullBody, T.PullScanBody>;
 type RegistryUpdateBody = Ops["updateRegistryCredential"]["requestBody"]["content"]["application/json"];
 export type R23 = Fits<RegistryUpdateBody, T.UpdateRegistryCredentialBody>;
+// v0.8 wave 1: results imported from another tool (SARIF, GitLab SAST). Both directions for every
+// field the UI shows or branches on, so none can silently become optional, widen or vanish.
+export type C104 = Fits<T.Tool, S["Tool"]>;
+export type C105 = Fits<S["Tool"], T.Tool>;
+export type C106 = Fits<T.ScanImport, S["ScanImport"]>;
+export type C107 = Fits<S["ScanImport"], T.ScanImport>;
+export type C108 = Fits<T.Scan["import"], S["Scan"]["import"]>;
+export type C109 = Fits<S["Scan"]["import"], T.Scan["import"]>;
+export type C110 = Fits<T.Issue["external_tool"], S["Issue"]["external_tool"]>;
+export type C111 = Fits<S["Issue"]["external_tool"], T.Issue["external_tool"]>;
+export type C112 = Fits<T.ImportFormat, S["ScanImport"]["format"]>;
+export type C113 = Fits<S["ScanImport"]["format"], T.ImportFormat>;
+export type C114 = Fits<T.CreateScanResponse, Json<"createImportScan", 201>>;
+export type R24 = Fits<S["ImportScanRequest"], T.ImportScanBody>;
+type ImportBody = Ops["createImportScan"]["requestBody"]["content"]["application/json"];
+export type R25 = Fits<ImportBody, T.ImportScanBody>;
+// The issue list's Source filter covers every source the server has, and the imported-tool filter
+// is the contract's parameter.
+export type Q16 = Fits<import("../lib/issueFilters").IssueSourceFilter, NonNullable<IssueListQuery["source"]>>;
+export type Q17 = Fits<NonNullable<IssueListQuery["external_tool"]>, NonNullable<import("../lib/issueFilters").IssueFilterQuery["external_tool"]>>;

@@ -739,6 +739,10 @@ describe("v0.4 screens: component inventory, malicious packages, SPDX", () => {
       expect.objectContaining({ target: "", kind: "source" }),
       // v0.4 wave 2: the history scans' target.
       expect.objectContaining({ target: "(history)", kind: "history" }),
+      // v0.8: one per imported tool and category.
+      expect.objectContaining({ target: "(import) codeql /language:python/", kind: "import" }),
+      expect.objectContaining({ target: "(import) gitlab-sast", kind: "import" }),
+      expect.objectContaining({ target: "(import) semgrep", kind: "import" }),
       expect.objectContaining({ target: "ghcr.io/acme/api", kind: "image" }),
     ]);
     // Another org's project looks missing.
@@ -977,13 +981,14 @@ describe("v0.4 wave 2 screens: secrets in git history, integrations, CI setup", 
     }
   });
 
-  it("CI setup: the two switches, off by default; snippets never contain a token", async () => {
+  it("CI setup: the switches, off by default; snippets never contain a token", async () => {
     const html = await render(`${org()}/projects/${web().id}/settings`);
     const t = text(html);
     expect(html).toContain('id="ci-setup"');
     expect(t).toContain("Comment on pull requests / merge requests");
     expect(t).toContain("Scan git history");
-    expect(html.match(/role="switch"/g)).toHaveLength(2);
+    // v0.8 adds a third: Import CodeQL / GitLab SAST results.
+    expect(html.match(/role="switch"/g)).toHaveLength(3);
     expect(t).not.toContain("--comment auto\n");
     expect(html).not.toMatch(/wdn_[a-z2-7]{8}_[a-z2-7]{20,}|whsec_/);
     expect(t).toContain("Warden itself keeps no GitHub or GitLab credentials.");
@@ -1226,7 +1231,7 @@ describe("v0.5 wave 2: export, verify, filters", () => {
     // The mock follows the contract: issue-list visibility, archived projects left out, ?kind=.
     const all = await json(await call("GET", `/orgs/${db.ORG_ID}/targets`));
     const items = all.data!.items! as { project_id: string; project_key: string; target: string; kind: string }[];
-    expect(new Set(items.map((t) => t.kind))).toEqual(new Set(["source", "image", "history"]));
+    expect(new Set(items.map((t) => t.kind))).toEqual(new Set(["source", "image", "history", "import"]));
     expect(items.map((t) => t.project_key)).toEqual([...items.map((t) => t.project_key)].sort());
     const archived = db.projects.filter((p) => p.archived_at).map((p) => p.id);
     expect(items.some((t) => archived.includes(t.project_id))).toBe(false);

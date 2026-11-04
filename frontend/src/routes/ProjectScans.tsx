@@ -22,6 +22,7 @@ import {
   userName,
 } from "../lib/format";
 import { commitsText, HISTORY_TARGET } from "../lib/history";
+import { IMPORT_FORMAT_LABELS, importCountsText, importSourceText, isImportTool, scanToolLabel } from "../lib/imports";
 import { isImageTarget } from "../lib/intel";
 import { pulledFromText } from "../lib/registries";
 import { isPullFailure, isRejected, scanErrorMessages } from "../lib/scanErrors";
@@ -201,6 +202,56 @@ function ImageLine({ scan: s, pulledFrom = true }: { scan: Scan; pulledFrom?: bo
   );
 }
 
+/** v0.8: an import scan (another tool's report, from `warden import` in CI): the tool and its
+ *  category. Both come from the uploader, shown as text. */
+function ImportLine({ scan: s }: { scan: Scan }) {
+  return (
+    <span className="scan-image">
+      <Pill>Imported</Pill>
+      {s.import && <span className="import-source">{importSourceText(s.import)}</span>}
+    </span>
+  );
+}
+
+/** v0.8: what an import read: the format and the tool's version, then (once processed) results
+ *  read, dropped and screened, each said in words. */
+function ImportDetails({ imp }: { imp: NonNullable<Scan["import"]> }) {
+  const counts = importCountsText(imp);
+  return (
+    <div className="stack small">
+      <div className="scan-image-line">
+        <span className="scan-image">
+          <Pill>Imported</Pill>
+          <span className="import-source">{importSourceText(imp)}</span>
+        </span>
+        <span className="muted">
+          {IMPORT_FORMAT_LABELS[imp.format] ?? imp.format}
+          {imp.tool_version && (
+            <>
+              {" · version "}
+              <span className="mono">{imp.tool_version}</span>
+            </>
+          )}
+        </span>
+      </div>
+      {counts && (
+        <>
+          <ul className="import-counts" aria-label="What the import read">
+            <li>{counts.results}</li>
+            <li>{counts.dropped}</li>
+            <li>{counts.screened}</li>
+          </ul>
+          <p className="faint import-note">
+            Dropped: results Warden refused (a path outside the source root, or over a limit). Screened: strings left out
+            because they looked like secrets; Gitleaks checked every text and path from the report before anything was stored.
+          </p>
+        </>
+      )}
+      <span className="muted">An import fixes only issues of its own tool and category, never those Warden's scanners found.</span>
+    </div>
+  );
+}
+
 /** v0.4 wave 2: a history scan (a git bundle from `warden scan --history`) and how many commits
  *  Gitleaks read. */
 function HistoryLine({ scan: s }: { scan: Scan }) {
@@ -230,6 +281,7 @@ function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boo
         {!s.pulled && s.file_name}
         {s.kind === "image" && <ImageLine scan={s} />}
         {s.kind === "history" && <HistoryLine scan={s} />}
+        {s.kind === "import" && <ImportLine scan={s} />}
       </td>
       <td data-label="By">
         <span className="nowrap">{userName(s.created_by)}</span>
@@ -323,9 +375,13 @@ function ScanPanel({
       ? `?${new URLSearchParams({ target: s.target })}`
       : s.kind === "history"
         ? `?${new URLSearchParams({ source: "history" })}`
-        : ""
+        : s.kind === "import"
+          ? // v0.8: the imported tool's issues (all its categories; the tag on each says which tool).
+            `?${new URLSearchParams(s.import && isImportTool(s.import.tool) ? { source: "import", external_tool: s.import.tool } : { source: "import" })}`
+          : ""
   }`;
   const history = s.kind === "history";
+  const imported = s.kind === "import";
 
   const pullFailed = isPullFailure(s);
   const title = pullFailed
@@ -335,11 +391,17 @@ function ScanPanel({
       ? "Image rejected"
       : history
         ? "Bundle rejected"
-        : "Archive rejected"
+        : imported
+          ? "Report rejected"
+          : "Archive rejected"
     : s.status === "cancelled"
-      ? "Scan cancelled"
+      ? imported
+        ? "Import cancelled"
+        : "Scan cancelled"
       : s.status === "failed"
-        ? "Scan failed"
+        ? imported
+          ? "Import failed"
+          : "Scan failed"
         : inProgress
           ? "Scan in progress"
           : "Scan finished";
@@ -352,7 +414,7 @@ function ScanPanel({
     <ScanStatusMark status="queued">Queued · waiting for a worker</ScanStatusMark>
   ) : s.status === "partial" && failedTool ? (
     <ScanStatusMark status="partial">
-      {`Partial · ${TOOL_LABELS[failedTool.tool]} ${failedTool.status === "timeout" ? "timed out" : "failed"}`}
+      {`Partial · ${scanToolLabel(s, failedTool.tool)} ${failedTool.status === "timeout" ? "timed out" : "failed"}`}
     </ScanStatusMark>
   ) : (
     <ScanStatusMark status={s.status} />
@@ -396,6 +458,7 @@ function ScanPanel({
             )}
           </div>
         )}
+        {imported && s.import && <ImportDetails imp={s.import} />}
         {s.kind === "image" && (
           <p className="scan-image-line small">
             <ImageLine scan={s} pulledFrom={false} />
@@ -424,11 +487,11 @@ function ScanPanel({
         )}
         {runs.length > 0 && !rejected && (
           <Table
-            caption="Scanners"
+            caption={imported ? "Imported tool" : "Scanners"}
             stack={false}
             head={
               <tr>
-                <th>Scanner</th>
+                <th>{imported ? "Tool" : "Scanner"}</th>
                 <th>Status</th>
                 <th className="num">Findings</th>
                 <th className="num">Time</th>
@@ -438,7 +501,8 @@ function ScanPanel({
             {runs.map((r) => (
               <tr key={r.tool}>
                 <td>
-                  <strong>{TOOL_LABELS[r.tool]}</strong>{" "}
+                  {/* v0.8: an import's run names the imported tool, not "external". */}
+                  <strong>{scanToolLabel(s, r.tool)}</strong>{" "}
                   {r.tool_version && (
                     <span className="mono muted" style={{ fontSize: 12 }}>
                       {r.tool_version}
@@ -471,6 +535,9 @@ function ScanPanel({
         {history && (rejected || s.status === "failed" || s.status === "cancelled") && (
           <p className="muted small">History scans run from CI with warden scan --history; run the job again once it is fixed.</p>
         )}
+        {imported && (rejected || s.status === "failed" || s.status === "cancelled") && (
+          <p className="muted small">Imports run from CI with warden import; run the job again once it is fixed.</p>
+        )}
         {s.status === "cancelled" && <p className="muted">A cancelled scan doesn't change any issue.</p>}
         <ActionError error={cancel.error} overrides={{ CONFLICT: "This scan already finished." }} />
         <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -494,7 +561,7 @@ function ScanPanel({
               Pull again
             </Button>
           )}
-          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && !s.pulled && (
+          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && !imported && !s.pulled && (
             <Button variant="primary" onClick={() => onUploadNew(s.kind as UploadKind)}>
               {s.kind === "image" ? "Upload a new .tar" : "Upload a new .zip"}
             </Button>

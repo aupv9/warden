@@ -5045,3 +5045,42 @@ dialog.dialog.rule-test-dialog {
   background: var(--hover);
   overflow-wrap: anywhere;
 }
+
+/* ---------- v0.8 wave 1: results imported from another tool ---------- */
+/* Dashed: found by a tool Warden didn't run. The word carries the meaning, the border is a cue. */
+.import-tag {
+  border-style: dashed;
+  border-color: var(--control-line-strong);
+  color: var(--text-2);
+}
+.intel-marks .import-tag {
+  height: 18px;
+  padding: 0 5px;
+}
+.import-source {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.import-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.import-counts li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.import-note {
+  margin: 0;
+}
+.import-card .mono {
+  overflow-wrap: anywhere;
+}
+/* The "+ Filter" menu: Imported from, under a line, apart from Warden's own filters. */
+.menu-item.menu-item-import {
+  border-top: 1px solid var(--line-soft);
+}

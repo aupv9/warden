@@ -20,10 +20,12 @@ export function CiSetupCard({ project, canManage }: { project: Project; canManag
   // v0.4 wave 2: both switches only change the snippet; nothing is saved.
   const [comment, setComment] = useState(false);
   const [history, setHistory] = useState(false);
+  // v0.8: import another tool's results (CodeQL on GitHub, GitLab SAST on GitLab).
+  const [imports, setImports] = useState(false);
   const id = useId();
   const tabRefs = useRef<Record<Ci, HTMLButtonElement | null>>({ github: null, gitlab: null });
   const preRef = useRef<HTMLPreElement>(null);
-  const params = { url: serverUrl(), orgId, projectId: project.id, comment, history };
+  const params = { url: serverUrl(), orgId, projectId: project.id, comment, history, imports };
   const snippet = tab === "github" ? githubActionsSnippet(params) : gitlabCiSnippet(params);
 
   // Tabs pattern: arrow keys move between tabs, the selected tab is the one in the tab order.
@@ -100,6 +102,35 @@ export function CiSetupCard({ project, canManage }: { project: Project; canManag
             </span>
             <span className="switch">
               <input type="checkbox" role="switch" checked={history} onChange={(e) => setHistory(e.target.checked)} />
+              <span className="switch-track" aria-hidden="true" />
+            </span>
+          </label>
+        </li>
+        <li>
+          <label className="pref-row">
+            <span className="pref-text">
+              <strong>{tab === "github" ? "Import CodeQL results" : "Import GitLab SAST results"}</strong>
+              <span className="muted">
+                {tab === "github" ? (
+                  <>
+                    Adds a job that runs CodeQL (<code>github/codeql-action/analyze</code> with <code>output:</code> a directory) and
+                    imports each language's SARIF file with <code>warden import --tool codeql --category "/language:&lt;lang&gt;/"</code>.
+                    One category per language, so each import fixes only its own language's issues.
+                  </>
+                ) : (
+                  <>
+                    Includes GitLab's SAST template and adds a job that imports its report with{" "}
+                    <code>warden import --tool gitlab-sast --format gitlab-sast gl-sast-report.json</code>. Set <code>needs:</code> to
+                    your SAST job.
+                  </>
+                )}{" "}
+                Any other tool's SARIF file imports the same way (<code>--tool semgrep</code>, <code>snyk-code</code>,{" "}
+                <code>sonarqube</code> or <code>external.&lt;name&gt;</code>). Warden drops code snippets, keeps paths inside the
+                repository and screens every text with Gitleaks before storing it.
+              </span>
+            </span>
+            <span className="switch">
+              <input type="checkbox" role="switch" checked={imports} onChange={(e) => setImports(e.target.checked)} />
               <span className="switch-track" aria-hidden="true" />
             </span>
           </label>
