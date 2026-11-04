@@ -60,8 +60,9 @@ type fakeServer struct {
 	sbomSum  string
 	sbomAuth string
 	// sbomFormat: the ?format= of the last SBOM request.
-	sbomFormat string
-	created    map[string]any // the last create request
+	sbomFormat  string
+	created     map[string]any // the last create request
+	createdPath string
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -114,17 +115,19 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 	base := "/api/v1/orgs/" + f.org.String()
 	scan := base + "/scans/" + f.scanID
 	switch {
-	case r.Method == "POST" && r.URL.Path == base+"/projects/"+f.prj.String()+"/scans":
+	case r.Method == "POST" && (r.URL.Path == base+"/projects/"+f.prj.String()+"/scans" || r.URL.Path == base+"/projects/"+f.prj.String()+"/scans/import"):
 		if f.createErr != 0 {
 			f.reply(w, f.createErr, nil, "TOKEN_SCOPE")
 			return
 		}
+		imp := strings.HasSuffix(r.URL.Path, "/import")
 		var in map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || (in["file_name"] != "repo.zip" && in["kind"] != "image" && in["file_name"] != "repo.bundle") {
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["sha256"] == nil || (imp != (in["tool"] != nil)) ||
+			(!imp && in["file_name"] != "repo.zip" && in["kind"] != "image" && in["file_name"] != "repo.bundle") {
 			f.reply(w, 422, nil, "VALIDATION_FAILED")
 			return
 		}
-		f.created = in
+		f.created, f.createdPath = in, r.URL.Path
 		up := f.uploadURL
 		if up == "" {
 			up = f.srv.URL + "/upload/" + f.scanID + "?X-Amz-Signature=presigned-signature"
