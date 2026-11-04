@@ -5,7 +5,7 @@ import { fieldErrors, leftoverFieldErrors } from "../api/errors";
 import { useOrgSummary } from "../api/hooks/orgs";
 import { useCreateProject, useProjects } from "../api/hooks/projects";
 import { SEVERITIES, TOOLS } from "../api/types";
-import type { Project, Tool } from "../api/types";
+import type { Project, ScannerTool } from "../api/types";
 import { ProjectDot } from "../components/Avatar";
 import { Pill, SeverityMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
@@ -201,7 +201,7 @@ function NewProjectForm({ onDone }: { onDone: () => void }) {
   const [key, setKey] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [tools, setTools] = useState<Tool[]>([...TOOLS]);
+  const [tools, setTools] = useState<ScannerTool[]>([...TOOLS]);
   const [touched, setTouched] = useState(false);
 
   const server = fieldErrors(create.error);

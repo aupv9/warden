@@ -1,5 +1,5 @@
 import { ApiError, isApiError } from "../api/client";
-import type { CreateScanBody, CreateScanResponse, Limits, PresignedUpload, Scan, ScanKind, Tool } from "../api/types";
+import type { CreateScanBody, CreateScanResponse, Limits, PresignedUpload, Scan, ScanKind, ScannerTool } from "../api/types";
 import { IMAGE_REF_MAX, IMAGE_TARGET_MAX, IMAGE_TARGET_RE, splitImageRef } from "./intel";
 import { hashBlob } from "./sha256";
 import type { HashMessage } from "./hashWorker";
@@ -111,7 +111,7 @@ export class UploadSession {
 
   constructor(
     readonly file: File,
-    readonly tools: Tool[],
+    readonly tools: ScannerTool[],
     private deps: UploadDeps,
     private onChange: (s: UploadSnapshot) => void,
     readonly options: ScanOptions = { kind: "source" },

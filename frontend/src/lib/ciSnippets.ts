@@ -15,6 +15,9 @@ export interface SnippetParams {
   /** v0.4 wave 2: a second, nightly job on the default branch with the full history and
    *  `warden scan --history` (secrets in git history). */
   history?: boolean;
+  /** v0.8: import another tool's results with `warden import`: CodeQL's SARIF on GitHub (one
+   *  category per language), the GitLab SAST report on GitLab. */
+  imports?: boolean;
 }
 
 // The CLI comes from the Warden release archives, checked against the release checksums (and,
@@ -23,9 +26,22 @@ export interface SnippetParams {
 export const CLI_VERSION = "v0.2.0";
 const CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
 
-function scanArgs(p: SnippetParams): string[] {
-  return [`--url ${p.url}`, `--org ${p.orgId}`, `--project ${p.projectId}`, `--fail-on ${p.failOn ?? "high"}`];
+function targetArgs(p: SnippetParams): string[] {
+  return [`--url ${p.url}`, `--org ${p.orgId}`, `--project ${p.projectId}`];
 }
+
+function scanArgs(p: SnippetParams): string[] {
+  return [...targetArgs(p), `--fail-on ${p.failOn ?? "high"}`];
+}
+
+/** v0.8: the CodeQL action, by major version. Unlike checkout, Warden's own workflows don't use it,
+ *  so there is no reviewed commit to pin: the comment asks for one, as for the GitLab image. */
+export const CODEQL_ACTION = "github/codeql-action";
+const CODEQL_VERSION = "v4";
+/** CodeQL writes `<language>.sarif` into the analyze step's `output` directory. */
+export const CODEQL_OUTPUT = "codeql-results";
+/** The report GitLab's SAST jobs write (artifacts:reports:sast). */
+export const GITLAB_SAST_REPORT = "gl-sast-report.json";
 
 /** The nightly history job's schedule (GitHub). Not on the hour, when shared runners are busiest. */
 export const HISTORY_CRON = "23 2 * * *";
@@ -81,6 +97,38 @@ export function githubActionsSnippet(p: SnippetParams): string {
     ...scanArgs(p).map((a) => `          ${a}`),
     ...(p.comment ? ["          --comment auto"] : []),
   ];
+  if (p.imports) {
+    lines.push(
+      "",
+      "  # Import CodeQL's results: one category per language, so each language's import fixes only its own.",
+      "  codeql:",
+      ...(p.history ? ["    if: github.event_name != 'schedule'"] : []),
+      "    runs-on: ubuntu-24.04",
+      "    strategy:",
+      "      matrix:",
+      "        language: [python] # your repository's languages",
+      "    env:",
+      `      WARDEN_VERSION: ${CLI_VERSION}`,
+      "    steps:",
+      ...githubInstallSteps(false),
+      `      - uses: ${CODEQL_ACTION}/init@${CODEQL_VERSION} # pin by commit SHA`,
+      "        with:",
+      "          languages: ${{ matrix.language }}",
+      `      - uses: ${CODEQL_ACTION}/analyze@${CODEQL_VERSION} # pin by commit SHA`,
+      "        with:",
+      '          category: "/language:${{ matrix.language }}/"',
+      `          output: ${CODEQL_OUTPUT} # writes <language>.sarif here`,
+      "          upload: never # upload: always also sends it to GitHub code scanning (security-events: write)",
+      "      - name: Import the CodeQL results into Warden",
+      "        env:",
+      "          WARDEN_TOKEN: ${{ secrets.WARDEN_TOKEN }}",
+      "        run: >-",
+      '          "$RUNNER_TEMP/warden" import --tool codeql',
+      '          --category "/language:${{ matrix.language }}/"',
+      ...targetArgs(p).map((a) => `          ${a}`),
+      `          "${CODEQL_OUTPUT}/\${{ matrix.language }}.sarif"`,
+    );
+  }
   if (p.history) {
     lines.push(
       "",
@@ -117,6 +165,7 @@ function gitlabInstall(): string[] {
 export function gitlabCiSnippet(p: SnippetParams): string {
   const lines = [
     "# .gitlab-ci.yml",
+    ...(p.imports ? ["include:", "  - template: Jobs/SAST.gitlab-ci.yml # GitLab SAST, imported into Warden below", ""] : []),
     "warden:",
     "  stage: test",
     "  image: alpine:3.22 # pin by digest",
@@ -144,6 +193,23 @@ export function gitlabCiSnippet(p: SnippetParams): string {
         ]
       : []),
   ];
+  if (p.imports) {
+    lines.push(
+      "",
+      "warden-import-sast:",
+      "  stage: test",
+      "  image: alpine:3.22 # pin by digest",
+      `  needs: [semgrep-sast] # the SAST job whose ${GITLAB_SAST_REPORT} is imported`,
+      "  variables:",
+      `    WARDEN_VERSION: ${CLI_VERSION}`,
+      "  script:",
+      ...gitlabInstall(),
+      `    - ./warden import --tool gitlab-sast --format gitlab-sast ${targetArgs(p).join(" ")} ${GITLAB_SAST_REPORT}`,
+      "  rules:",
+      ...(p.history ? ['    - if: $CI_PIPELINE_SOURCE == "schedule"', "      when: never"] : []),
+      '    - if: $CI_COMMIT_REF_PROTECTED == "true"',
+    );
+  }
   if (p.history) {
     lines.push(
       "",
