@@ -19,6 +19,16 @@ All notable changes to Warden are listed here. The format follows
 - `ScanRuleRef.scan_rule_id`: a scan links to the org rule that ran even after its key was
   deleted and re-added.
 - `WARDEN_MIRROR_SKIP_TRIVY=1` for `sync-mirror.sh`; the chart's docker shim is gone.
+- Org registries (`/orgs/{org}/registries`, permission `manage_registries`: org admins and
+  security leads): credentials sealed with `secrets.key`, checked with "Test", re-encrypted by
+  `warden-admin secrets rotate`.
+- Image scans pulled from a registry (`POST …/scans/pull`, the web UI's "Image from a
+  registry"): by digest only, through the outbound-address guard, size-limited
+  (`WARDEN_SCAN__PULL_MAX_MB`, `WARDEN_SCAN__PULL_PLATFORM`); the image is never run. Private
+  or single-label registry hosts need `WARDEN_REGISTRY__ALLOW_HOSTS`.
+- Secrets in image layers: Gitleaks scans each layer of an image inside the sandbox
+  (unpacked there under zipcheck's limits); an issue names the layer (`Issue.image_layer`).
+- Checkov severities from a per-check table (1,316 checks) instead of Medium for all.
 
 ### Changed
 
@@ -26,6 +36,8 @@ All notable changes to Warden are listed here. The format follows
   `networkPolicy.egress.kubeAPI.cidrs`; `kubeAPI.to` is removed), and object storage on
   public addresses unless listed. A sandbox namespace the chart can't read needs
   `sandbox.podSecurityConfirmed: true` instead of being trusted silently.
+- Image scans run Trivy and Gitleaks by default.
+- Helm: the worker (pulls) and the API ("Test") reach registries on public addresses, port 443.
 
 ### Fixed
 

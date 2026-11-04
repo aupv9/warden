@@ -69,6 +69,7 @@ type IssueRow struct {
 	CWE        []string
 	CVE        []string
 	Target     string
+	ImageLayer *service.IssueImageLayer
 }
 
 type eventRow struct {
@@ -110,9 +111,10 @@ type state struct {
 	Intel      map[string]IntelRow   // vuln_intel by CVE (intel.go)
 	VulnSrc    []service.VulnDataSource
 	nextID     int64
-	ext        extState     // v0.2 tables (v02.go)
-	hooks      webhookState // v0.4 wave 2 (webhooks.go)
-	rules      ruleState    // v0.6 (scanrules.go)
+	ext        extState      // v0.2 tables (v02.go)
+	hooks      webhookState  // v0.4 wave 2 (webhooks.go)
+	rules      ruleState     // v0.6 (scanrules.go)
+	registries registryState // v0.7 wave 2 (registries.go)
 }
 
 func (s *state) clone() *state {
@@ -138,6 +140,7 @@ func (s *state) clone() *state {
 	c.ext = s.ext.clone()
 	c.hooks = s.hooks.clone()
 	c.rules = s.rules.clone()
+	c.registries = s.registries.clone()
 	return &c
 }
 
@@ -707,7 +710,8 @@ func (f *Fake) InsertScan(_ context.Context, s service.NewScan) error {
 	}
 	f.st.Scans[s.ID] = scanRow{CreatedByID: s.CreatedBy, Scan: service.Scan{ID: s.ID, OrgID: s.OrgID, ProjectID: s.ProjectID,
 		Status: "pending_upload", FileName: s.FileName, FileSize: s.FileSize, Tools: s.Tools, CreatedAt: service.Time(f.Now),
-		ObjectKey: s.ObjectKey, SHA256: s.SHA256, Kind: cmp.Or(s.Kind, "source"), Target: s.Target, ImageRef: s.ImageRef}, ViaToken: s.ViaToken}
+		ObjectKey: s.ObjectKey, SHA256: s.SHA256, Kind: cmp.Or(s.Kind, "source"), Target: s.Target, ImageRef: s.ImageRef,
+		Pulled: s.Pulled}, ViaToken: s.ViaToken}
 	return nil
 }
 
@@ -901,7 +905,7 @@ func (f *Fake) Issue(_ context.Context, id uuid.UUID, _ bool, now time.Time) (se
 	in := f.intel(i.CVE)
 	out := service.Issue{IssueSummary: f.summary(id, now), CWE: i.CWE, CVE: i.CVE, FirstSeenScan: scan, LastSeenScan: scan,
 		Occurrences: 1, Version: i.Version, AssigneeID: i.AssigneeID, Number: i.Number, ProjectKey: f.st.Projects[i.ProjectID].Key,
-		EPSSPercentile: in.Percentile, KEVRansomware: in.Ransomware, OrgRule: f.orgRule(i)}
+		EPSSPercentile: in.Percentile, KEVRansomware: in.Ransomware, OrgRule: f.orgRule(i), ImageLayer: i.ImageLayer}
 	if in.KEVAdded != nil {
 		d := in.KEVAdded.Format(time.DateOnly)
 		out.KEVAdded = &d

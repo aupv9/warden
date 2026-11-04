@@ -1,4 +1,4 @@
-# Warden web UI: design spec (v0.6)
+# Warden web UI: design spec (v0.7)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
@@ -11,7 +11,9 @@ the API gaps this file listed: CSV export of the issue list, a chain check on th
 fed by the server (org-wide images, the inventory's ecosystems, delivery states) and clearer errors;
 the screen sections below say what changed. v0.6 wave 1 adds the org's own scan rules (Opengrep and
 Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". v0.7 wave 1 checks that
-an exported CSV is complete before saving it and links a scan's org rules by id. The images below are screenshots of the app running on its
+an exported CSV is complete before saving it and links a scan's org rules by id; its second wave
+lets Warden pull an image by digest from a registry (with the org's registry credentials, or
+anonymously) and finds secrets in an image's layers; see "v0.7 screens". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -53,9 +55,10 @@ enforces them anyway.
 | 12 | Components (v0.4) | everyone (their projects; org admins and security leads all) | Under Issues in the navigation. Search by name or name and version, ecosystem, project and "Malicious only" filters; a row per package version with licenses, projects and open issues; "Used in" beside the table. A project's Components tab lists its components per target |
 | 13 | Integrations (v0.4) | org admins and security leads (`manage_integrations`); hidden from members | Under Organization in the navigation. Webhooks and Slack channels: add (a generic webhook's signing secret shown once), events, projects and minimum severity, send a test, turn off / on, rotate the secret, delete; a delivery log per webhook, filtered by state (v0.5) |
 | 14 | Scan rules (v0.6) | everyone reads (`view_results`); org admins and security leads edit (`manage_rules`) | Under Organization in the navigation. The org's own Opengrep and Gitleaks rules: a list per scanner with an on/off switch; a rule page with a plain editor, a live check with problems at their lines, the canonical body, project scope, a snippet test and delete; its versions with a line diff. Issues from these rules carry an Org rule tag and card; the scan panel lists the rules a scan ran |
+| 15 | Registries (v0.7) | org admins and security leads (`manage_registries`); hidden from everyone else | Org settings › Registries. The credentials Warden pulls images with, one per host: list (host, username, last used, last error), add, change the username or password, test, delete. New scan gains "Image from a registry"; issue pages gain "Found in image layer" |
 
 Members without `view_audit_log` don't see "Audit log" in the navigation, and members don't see
-"Integrations".
+"Integrations" or the Registries card in Settings.
 States, the upload flow, dialogs and the phone layout are specified below the screenshots.
 
 ## Screens in the app
@@ -434,8 +437,9 @@ takes the plain `.tar` from `docker save` (`.tar.gz` and `.zip` are refused) up 
 `limits.image_upload_max_mb` (default 2 GB). "Image repository" is required (the contract
 pattern: lowercase, no tag); pasting `repo:tag` moves the full reference to "Image reference
 (optional)" and announces it. The card shows copyable `docker save -o app.tar IMAGE` and
-`warden scan --image IMAGE`, and says that Warden pulls from no registry, keeps no credentials
-and doesn't scan secrets in images. The scanner is fixed to Trivy; the button reads "Scan image".
+`warden scan --image IMAGE`. The scanner is fixed to Trivy; the button reads "Scan image". (v0.7
+wave 2 changes this: image scans offer Trivy and Gitleaks, and the card points at "Image from a
+registry"; see "v0.7 screens".)
 History rows and the scan panel show an **Image** tag with the image reference (or target); the
 panel adds "Issues tracked under <target>", and "View issues" opens the issue list with
 `?target=`. `IMAGE_*` errors count as Rejected.
@@ -921,6 +925,130 @@ the enabled rules in their project's scope. `?mock_error=RULE_INVALID` makes the
 v0.7: every scan's rules carry `scan_rule_id`, except WEB's `storefront-2.2.zip` scan, recorded
 "before v0.7", whose rules are found by scanner and rule id.
 
+## v0.7 screens
+
+v0.7 wave 2 lets Warden **pull an image itself**, by digest only, from a registry, and runs
+**Gitleaks on an image's layers** next to Trivy (uploaded `.tar` or pulled). An org's
+**registry credentials** say how Warden signs in to a host; without them it pulls anonymously.
+
+### Registries
+
+`/orgs/:org/settings/registries`, reached from a **Registries** card in Org settings ("Manage
+registries") and the command palette. Org admins and security leads only (`manage_registries`):
+others see neither the card nor the palette entry, and the page shows the 403 state without
+calling the API if they open the URL.
+
+- **Intro:** "Credentials Warden signs in with to pull images for scans of <org> (New scan ›
+  Image from a registry). Warden pulls only by digest, and only from the hosts listed here or
+  anonymously. Passwords and tokens are stored encrypted and never shown again; use a token that
+  can only read images."
+- **List:** one row per host, sorted by host: the host (mono, bold, text, never a link), "as
+  <username>", "Used 2 h ago" / "Not used yet" (the full time in the tooltip) and who added it;
+  a red **Refused** / **Unreachable** / **Blocked address** mark from `last_error`, with "Last
+  attempt: <words>" under it (`unauthorized` "The registry refused these credentials. Check the
+  username and the password or token (a token needs read access to packages), then change them
+  here.", `unreachable` "Warden couldn't reach the registry. Check the host name and port, and
+  that the registry answers on https.", `blocked` "The host resolves to a private or internal
+  address, so Warden doesn't connect to it."; anything else "The last attempt with these
+  credentials failed."). Buttons **Test**, **Change**, **Delete** (with the host in their
+  accessible names). A footer "n of 20"; at 20, Add is disabled with the reason.
+- **Test:** `POST …/registries/{id}/test`; the result goes on the row in a polite live region,
+  "Test: Warden signed in to ghcr.io with these credentials." or the error words above, and the
+  list refreshes (the test sets `last_error`). 429 (10 per credential per hour) is a toast:
+  "These credentials were tested 10 times in the last hour, the most Warden allows. Try again
+  later."
+- **Add / change dialog:** host (add only; lower-cased, checked like the contract: a dot, an
+  optional port, no `https://`, path, user info or IP literal, each with what to do instead;
+  on change it is shown as text, "can't be changed; delete these and add new ones for another
+  host"), username, and **Password or access token**: `type="password"`,
+  `autocomplete="new-password"`, never prefilled; on change "New password or token (optional)",
+  empty keeps the stored one, and only changed fields are sent. A note says Warden uses them only
+  to pull by digest from that host, and the audit log records host and username, never the
+  password. Errors: `SECRETS_KEY_MISSING` and `CONFLICT` (see "API error.code"); field errors under
+  their field.
+- **Delete:** confirm dialog: "Delete the credentials for <host> (<username>)? Scans then pull
+  images from <host> anonymously, so private images there fail with “registry refused access”.
+  This can't be undone."
+- **Empty state:** "No registry credentials yet". "Warden pulls images only by digest
+  (registry/repository@sha256:…), never by tag. It signs in only to the hosts listed here; any
+  other image is pulled anonymously, so a private image needs credentials for its host first."
+  Button "Add credentials".
+
+### New scan: Image from a registry
+
+The New scan switch has three buttons: **Source code / Container image / Image from a
+registry** (`aria-pressed`; `?new=image|pull` opens the card on that mode).
+
+- **Image reference** (mono, `autocomplete="off"`), hint "Pin by digest: registry/repo@sha256:….
+  Warden never pulls by tag, because a tag can point to another image tomorrow." It is checked
+  before anything is sent, with the contract's pattern last (`PULL_REF_RE`, compared with
+  `openapi.json` in `src/lib/registries.test.ts`) and the common mistakes first, each saying what
+  to do: a tag or no digest ("Pin the image by digest…"), a tag and a digest ("Leave out the
+  tag…"), a scheme, upper case, a digest that isn't `sha256:` and 64 hex, and a first part that
+  isn't a host ("Start with the registry host, such as docker.io/library/alpine@sha256:…"; the
+  server's pattern would read `library` as a host).
+- A copyable `docker inspect --format '{{index .RepoDigests 0}}' IMAGE` prints the digest.
+- **Scanners (for images):** Trivy (packages) and Gitleaks (secrets in every layer), both on.
+- Note: Warden pulls the image itself and signs in with the org's credentials for its host if
+  an org admin or security lead added them under Registries (a link for those who can open it),
+  otherwise anonymously; internal addresses are refused. "Nothing is uploaded from this browser.
+  The image is deleted as soon as the scan ends." Button **Pull and scan**.
+- 429 shows the hourly-limit banner ("Nothing was pulled."); a 422 on `image_ref` goes under the
+  field; other errors in a banner in the card.
+- **Container image** uploads now offer the same Trivy / Gitleaks choice, and say "Gitleaks reads
+  every layer for secrets, also files a later layer deletes. To scan an image without saving it,
+  choose Image from a registry."
+- **Scans tab:** a pulled scan (`Scan.pulled`) shows no file name: history rows show the Image tag,
+  the digest reference and "Pulled from ghcr.io" (the host of the reference); the panel's first
+  line is "Pulled from ghcr.io · 191 MB · …". A `PULL_*` failure reads "Pull failed" with the
+  words of "Scan error_code", "Nothing was scanned and no issues changed.", and **Pull again**,
+  which opens Image from a registry with the same reference.
+- **CI setup:** no snippet. The CLI's `--image-ref` only labels an uploaded `--image-tar`; it
+  doesn't ask the server to pull, so the UI doesn't offer a pull command for CI.
+
+### Issue page: Found in image layer
+
+An issue with `Issue.image_layer` (a secret Gitleaks found in a pulled or uploaded image) opens
+with a card in the warning colours, after "Found in git history":
+
+- Title **"Found in image layer 4 (3f2a9c41b7d0)"**: the index (0 is the base layer) and the
+  digest's first 12 hex characters. Then "Layer 4, counting the base layer as 0" (or "The base
+  layer") · the file and line · in the image repository.
+- "Digest" with the short form shown, the full `sha256:…` in the accessible name and a **Copy
+  digest** button. Never a link; a digest that isn't `sha256:` and 64 hex is shown whole, as text.
+- When `count > 1`: "It is also in n later layers. This is the lowest one."
+- In bold: **"Rotate this secret. Deleting the file in a later layer doesn't remove it from the
+  image: every layer ships with it, and anyone who pulls the image can read this one."** Then:
+  rebuild the image so no layer ever holds it (a build secret mount, or a multi-stage build), and
+  push it; the issue moves to Fixed when a scan of this image no longer finds it in any layer.
+  How to fix falls back to the same sentence. The snippet is the masked one.
+
+### Security rules (v0.7)
+
+- The registry password is typed into a password field, sent once and never read back. The form
+  drops it from its state as soon as the request is built (`credentialFormReducer`); the request
+  body reaches the mutation through a ref, never as mutation variables, so it is never in TanStack
+  Query's caches, a query key, the URL, browser storage or the console
+  (`src/api/registries.test.ts`). After a failed save the field is empty and its hint says to
+  enter it again.
+- Hosts, usernames, image references and layer digests are text, never links or markup
+  (`src/test/registries.test.tsx` renders hostile ones).
+- The UI hides what `manage_registries` doesn't allow; the API enforces it anyway.
+
+### Mock mode (v0.7 wave 2)
+
+Acme Engineering has three credentials: `ghcr.io` (used 2.5 h ago), `registry.acme.example:5000`
+(refused: `last_error: unauthorized`) and `harbor.acme.example` (never used); Acme Labs has none.
+`?mock_registries=empty` empties the list; `?mock_registries=unavailable` answers
+`SECRETS_KEY_MISSING` on add and change. The mock keeps no password. Test signs in to every host
+except the refused one, hosts under `.internal` / `.local` (blocked) and `.invalid`
+(unreachable); the 11th test of a credential in an hour answers 429. WEB has a pulled scan of
+`ghcr.io/acme/api@sha256:…` (Trivy and Gitleaks) whose two Gitleaks issues are in image layers
+(an AWS key in layer 4 of 2 layers, a Slack token in the base layer); PAY has one failed pull per
+`PULL_*` code. A new pull fails a few seconds after it is queued when the repository name has
+`private` (or the host's credentials are refused), `missing`, `huge`, `arm` or `flaky`, or the
+host is under `.internal`; anything else runs like an uploaded image.
+
 ## Audit log
 
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
@@ -1033,7 +1161,9 @@ people can search for it or quote it. Unknown codes fall back to the last row of
 A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*` or `CHECKSUM_MISMATCH` code is shown as
 **Rejected** (the archive was refused before any scanner ran); any other failed scan is
 **Failed**. There is no `rejected` status in the API. History rows use the short text; the scan
-card uses the full text.
+card uses the full text. v0.7: a `PULL_*` code (the worker couldn't pull the image) is **Failed**,
+and the scan card's title reads "Pull failed": nothing was refused, the image never arrived. The
+server's details (registry answers, addresses) are never shown.
 
 | Code | Short (history) | Full message |
 |---|---|---|
@@ -1054,6 +1184,12 @@ card uses the full text.
 | `ALL_SCANNERS_FAILED` | every scanner failed | Every scanner failed, so there are no results. Each scanner's error is listed below. If it happens again, tell your operator. |
 | `TIMEOUT` | took over 30 min | The scan took longer than the 30-minute limit and was stopped. |
 | `UPLOAD_ABANDONED` (v0.5, on a cancelled scan) | upload never finished | The upload didn't finish within an hour, so Warden cancelled the scan. Nothing was scanned and no issues changed. Upload the file again. |
+| `PULL_UNAUTHORIZED` (v0.7) | registry refused access | The registry refused to give Warden this image. If the image is private, an org admin or security lead must add credentials for its host under Settings › Registries, or fix the ones there (Test shows whether they work). Then scan again. |
+| `PULL_NOT_FOUND` (v0.7) | image not found | The registry has no image with this digest. Check the repository and the sha256 digest (`docker buildx imagetools inspect IMAGE` prints it), then scan again. |
+| `PULL_TOO_LARGE` (v0.7) | image too large to pull | The image is larger than this server pulls. Scan a smaller image, such as the final stage of a multi-stage build, or ask your operator about the limit. |
+| `PULL_BLOCKED` (v0.7) | registry address blocked | Warden doesn't pull from this registry: its host resolves to a private or internal address, or it redirected there. Use the registry's public host, or ask your operator. |
+| `PULL_PLATFORM` (v0.7) | no image for this platform | The digest names images for other platforms only, not the one this server scans (linux/amd64 unless your operator changed it). Pin the digest of that platform's image, or of a list that includes it. |
+| `PULL_FAILED` (v0.7) | pull failed | Warden couldn't pull the image: the registry didn't answer, or sent something Warden can't read. Check that the registry is up, then scan again. If it keeps happening, tell your operator. |
 | anything else | failed | The scan failed (`<code>`). Tell your operator; the worker log has the details. |
 
 The numbers are the server defaults (`WARDEN_SCAN__UPLOAD_MAX_MB`, `__UNZIP_MAX_MB`,
@@ -1085,6 +1221,8 @@ Status labels: `pending_upload` Uploading, `queued` Queued, `running` Running ·
 | `MFA_NOT_ENABLED` (409) | Banner in the sign-in policy form | "Your current sign-in didn't use a second factor. Sign in with a second factor first, then require it for your own role." |
 | `WEBHOOK_LIMIT` (409, v0.5) | Banner in the add-webhook dialog | "This org already has 20 webhooks, the most Warden allows. Delete one you no longer use, then add this one." |
 | `SECRETS_KEY_MISSING` (409, v0.5) | Banner in the add-webhook dialog | "Webhooks are turned off on this server: it has no key to encrypt their URLs and signing secrets. Ask your operator to set WARDEN_SECRETS__KEY." |
+| `SECRETS_KEY_MISSING` (409, v0.7, registries) | Banner in the add / change credentials dialog | "Registry credentials are turned off on this server: it has no key to encrypt them. Ask your operator to set WARDEN_SECRETS__KEY." |
+| `CONFLICT` (409, v0.7, add credentials) | Banner in the add credentials dialog | "This org already has credentials for this host. Change those instead of adding new ones." or, at 20, "This org already has credentials for 20 hosts, the most Warden allows. Delete one you no longer use, then add this one." |
 | `RULE_INVALID` (422, v0.6) | Rule editor: each of `metadata.problems` at its line (gutter mark and the list under the editor), and a banner; the snippet test dialog lists them | "Warden can't use this rule. Fix the problems shown at their lines, then try again." The problems are the server's words, shown as text. |
 
 ## Upload flow

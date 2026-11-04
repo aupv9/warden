@@ -18,9 +18,11 @@ rules:
     # count capped, nothing extracted) and sandboxio (the kubernetes sandbox's
     # tar streams into and out of a scanner Pod: regular files only, names
     # cleaned like uploads, os.Root with O_EXCL|O_NOFOLLOW, every size and count
-    # capped; fuzzed both ways).
+    # capped; fuzzed both ways) and layerscan (an image's layers, unpacked only
+    # inside the Gitleaks sandbox by warden-layers: regular files through
+    # os.Root, no links or devices, bytes and entries capped; fuzzed).
     paths:
-      exclude: ["backend/internal/scan/zipcheck/", "backend/internal/scan/imagecheck/", "backend/internal/intel/", "backend/internal/scan/sandbox/sandboxio/", "*_test.go"]
+      exclude: ["backend/internal/scan/zipcheck/", "backend/internal/scan/imagecheck/", "backend/internal/intel/", "backend/internal/scan/sandbox/sandboxio/", "backend/internal/scan/layerscan/", "*_test.go"]
     metadata:
       cwe: ["CWE-22: Path Traversal", "CWE-409: Improper Handling of Highly Compressed Data"]
       security-severity: "9.1"

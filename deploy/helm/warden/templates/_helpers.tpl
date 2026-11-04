@@ -202,7 +202,7 @@ WARDEN_SCAN__IMAGES__{{ upper $t }}: {{ include "warden.scannerImage" (dict "ctx
 {{- if regexMatch "(DSN|PASSWORD|SECRET|_KEY|_KEYS|TOKEN)" $k -}}
 {{- fail (printf "extraEnv.%s looks like a secret: put it in existingSecret, never in values" $k) -}}
 {{- end -}}
-{{- if regexMatch "^WARDEN_(SERVER__|SCAN__KUBE__|SCAN__SANDBOX_|WEBHOOK__ALLOW_HOSTS|CONFIG_FILE|DATABASE__)" $k -}}
+{{- if regexMatch "^WARDEN_(SERVER__|SCAN__KUBE__|SCAN__SANDBOX_|WEBHOOK__ALLOW_HOSTS|REGISTRY__ALLOW_HOSTS|CONFIG_FILE|DATABASE__)" $k -}}
 {{- fail (printf "extraEnv.%s can't be set through this chart" $k) -}}
 {{- end -}}
 {{- end -}}

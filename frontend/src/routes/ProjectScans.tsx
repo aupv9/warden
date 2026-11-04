@@ -23,11 +23,13 @@ import {
 } from "../lib/format";
 import { commitsText, HISTORY_TARGET } from "../lib/history";
 import { isImageTarget } from "../lib/intel";
-import { isRejected, scanErrorMessages } from "../lib/scanErrors";
+import { pulledFromText } from "../lib/registries";
+import { isPullFailure, isRejected, scanErrorMessages } from "../lib/scanErrors";
 import { can } from "../lib/permissions";
 import { ranRules, SCAN_RULE_TOOL_LABELS } from "../lib/scanRules";
 import { showToast } from "../lib/toast";
 import { NewScan, useLimits } from "./NewScan";
+import type { NewScanMode } from "./NewScan";
 import { useProjectCtx } from "./projectCtx";
 
 export function ProjectScansTab() {
@@ -40,7 +42,19 @@ export function ProjectScansTab() {
   // An archived project takes no new scans (the API answers 409 PROJECT_ARCHIVED).
   const canRun = can("run_scan", org.role, project.my_role) && !archived;
   const picker = useRef<HTMLInputElement>(null);
-  const [kind, setKind] = useState<UploadKind>("source");
+  // ?new=image or ?new=pull opens the New scan card on that kind (a link can point at it).
+  const [kind, setKind] = useState<NewScanMode>(() => {
+    const k = params.get("new");
+    return k === "image" || k === "pull" ? k : "source";
+  });
+  // v0.7 wave 2: "Pull again" from a failed pulled scan fills Image from a registry with its reference.
+  const [pullSeed, setPullSeed] = useState<{ ref: string; n: number } | null>(null);
+  const pullAgain = canRun
+    ? (ref: string) => {
+        setKind("pull");
+        setPullSeed((prev) => ({ ref, n: (prev?.n ?? 0) + 1 }));
+      }
+    : undefined;
 
   // The right-hand card shows the scan named in ?scan=, else the newest one still in progress.
   const selectedId =
@@ -68,7 +82,7 @@ export function ProjectScansTab() {
     <div className="page-body">
       <div className="grid grid-2">
         {canRun ? (
-          <NewScan pickerRef={picker} kind={kind} setKind={setKind} onStarted={(scan) => select(scan.id)} />
+          <NewScan pickerRef={picker} kind={kind} setKind={setKind} pullSeed={pullSeed} onStarted={(scan) => select(scan.id)} />
         ) : archived ? (
           <Card title="New scan" titleId="new-scan-h">
             <div className="dropzone is-disabled" aria-hidden="true">
@@ -94,7 +108,7 @@ export function ProjectScansTab() {
             </p>
           </Card>
         )}
-        <ScanPanel scanId={selectedId} canRun={canRun} onUploadNew={openPicker} onClear={() => select(null)} />
+        <ScanPanel scanId={selectedId} canRun={canRun} onUploadNew={openPicker} onPullAgain={pullAgain} onClear={() => select(null)} />
       </div>
 
       <Card title="Scan history" titleId="history-h" flush>
@@ -174,13 +188,15 @@ function historyStatus(s: Scan, limits: Limits): { pill: React.ReactNode; note?:
 
 /** v0.3: an image scan's kind and the image it scanned (the reference given at upload, else the
  *  repository its issues are tracked under). Text from the uploader, shown as text. */
-function ImageLine({ scan: s }: { scan: Scan }) {
+function ImageLine({ scan: s, pulledFrom = true }: { scan: Scan; pulledFrom?: boolean }) {
   return (
     <span className="scan-image">
       <Pill>Image</Pill>
-      <span className="mono" title={s.image_ref && s.image_ref !== s.target ? `Issues tracked under ${s.target}` : undefined}>
+      <span className="mono pull-ref" title={s.image_ref && s.image_ref !== s.target ? `Issues tracked under ${s.target}` : undefined}>
         {s.image_ref || s.target}
       </span>
+      {/* v0.7 wave 2: the worker pulled it (by digest) instead of an upload. */}
+      {s.pulled && pulledFrom && <span className="muted pulled-from">{pulledFromText(s)}</span>}
     </span>
   );
 }
@@ -210,7 +226,8 @@ function HistoryRow({ scan: s, selected, onSelect }: { scan: Scan; selected: boo
         </button>
       </td>
       <td data-label="File" className="mono" style={{ fontSize: 13, wordBreak: "break-all" }}>
-        {s.file_name}
+        {/* A pulled image has no file of its own: its reference (below) says what was scanned. */}
+        {!s.pulled && s.file_name}
         {s.kind === "image" && <ImageLine scan={s} />}
         {s.kind === "history" && <HistoryLine scan={s} />}
       </td>
@@ -252,11 +269,14 @@ function ScanPanel({
   scanId,
   canRun,
   onUploadNew,
+  onPullAgain,
   onClear,
 }: {
   scanId: string | undefined;
   canRun: boolean;
   onUploadNew?: (kind: UploadKind) => void;
+  /** v0.7 wave 2: fill Image from a registry with this reference. */
+  onPullAgain?: (ref: string) => void;
   onClear: () => void;
 }) {
   const { orgId } = useOrgCtx();
@@ -307,7 +327,10 @@ function ScanPanel({
   }`;
   const history = s.kind === "history";
 
-  const title = rejected
+  const pullFailed = isPullFailure(s);
+  const title = pullFailed
+    ? "Pull failed"
+    : rejected
     ? s.kind === "image"
       ? "Image rejected"
       : history
@@ -343,7 +366,16 @@ function ScanPanel({
     >
       <div className="stack" style={{ gap: 14 }}>
         <p className="muted" style={{ fontSize: 13 }}>
-          <span className="mono">{s.file_name}</span> · {formatBytes(s.file_size)}
+          {s.pulled ? (
+            <>
+              {pulledFromText(s)}
+              {s.file_size > 0 && <> · {formatBytes(s.file_size)}</>}
+            </>
+          ) : (
+            <>
+              <span className="mono">{s.file_name}</span> · {formatBytes(s.file_size)}
+            </>
+          )}
           {s.status === "cancelled"
             ? ` · cancelled ${formatDateTime(s.finished_at)}${duration !== null ? `, after ${formatDuration(duration)}` : ""}`
             : inProgress
@@ -366,7 +398,7 @@ function ScanPanel({
         )}
         {s.kind === "image" && (
           <p className="scan-image-line small">
-            <ImageLine scan={s} />
+            <ImageLine scan={s} pulledFrom={false} />
             {s.target && s.image_ref && s.image_ref !== s.target && (
               <span className="muted">
                 Issues tracked under <span className="mono">{s.target}</span>
@@ -435,7 +467,7 @@ function ScanPanel({
         )}
         {s.org_rules.length > 0 && !rejected && <OrgRulesRan scan={s} />}
         {s.sbom && (s.status === "completed" || s.status === "partial") && <SbomRow scan={s} sbom={s.sbom} />}
-        {rejected && <p className="muted">Nothing was scanned and no issues changed.</p>}
+        {(rejected || pullFailed) && <p className="muted">Nothing was scanned and no issues changed.</p>}
         {history && (rejected || s.status === "failed" || s.status === "cancelled") && (
           <p className="muted small">History scans run from CI with warden scan --history; run the job again once it is fixed.</p>
         )}
@@ -457,7 +489,12 @@ function ScanPanel({
               View issues
             </ButtonLink>
           )}
-          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && (
+          {(rejected || s.status === "cancelled" || s.status === "failed") && s.pulled && onPullAgain && s.image_ref && (
+            <Button variant="primary" onClick={() => onPullAgain(s.image_ref!)}>
+              Pull again
+            </Button>
+          )}
+          {(rejected || s.status === "cancelled" || s.status === "failed") && onUploadNew && s.kind !== "history" && !s.pulled && (
             <Button variant="primary" onClick={() => onUploadNew(s.kind as UploadKind)}>
               {s.kind === "image" ? "Upload a new .tar" : "Upload a new .zip"}
             </Button>

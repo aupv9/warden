@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -57,7 +58,28 @@ func (c *Config) checkProdServer() error {
 	if c.Storage.Endpoint != "" && !internalOrHTTPS(c.Storage.Endpoint) {
 		fail("storage.endpoint must be an https URL, or http to a host name without a dot (an internal network name)")
 	}
+	if slices.ContainsFunc(c.Registry.AllowHosts, hostOfThisMachine) {
+		fail("registry.allow_hosts must not name localhost, a loopback, link-local (cloud metadata) or unspecified address")
+	}
 	return errors.Join(errs...)
+}
+
+// hostOfThisMachine: names an allow-list entry may never carry in production.
+// registry.allow_hosts exempts a host from the pull's address guard (an
+// internal registry at a private address is a fair production use); the
+// worker's own loopback and the cloud metadata service never are a registry,
+// and are what an SSRF would be after.
+func hostOfThisMachine(h string) bool {
+	h = strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), "."))
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(h)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 // registryPinned is digestPinned without the local image ID: a kubelet pulls

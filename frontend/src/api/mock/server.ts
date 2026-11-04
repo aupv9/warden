@@ -22,6 +22,8 @@ import type {
   Project,
   ProjectComponent,
   ProjectTarget,
+  RegistryCredential,
+  RegistryError,
   RuleTest,
   Scan,
   ScanRule,
@@ -110,6 +112,17 @@ function advance(s: Scan): Scan {
   if (startedAt === undefined || !["queued", "running"].includes(s.status)) return s;
   const elapsed = db.now() - startedAt;
   if (elapsed < 3000) return s;
+  // v0.7 wave 2: a pulled image arrives (or the pull fails) when the worker picks the scan up.
+  const pullError = (s as Scan & { _pull?: string })._pull;
+  if (s.pulled && pullError) {
+    s.status = "failed";
+    s.error_code = pullError;
+    s.started_at ??= new Date(startedAt + 3000).toISOString();
+    s.finished_at = new Date().toISOString();
+    s.tool_runs = [];
+    return s;
+  }
+  if (s.pulled && s.file_size === 0) s.file_size = 143 * 1024 * 1024;
   s.status = "running";
   s.started_at ??= new Date(startedAt + 3000).toISOString();
   const runs = s.tool_runs ?? [];
@@ -580,6 +593,62 @@ function validateRules(p: Project, items: AssignRule[]): void {
     if (m.tool && !TOOLS.includes(m.tool)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.tool`]: "unknown tool" });
     if (!members.some((x) => x.user.id === r.assignee_id)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].assignee_id`]: "not a project member" });
   });
+}
+
+// ---- v0.7 wave 2: registry credentials and pulled images ----
+
+const IMAGE_TOOLS: Scan["tools"] = ["trivy", "gitleaks"];
+/** The contract's patterns (RegistryCredential.host, PullScanRequest.image_ref). */
+const REGISTRY_HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$/;
+const PULL_REF = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?(\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/;
+/** Test calls per credential, for the 10-an-hour limit. */
+const registryTests: Record<string, number[]> = {};
+
+/** manage_registries: org admins and security leads. */
+function requireRegistries(orgId: string): RegistryCredential[] {
+  const role = callerRole(orgId);
+  if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+  return (db.registries[orgId] ??= []);
+}
+
+function findRegistry(orgId: string, id: string): RegistryCredential {
+  const c = requireRegistries(orgId).find((x) => x.id === id);
+  if (!c) throw NOT_FOUND();
+  return c;
+}
+
+function checkRegistryFields(b: Record<string, unknown>, fields: Record<string, string>) {
+  if ("host" in b) {
+    const h = b.host;
+    if (typeof h !== "string" || h.length > 253 || !REGISTRY_HOST.test(h)) fields.host = "must be a lower case host name with a dot, and an optional port";
+    else if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(h)) fields.host = "must be a host name, not an IP address";
+  }
+  if ("username" in b && (typeof b.username !== "string" || b.username.length < 1 || b.username.length > 256)) fields.username = "1 to 256 characters";
+  if ("password" in b && (typeof b.password !== "string" || b.password.length < 1 || b.password.length > 4096)) fields.password = "1 to 4096 characters";
+}
+
+/** What signing in to a host gives in the mock: the refused credentials stay refused, hosts in
+ *  internal zones are blocked, `.invalid` doesn't answer. */
+function registryOutcome(host: string, current: RegistryError | null): RegistryError | null {
+  const name = host.replace(/:\d+$/, "");
+  if (/\.(internal|local)$/.test(name)) return "blocked";
+  if (name.endsWith(".invalid")) return "unreachable";
+  return current === "unauthorized" ? "unauthorized" : null;
+}
+
+/** Why a pull fails in the mock, from words in the reference (try ghcr.io/acme/private-app,
+ *  …/missing, …/huge, …/arm-only, …/flaky, or a host under .internal), or the host's credentials. */
+function pullOutcome(orgId: string, ref: string): string | null {
+  const host = ref.slice(0, ref.indexOf("/"));
+  const repo = ref.slice(host.length + 1, ref.indexOf("@"));
+  if (/\.(internal|local)(:\d+)?$/.test(host)) return "PULL_BLOCKED";
+  const cred = db.registries[orgId]?.find((c) => c.host === host);
+  if (repo.includes("private") || cred?.last_error === "unauthorized") return "PULL_UNAUTHORIZED";
+  if (repo.includes("missing")) return "PULL_NOT_FOUND";
+  if (repo.includes("huge")) return "PULL_TOO_LARGE";
+  if (repo.includes("arm")) return "PULL_PLATFORM";
+  if (repo.includes("flaky")) return "PULL_FAILED";
+  return null;
 }
 
 const O = "/orgs/([^/]+)";
@@ -1069,6 +1138,84 @@ const routes: [string, RegExp, Handler][] = [
       return { items: items.map(({ _t: _omit, ...d }: WebhookDelivery & { _t?: number }) => d), next_cursor };
     },
   ],
+  // ---- v0.7 wave 2: registry credentials (manage_registries). The password is checked and
+  // dropped: the mock keeps none, and no answer contains one. ----
+  ["GET", new RegExp(`^${O}/registries$`), (m) => ({ items: [...requireRegistries(m[1]!)].sort((a, b) => a.host.localeCompare(b.host)) })],
+  [
+    "POST",
+    new RegExp(`^${O}/registries$`),
+    (m, _u, body) => {
+      const list = requireRegistries(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["host", "username", "password"].includes(k)) fields[k] = "unknown field";
+      for (const k of ["host", "username", "password"]) if (!(k in b)) fields[k] = "required";
+      checkRegistryFields(b, fields);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (db.mockFlags.registries === "unavailable") throw new Fail(409, "SECRETS_KEY_MISSING");
+      if (list.length >= 20 || list.some((c) => c.host === b.host)) throw new Fail(409, "CONFLICT");
+      const at = new Date().toISOString();
+      const c: RegistryCredential = {
+        id: db.uuid(),
+        host: b.host as string,
+        username: b.username as string,
+        created_by: meRef(),
+        created_at: at,
+        updated_at: at,
+        last_used_at: null,
+        last_error: null,
+      };
+      list.push(c);
+      audit("registry.created", "registry", c.id, { host: c.host, username: c.username });
+      return [201, c];
+    },
+  ],
+  [
+    "PATCH",
+    new RegExp(`^${O}/registries/([^/]+)$`),
+    (m, _u, body) => {
+      const c = findRegistry(m[1]!, m[2]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      const keys = Object.keys(b);
+      if (keys.length === 0) fields.body = "nothing to change";
+      for (const k of keys) if (!["username", "password"].includes(k)) fields[k] = "unknown field";
+      checkRegistryFields(b, fields);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (db.mockFlags.registries === "unavailable") throw new Fail(409, "SECRETS_KEY_MISSING");
+      if (typeof b.username === "string") c.username = b.username;
+      // New credentials: the last failure no longer says anything about them.
+      c.last_error = null;
+      c.updated_at = new Date().toISOString();
+      audit("registry.updated", "registry", c.id, { host: c.host, username: c.username, fields: keys });
+      return c;
+    },
+  ],
+  [
+    "DELETE",
+    new RegExp(`^${O}/registries/([^/]+)$`),
+    (m) => {
+      const c = findRegistry(m[1]!, m[2]!);
+      const list = db.registries[m[1]!]!;
+      list.splice(list.indexOf(c), 1);
+      audit("registry.deleted", "registry", c.id, { host: c.host, username: c.username });
+      return [204, null];
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/registries/([^/]+)/test$`),
+    (m) => {
+      const c = findRegistry(m[1]!, m[2]!);
+      const hourAgo = db.now() - 3_600_000;
+      const calls = (registryTests[c.id] ?? []).filter((t) => t > hourAgo);
+      if (calls.length >= 10) throw new Fail(429, "RATE_LIMITED");
+      registryTests[c.id] = [...calls, db.now()];
+      const error = registryOutcome(c.host, c.last_error);
+      c.last_error = error;
+      return { ok: error === null, error };
+    },
+  ],
   // ---- v0.2 API tokens ----
   [
     "GET",
@@ -1372,7 +1519,8 @@ const routes: [string, RegExp, Handler][] = [
       if (kind === "image") {
         if (!/\.tar$/i.test(b.file_name)) fields.file_name = "must be a .tar for an image scan";
         if (!b.target || b.target.length > 255 || !IMAGE_TARGET.test(b.target)) fields.target = "must be an image repository without tag, e.g. ghcr.io/acme/api";
-        if (b.tools && b.tools.some((t) => t !== "trivy")) fields.tools = "image scans run trivy only";
+        // v0.7 wave 2: Gitleaks reads the image's layers too.
+        if (b.tools && b.tools.some((t) => t !== "trivy" && t !== "gitleaks")) fields.tools = "image scans run trivy and gitleaks only";
         if (b.image_ref && b.image_ref.length > 512) fields.image_ref = "at most 512 characters";
         if (b.file_size > db.me.limits.image_upload_max_mb * 1024 * 1024) fields.file_size = "larger than image_upload_max_mb";
       } else if (kind === "history") {
@@ -1385,7 +1533,12 @@ const routes: [string, RegExp, Handler][] = [
         if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
       }
       if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
-      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : kind === "history" ? (["gitleaks"] as Scan["tools"]) : (b.tools ?? p.default_tools);
+      const tools =
+        kind === "image"
+          ? ((b.tools?.length ? IMAGE_TOOLS.filter((t) => b.tools!.includes(t)) : IMAGE_TOOLS) as Scan["tools"])
+          : kind === "history"
+            ? (["gitleaks"] as Scan["tools"])
+            : (b.tools ?? p.default_tools);
       const scan: Scan = {
         id: db.uuid(),
         project_id: p.id,
@@ -1407,12 +1560,73 @@ const routes: [string, RegExp, Handler][] = [
         sbom: null,
         history: null,
         org_rules: kind === "image" ? [] : orgRulesFor(p, tools),
+        pulled: false,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
       audit("scan.created", "scan", scan.id, { project_key: p.key, file_name: scan.file_name, file_size: scan.file_size });
       const type = kind === "image" ? "application/x-tar" : "application/zip";
       return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": type }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
+    },
+  ],
+  // v0.7 wave 2: an image the worker pulls by digest; nothing is uploaded, so it is queued at once.
+  [
+    "POST",
+    new RegExp(`^${O}/projects/([^/]+)/scans/pull$`),
+    (m, _u, body) => {
+      const p = orgProject(m[1]!, m[2]!);
+      if (p.archived_at) throw new Fail(409, "PROJECT_ARCHIVED");
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["image_ref", "tools"].includes(k)) fields[k] = "unknown field";
+      const ref = b.image_ref;
+      if (typeof ref !== "string" || ref.length > 512 || !PULL_REF.test(ref)) fields.image_ref = "must be registry/repository@sha256:<digest>";
+      if ("tools" in b) {
+        const t = b.tools;
+        if (!Array.isArray(t) || t.length < 1) fields.tools = "at least one tool";
+        else if (t.some((x) => !IMAGE_TOOLS.includes(x as never))) fields.tools = "image scans run trivy and gitleaks only";
+        else if (new Set(t).size !== t.length) fields.tools = "duplicate tool";
+      }
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const imageRef = ref as string;
+      const tools = IMAGE_TOOLS.filter((t) => !Array.isArray(b.tools) || (b.tools as string[]).includes(t));
+      const target = imageRef.slice(0, imageRef.indexOf("@"));
+      const at = new Date().toISOString();
+      const scan: Scan = {
+        id: db.uuid(),
+        project_id: p.id,
+        status: "queued",
+        file_name: `${target.slice(target.lastIndexOf("/") + 1)}.tar`,
+        file_size: 0,
+        tools,
+        error_code: null,
+        stats: { new: 0, fixed: 0, reopened: 0, total: 0 },
+        created_by: meRef(),
+        created_at: at,
+        queued_at: at,
+        started_at: null,
+        finished_at: null,
+        via_token: null,
+        kind: "image",
+        target,
+        image_ref: imageRef,
+        sbom: null,
+        history: null,
+        org_rules: [],
+        pulled: true,
+        tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
+      };
+      const outcome = pullOutcome(m[1]!, imageRef);
+      Object.assign(scan, { _t: db.now(), _pull: outcome ?? undefined });
+      const cred = db.registries[m[1]!]?.find((c) => c.host === imageRef.slice(0, imageRef.indexOf("/")));
+      if (cred) {
+        cred.last_used_at = at;
+        if (outcome === "PULL_UNAUTHORIZED") cred.last_error = "unauthorized";
+        else if (outcome === "PULL_BLOCKED") cred.last_error = "blocked";
+      }
+      db.scans.unshift(scan);
+      audit("scan.created", "scan", scan.id, { project_key: p.key, image_ref: imageRef, pulled: true });
+      return [201, { ...scan, _t: undefined, _pull: undefined }];
     },
   ],
   [
@@ -1743,7 +1957,7 @@ function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
 }
 
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, image_layer: _il, ...rest } = i;
   return rest;
 }
 

@@ -60,6 +60,22 @@ export function OrgSettingsPage() {
         <LicensePolicySection />
         <VulnDataCard />
         {canViewSignIn(meOrg.role) && <SignInSection />}
+        {/* v0.7 wave 2: only for those who may see and change them (manage_registries). */}
+        {can("manage_registries", meOrg.role) && (
+          <Card title="Registries" titleId="registries-h">
+            <div className="stack" style={{ gap: 10 }}>
+              <p className="muted">
+                Credentials Warden signs in with to pull images for scans. Warden pulls only by digest, and only from the hosts listed there
+                or anonymously.
+              </p>
+              <div>
+                <ButtonLink size="sm" to={`/orgs/${orgId}/settings/registries`}>
+                  Manage registries
+                </ButtonLink>
+              </div>
+            </div>
+          </Card>
+        )}
         <Card title="Scan rules" titleId="scan-rules-h">
           <div className="stack" style={{ gap: 10 }}>
             <p className="muted">

@@ -40,12 +40,15 @@ const (
 	// ManageRules: the org's own Opengrep and Gitleaks rules (internal/rules),
 	// which decide what every scan of the org looks for.
 	ManageRules Perm = "manage_rules"
+	// ManageRegistries: credentials Warden pulls images with (stored
+	// encrypted; they open the org's private registries to Warden).
+	ManageRegistries Perm = "manage_registries"
 )
 
 var AllPerms = []Perm{
 	ManageUsers, CreateArchiveProject, ManageProjectMembers, RunScan, ViewResults, AssignIssue,
 	UpdateIssue, ProposeException, DecideException, ConfigurePolicy, ViewDashboard, ViewAuditLog,
-	ManageIntegrations, ManageRules,
+	ManageIntegrations, ManageRules, ManageRegistries,
 }
 
 var Matrix = map[Perm][]Role{
@@ -63,6 +66,7 @@ var Matrix = map[Perm][]Role{
 	ViewAuditLog:         {OrgAdmin, SecurityLead},
 	ManageIntegrations:   {OrgAdmin, SecurityLead},
 	ManageRules:          {OrgAdmin, SecurityLead},
+	ManageRegistries:     {OrgAdmin, SecurityLead},
 }
 
 // ownIssueOnlyForDeveloper: developers may only update issues assigned to them.

@@ -13,7 +13,7 @@ import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
 import { focusFirstInvalid, TextArea, TextField } from "../components/Field";
-import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, CommitIcon, LockIcon, RefreshIcon } from "../components/Icons";
+import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, CommitIcon, LayersIcon, LockIcon, RefreshIcon } from "../components/Icons";
 import { CopyButton } from "../components/CopyButton";
 import { PageHeader } from "../components/PageHeader";
 import { ActionError, ErrorState, Loading, NotFoundState, Skeleton, SkeletonBlock } from "../components/States";
@@ -37,6 +37,7 @@ import type { IssueAction } from "../lib/issueActions";
 import { formatEpss, isVulnIssue, KEV_CATALOG_URL, licenseOf, nvdUrl, percentileText } from "../lib/intel";
 import { maliciousAdvisory, MALICIOUS_REMEDIATION } from "../lib/malicious";
 import { HISTORY_ROTATE, historyWhere, isHistoryIssue, moreCommitsText, shortSha } from "../lib/history";
+import { IMAGE_LAYER_ROTATE, layerTitle, moreLayersText, shortLayerDigest } from "../lib/imageLayers";
 import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
 import { orgRuleLink } from "../lib/scanRules";
@@ -253,6 +254,7 @@ function IssueView({
       <div className="detail-grid">
         <div className="stack detail-main">
           <HistoryCard issue={issue} />
+          <ImageLayerCard issue={issue} />
           <MaliciousCard issue={issue} />
           <OrgRuleCard issue={issue} />
           <ExploitCard issue={issue} />
@@ -269,6 +271,8 @@ function IssueView({
               <p className="prose">{MALICIOUS_REMEDIATION}</p>
             ) : isHistoryIssue(issue) ? (
               <p className="prose">{HISTORY_ROTATE}</p>
+            ) : issue.image_layer ? (
+              <p className="prose">{IMAGE_LAYER_ROTATE}</p>
             ) : (
               <p className="muted">The scanner gave no fix advice for this rule.</p>
             )}
@@ -407,6 +411,58 @@ function HistoryCard({ issue }: { issue: Issue }) {
         <p className="faint small">
           It moves to Fixed only when a later history scan no longer finds it in any commit, after the history is rewritten. Warden
           keeps the commit's sha and date, never its author, email or message.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/** v0.7 wave 2: a secret Gitleaks found in an image's layers. Shown first, like a secret in git
+ *  history: deleting the file in a later layer doesn't help, the secret has to be rotated. The
+ *  layer digest comes from the scanned image: text with a copy button, never a link. */
+function ImageLayerCard({ issue }: { issue: Issue }) {
+  const l = issue.image_layer;
+  if (!l) return null;
+  const more = moreLayersText(l.count);
+  const where = issue.file_path ? `${issue.file_path}${issue.start_line ? `:${issue.start_line}` : ""}` : null;
+  return (
+    <Card title={layerTitle(l)} titleId={`layer-${issue.id}`} className="history-card">
+      <div className="stack" style={{ gap: 12 }}>
+        <p className="layer-line">
+          <LayersIcon />
+          <span>
+            {l.index === 0 ? "The base layer" : `Layer ${l.index}, counting the base layer as 0`}
+            {where && (
+              <>
+                {" "}
+                · <span className="mono">{where}</span>
+              </>
+            )}
+            {issue.target && (
+              <>
+                {" "}
+                in <span className="mono">{issue.target}</span>
+              </>
+            )}
+          </span>
+        </p>
+        <p className="layer-line">
+          <span>
+            Digest{" "}
+            <span className="mono sha layer-digest" title={l.digest}>
+              <span aria-hidden="true">{shortLayerDigest(l.digest)}</span>
+              <span className="visually-hidden">{l.digest}</span>
+            </span>
+          </span>
+          <CopyButton text={l.digest} label="Copy digest" copiedText={`Layer digest ${l.digest} copied to the clipboard.`} />
+        </p>
+        {more && <p>{more} This is the lowest one.</p>}
+        <p className="history-rotate">
+          <strong>{IMAGE_LAYER_ROTATE}</strong>
+        </p>
+        <p className="faint small">
+          Rebuild the image so that no layer ever holds the secret (a build secret mount, or a multi-stage build that copies only what
+          it needs), and push it. The issue moves to Fixed when a scan of this image no longer finds it in any layer.
         </p>
       </div>
     </Card>
