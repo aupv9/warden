@@ -299,6 +299,30 @@ describe("v0.6 screens: Scan rules", () => {
     expect(p).toContain("Deleted rule org.no-pickle-loads · Opengrep · version 2");
     // A scan that ran no org rule says nothing about them.
     expect(text(await render(`${org()}/projects/${web.id}/scans?scan=${db.scans[1]!.id}`))).not.toContain("Org rules");
+    // A scan from before v0.7 has no scan_rule_id: its rules are found by scanner and rule id.
+    const old = db.PRE_V07_RULES_SCAN!;
+    expect(old.org_rules.every((r) => r.scan_rule_id === null)).toBe(true);
+    const o = await render(`${org()}/projects/${web.id}/scans?scan=${old.id}`);
+    expect(text(o)).toContain("Unsafe YAML load org.unsafe-yaml-load · Opengrep · version 1");
+    expect(o).toContain(`href="/orgs/${db.ORG_ID}/settings/scan-rules/${db.RULE_YAML.id}"`);
+  });
+
+  it("scan panel (v0.7): a rule deleted and added again with the same key is the deleted rule, not the new one", async () => {
+    const web = db.projects[0]!;
+    const rules = db.scanRules[db.ORG_ID]!;
+    const i = rules.findIndex((r) => r.id === db.RULE_NO_EVAL.id);
+    const readded = { ...db.RULE_NO_EVAL, id: "00000000-0000-4000-8000-00000000ad01", version: 1 };
+    rules.splice(i, 1, readded);
+    try {
+      const html = await render(`${org()}/projects/${web.id}/scans?scan=${db.scans[0]!.id}`);
+      expect(text(html)).toContain("Deleted rule org.no-eval-of-request-data · Opengrep · version 2");
+      expect(html).not.toContain(`/settings/scan-rules/${readded.id}`);
+      expect(html).not.toContain(`/settings/scan-rules/${db.RULE_NO_EVAL.id}`);
+      // The other rules it ran still link by id.
+      expect(html).toContain(`href="/orgs/${db.ORG_ID}/settings/scan-rules/${db.RULE_YAML.id}"`);
+    } finally {
+      rules.splice(i, 1, db.RULE_NO_EVAL);
+    }
   });
 
   it("editor: the server's problems are marked at their lines and listed, each one a button to its line", async () => {
@@ -527,10 +551,13 @@ describe("mock API follows the scan-rule contract", () => {
   it("a new scan runs the enabled org rules in its project's scope", async () => {
     const web = db.projects[0]!;
     const r = await call("POST", `/orgs/${db.ORG_ID}/projects/${web.id}/scans`, { file_name: "web.zip", file_size: 10, sha256: "a".repeat(64) });
-    const scan = (r.json.data as { scan: { id: string; org_rules: { rule_id: string; version: number }[] } }).scan;
+    const scan = (r.json.data as { scan: { id: string; org_rules: { rule_id: string; version: number; scan_rule_id: string | null }[] } }).scan;
     try {
       // MD5 is off and scoped to PAY; Unsafe YAML load includes WEB; the others are org-wide.
       expect(scan.org_rules.map((x) => x.rule_id).sort()).toEqual(["org.acme-internal-token", "org.no-eval-of-request-data", "org.unsafe-yaml-load"]);
+      // v0.7: each names the rule that ran by id.
+      const ids = new Map(db.scanRules[db.ORG_ID]!.map((x) => [x.rule_id, x.id]));
+      for (const x of scan.org_rules) expect(x.scan_rule_id).toBe(ids.get(x.rule_id));
     } finally {
       db.scans.splice(
         db.scans.findIndex((s) => s.id === scan.id),

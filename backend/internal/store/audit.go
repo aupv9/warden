@@ -173,7 +173,8 @@ func (r *Repo) LockAuditVerify(ctx context.Context, orgID uuid.UUID) error {
 	return err
 }
 
-// AuditSince counts the org's entries of one action (by one actor, if set)
+// AuditSince counts the org's entries of one action (by one actor and about
+// one target, if set)
 // created after since, and returns the oldest one's time (zero if none).
 func (r *Repo) AuditSince(ctx context.Context, q service.AuditCount) (int, time.Time, error) {
 	var (
@@ -185,6 +186,9 @@ func (r *Repo) AuditSince(ctx context.Context, q service.AuditCount) (int, time.
 		` AND created_at > ` + a.add(q.Since)
 	if q.ActorID != nil {
 		sql += ` AND actor_id = ` + a.add(*q.ActorID)
+	}
+	if q.TargetID != nil {
+		sql += ` AND target_id = ` + a.add(*q.TargetID)
 	}
 	err := r.tx.QueryRow(ctx, sql, a...).Scan(&n, &oldest)
 	if oldest == nil {

@@ -27,6 +27,8 @@ type Config struct {
 	ImageUploadMaxBytes int64
 	// HistoryUploadMaxBytes caps file_size of history scans (git bundles).
 	HistoryUploadMaxBytes int64
+	// ImportMaxBytes caps file_size of import scans (scan.import_max_mb).
+	ImportMaxBytes int64
 	// RateLimitPerHour caps scans created per user per hour (≤ 0: unlimited).
 	RateLimitPerHour int
 	// UploadURLTTL is how long a presigned upload URL is valid.
@@ -41,6 +43,9 @@ type Config struct {
 	SignIn SignInConfig
 	// Webhooks: secrets.key and the URL checks (webhooks.go).
 	Webhooks WebhookConfig
+	// Registries: secrets.key, registry.allow_hosts and the credential test
+	// (registries.go).
+	Registries RegistryConfig
 	// ParseRule parses org scan rules; nil is rules.Parse (tests replace it).
 	ParseRule RuleParser
 }
@@ -218,8 +223,10 @@ func (s *Service) audit(ctx context.Context, r Repo, a *Actor, action, targetTyp
 var (
 	orgRoles     = []rbac.Role{rbac.OrgAdmin, rbac.SecurityLead, rbac.Member}
 	projectRoles = []rbac.Role{rbac.Owner, rbac.Developer, rbac.Viewer}
-	allTools     = []string{"gitleaks", "opengrep", "trivy", "checkov"}
-	severities   = []string{"critical", "high", "medium", "low", "info"}
+	// allTools are Warden's scanners: the only tools a scan or a project's
+	// default_tools may choose. ToolExternal is deliberately not one of them.
+	allTools   = []string{"gitleaks", "opengrep", "trivy", "checkov"}
+	severities = []string{"critical", "high", "medium", "low", "info"}
 )
 
 func validOrgRole(r string) bool     { return slices.Contains(orgRoles, rbac.Role(r)) }

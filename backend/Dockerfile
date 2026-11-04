@@ -32,7 +32,7 @@ COPY --from=web /web/dist ./internal/webui/dist
 RUN go test -tags webui -count=1 ./internal/webui/
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -tags webui -o /out/ \
       -ldflags="-s -w -X github.com/aupv9/common-go/health.Version=${VERSION} -X github.com/aupv9/common-go/health.Commit=${COMMIT} -X github.com/aupv9/common-go/health.BuildTime=${BUILD_TIME}" \
-      ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate ./cmd/warden-sandbox-io
+      ./cmd/warden-api ./cmd/warden-worker ./cmd/warden-migrate ./cmd/warden-admin ./cmd/warden-sandbox-io
 
 # The docker CLI (client only, statically linked) for warden-worker, which runs
 # each scanner with `docker run --runtime=runsc` against the host's daemon.

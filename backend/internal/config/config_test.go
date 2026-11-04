@@ -259,6 +259,8 @@ func TestSecretsKeyAndWebhookSettings(t *testing.T) {
 	for env, bad := range map[string]string{
 		"WARDEN_SECRETS__KEY":           short,
 		"WARDEN_WEBHOOK__ALLOW_HOSTS":   "http://127.0.0.1:8080",
+		"WARDEN_REGISTRY__ALLOW_HOSTS":  "registry.local:5000",
+		"WARDEN_SCAN__PULL_PLATFORM":    "linux",
 		"WARDEN_WEBHOOK__FAILURE_LIMIT": "0",
 	} {
 		t.Run(env, func(t *testing.T) {

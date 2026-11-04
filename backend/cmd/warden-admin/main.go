@@ -17,8 +17,9 @@
 // subject the operator knows (the refused sign-in logs it), or the next sign-in
 // with the same verified email within a window (default 24h, at most 7 days).
 //
-// secrets rotate re-encrypts every webhook URL and signing secret under the
-// active secrets.key, so a key moved to secrets.old_keys can then be removed.
+// secrets rotate re-encrypts every webhook URL and signing secret, and every
+// registry password, under the active secrets.key, so a key moved to
+// secrets.old_keys can then be removed.
 // Run it with the new key active and the old one in old_keys.
 //
 // It connects with the runtime DSN (WARDEN_DATABASE__DSN, role warden_app), not
@@ -239,12 +240,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "re-encrypted %d webhooks under key %q (audited)\n", n, keys.ActiveID())
+		rn, regUnreadable, err := store.ReencryptRegistryCredentials(ctx, d, keys)
+		if err != nil {
+			fmt.Fprintf(stderr, "re-encrypt registry credentials: %v (%d done)\n", err, rn)
+			return 1
+		}
+		fmt.Fprintf(stdout, "re-encrypted %d registry credentials under key %q (audited)\n", rn, keys.ActiveID())
+		status := 0
 		if len(unreadable) > 0 {
 			fmt.Fprintf(stderr, "%d webhooks are sealed under a key that isn't configured; they stay unreadable until edited or recreated: %v\n",
 				len(unreadable), unreadable)
-			return 1
+			status = 1
 		}
-		return 0
+		if len(regUnreadable) > 0 {
+			fmt.Fprintf(stderr, "%d registry credentials are sealed under a key that isn't configured; they stay unreadable until given a new password: %v\n",
+				len(regUnreadable), regUnreadable)
+			status = 1
+		}
+		return status
 	}
 	fmt.Fprintln(stderr, usage)
 	return 2

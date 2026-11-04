@@ -10,12 +10,11 @@ metadata:
 data:
   mirror-sync.sh: |
     {{- .Files.Get "files/mirror-sync.sh" | nindent 4 }}
-  docker-shim: |
-    {{- .Files.Get "files/docker-shim" | nindent 4 }}
 ---
 # Refreshes the offline scanner data daily, like the Compose `mirror` profile,
 # but with no Docker socket: the Trivy DB comes from the pinned Trivy image
-# run as an init container, the rest from scripts/sync-mirror.sh. Scanners
+# run as an init container, the rest from scripts/sync-mirror.sh (with
+# WARDEN_MIRROR_SKIP_TRIVY=1). Scanners
 # and the worker only ever mount the result read-only.
 apiVersion: batch/v1
 kind: CronJob
@@ -125,7 +124,6 @@ spec:
                 defaultMode: 0555
                 items:
                   - { key: mirror-sync.sh, path: mirror-sync.sh }
-                  - { key: docker-shim, path: bin/docker }
           {{- with $cj.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}

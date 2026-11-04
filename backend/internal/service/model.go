@@ -216,10 +216,28 @@ type Scan struct {
 	History *ScanHistory `json:"history"`
 	// OrgRules are the org rules the scan ran (scan.org_rules, scanrules.go).
 	OrgRules ScanRuleRefs `json:"org_rules"`
+	// Pulled: the worker pulled ImageRef from its registry (POST …/scans/pull)
+	// instead of reading an upload.
+	Pulled bool `json:"pulled"`
+	// Import is set on import scans (POST …/scans/import), nil otherwise.
+	Import *ScanImport `json:"import"`
 
 	OrgID     uuid.UUID `json:"-"`
 	ObjectKey string    `json:"-"`
 	SHA256    string    `json:"-"`
+}
+
+// ScanImport is an import scan's source: the tool, category and format it was
+// created with (the scan's target is derived from the first two), and what the
+// worker counted once it processed the report (nil before).
+type ScanImport struct {
+	Tool        string  `json:"tool"`
+	Category    string  `json:"category"`
+	Format      string  `json:"format"`
+	ToolVersion *string `json:"tool_version"`
+	Results     *int    `json:"results"`
+	Dropped     *int    `json:"dropped"`
+	Screened    *int    `json:"screened"`
 }
 
 type ScanHistory struct {
@@ -286,6 +304,10 @@ type IssueSummary struct {
 	EPSS *float64 `json:"epss"`
 	// LicenseCategory is the Trivy category of a license-policy issue.
 	LicenseCategory *string `json:"license_category"`
+	// ExternalTool is the tool an imported issue (tool external) came from,
+	// nil for every other issue. Lists carry it too: "external" alone doesn't
+	// say which tool found an issue.
+	ExternalTool *string `json:"external_tool"`
 }
 type ScanRef struct {
 	ID        uuid.UUID `json:"id"`
@@ -320,6 +342,17 @@ type Issue struct {
 	Commit *IssueCommit `json:"commit"`
 	// OrgRule: the issue comes from an org rule (scanrules.go).
 	OrgRule *IssueOrgRule `json:"org_rule"`
+	// ImageLayer: for a secret Gitleaks found in an image's layers, the lowest
+	// layer that holds it, even when a later layer deletes the file.
+	ImageLayer *IssueImageLayer `json:"image_layer"`
+}
+
+type IssueImageLayer struct {
+	Digest string `json:"digest"`
+	// Index is 0 for the base layer.
+	Index int `json:"index"`
+	// Count is how many layers hold the secret.
+	Count int `json:"count"`
 }
 
 type IssueCommit struct {

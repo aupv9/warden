@@ -43,6 +43,8 @@ func TestProdAcceptsAValidConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Storage.Endpoint = "https://s3.eu-west-1.amazonaws.com"
+	// An internal registry at a private address is a production use.
+	c.Registry.AllowHosts = List{"harbor.corp", "10.0.0.5", "fd00::5"}
 	if err := c.checkProd(); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +80,10 @@ func TestProdRefusals(t *testing.T) {
 		{"secrets key whole", func(c *Config) { c.Secrets.Key = "__WARDEN_SECRETS_KEY__" }, "secrets.key", "__WARDEN_SECRETS_KEY__"},
 		{"old keys", func(c *Config) { c.Secrets.OldKeys = Secret(c.Secrets.Key.Reveal() + ",k0:CHANGE_ME") }, "secrets.old_keys", "CHANGE_ME"},
 		{"smtp password", func(c *Config) { c.SMTP.Password = "  CHANGE_ME  " }, "smtp.password", "CHANGE_ME"},
+		{"registry loopback", func(c *Config) { c.Registry.AllowHosts = List{"harbor.corp", "127.0.0.1"} }, "registry.allow_hosts", ""},
+		{"registry metadata", func(c *Config) { c.Registry.AllowHosts = List{"169.254.169.254"} }, "registry.allow_hosts", ""},
+		{"registry mapped loopback", func(c *Config) { c.Registry.AllowHosts = List{"::ffff:127.0.0.1"} }, "registry.allow_hosts", ""},
+		{"registry localhost", func(c *Config) { c.Registry.AllowHosts = List{"LocalHost"} }, "registry.allow_hosts", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := validProd()

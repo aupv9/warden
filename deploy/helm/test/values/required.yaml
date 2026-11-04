@@ -18,3 +18,8 @@ smtp:
 mirror:
   cronjob:
     image: registry.example.com/warden/mirror@sha256:4444444444444444444444444444444444444444444444444444444444444444
+# helm template can't read the API server's addresses from a cluster.
+networkPolicy:
+  egress:
+    kubeAPI:
+      cidrs: [172.18.0.2/32]

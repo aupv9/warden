@@ -22,6 +22,8 @@ import type {
   Project,
   ProjectComponent,
   ProjectTarget,
+  RegistryCredential,
+  RegistryError,
   RuleTest,
   Scan,
   ScanRule,
@@ -34,6 +36,7 @@ import type {
 } from "../types";
 import * as db from "./fixtures";
 import { fakeTest, parseRule } from "./rules";
+import { IMPORT_TARGET_PREFIX, IMPORT_TOOL_RE } from "../../lib/imports";
 
 const LATENCY = import.meta.env.MODE === "test" ? 0 : 250;
 const PAGE = 50;
@@ -110,6 +113,17 @@ function advance(s: Scan): Scan {
   if (startedAt === undefined || !["queued", "running"].includes(s.status)) return s;
   const elapsed = db.now() - startedAt;
   if (elapsed < 3000) return s;
+  // v0.7 wave 2: a pulled image arrives (or the pull fails) when the worker picks the scan up.
+  const pullError = (s as Scan & { _pull?: string })._pull;
+  if (s.pulled && pullError) {
+    s.status = "failed";
+    s.error_code = pullError;
+    s.started_at ??= new Date(startedAt + 3000).toISOString();
+    s.finished_at = new Date().toISOString();
+    s.tool_runs = [];
+    return s;
+  }
+  if (s.pulled && s.file_size === 0) s.file_size = 143 * 1024 * 1024;
   s.status = "running";
   s.started_at ??= new Date(startedAt + 3000).toISOString();
   const runs = s.tool_runs ?? [];
@@ -125,6 +139,30 @@ function advance(s: Scan): Scan {
     s.status = runs.some((r) => r.status !== "succeeded") ? "partial" : "completed";
     s.finished_at = new Date().toISOString();
     s.stats = { new: 2, fixed: 1, reopened: 0, total: 12 };
+    // v0.8: an import read its report. Name the file …invalid…, …toolarge… or …screenfail… to
+    // see IMPORT_INVALID, IMPORT_TOO_LARGE (both rejected) or IMPORT_SCREEN_FAILED (failed).
+    if (s.kind === "import" && s.import) {
+      const code = s.file_name.includes("invalid")
+        ? "IMPORT_INVALID"
+        : s.file_name.includes("toolarge")
+          ? "IMPORT_TOO_LARGE"
+          : s.file_name.includes("screenfail")
+            ? "IMPORT_SCREEN_FAILED"
+            : null;
+      if (code) {
+        s.status = "failed";
+        s.error_code = code;
+        s.tool_runs = [];
+        s.stats = { new: 0, fixed: 0, reopened: 0, total: 0 };
+        return s;
+      }
+      const run = runs[0];
+      if (run) run.tool_version = s.import.tool === "codeql" ? "2.23.1" : "1.0.0";
+      s.import = { ...s.import, tool_version: run?.tool_version ?? null, results: 9, dropped: 1, screened: 1 };
+      s.stats = { new: 3, fixed: 0, reopened: 0, total: 8 };
+      if (run) run.findings_count = 8;
+      return s;
+    }
     // An SBOM when Trivy finished (the server stores it from the same Trivy run).
     if (runs.some((r) => r.tool === "trivy" && r.status === "succeeded")) {
       s.sbom = { components: s.kind === "image" ? 388 : 176, size: s.kind === "image" ? 1_190_442 : 342_118, formats: ["cyclonedx-json", "spdx-json"] };
@@ -430,7 +468,7 @@ function ruleTestView({ _t: _a, _outcome: _b, _by: _c, ...t }: db.MockRuleTest):
 function orgRulesFor(p: Project, tools: Scan["tools"]): Scan["org_rules"] {
   return (db.scanRules[db.orgOfProject(p.id)] ?? [])
     .filter((r) => r.enabled && tools.includes(r.tool) && (r.project_ids === null || r.project_ids.includes(p.id)))
-    .map((r) => ({ rule_id: r.rule_id, tool: r.tool, version: r.version, sha256: r.sha256 }));
+    .map((r) => ({ rule_id: r.rule_id, tool: r.tool, version: r.version, sha256: r.sha256, scan_rule_id: r.id }));
 }
 
 // ---- v0.4 wave 2: webhooks and Slack ----
@@ -525,7 +563,7 @@ function projectTargets(p: Project): { items: ProjectTarget[] } {
       const last = db.scans.filter((s) => s.project_id === p.id && s.target === target).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
       return {
         target,
-        kind: (target === "" ? "source" : target === "(history)" ? "history" : "image") as ProjectTarget["kind"],
+        kind: (target === "" ? "source" : target === "(history)" ? "history" : target.startsWith(IMPORT_TARGET_PREFIX) ? "import" : "image") as ProjectTarget["kind"],
         last_scan_at: last?.created_at ?? null,
         open_issues: db.issues.filter((i) => i.project_id === p.id && i.target === target && ACTIVE.includes(i.status)).length,
       };
@@ -577,9 +615,66 @@ function validateRules(p: Project, items: AssignRule[]): void {
     const m = r.match ?? {};
     if (!m.path_glob && !m.tool && !m.severity_at_least) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match`]: "needs at least one matcher" });
     if (m.path_glob && m.path_glob.length > GLOB_MAX) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.path_glob`]: "at most 200 characters" });
-    if (m.tool && !TOOLS.includes(m.tool)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.tool`]: "unknown tool" });
+    // v0.8: a rule may match external (any imported result) too.
+    if (m.tool && m.tool !== "external" && !TOOLS.some((t) => t === m.tool)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].match.tool`]: "unknown tool" });
     if (!members.some((x) => x.user.id === r.assignee_id)) throw new Fail(422, "VALIDATION_FAILED", { [`items[${i}].assignee_id`]: "not a project member" });
   });
+}
+
+// ---- v0.7 wave 2: registry credentials and pulled images ----
+
+const IMAGE_TOOLS: Scan["tools"] = ["trivy", "gitleaks"];
+/** The contract's patterns (RegistryCredential.host, PullScanRequest.image_ref). */
+const REGISTRY_HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$/;
+const PULL_REF = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?(\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+@sha256:[0-9a-f]{64}$/;
+/** Test calls per credential, for the 10-an-hour limit. */
+const registryTests: Record<string, number[]> = {};
+
+/** manage_registries: org admins and security leads. */
+function requireRegistries(orgId: string): RegistryCredential[] {
+  const role = callerRole(orgId);
+  if (role !== "org_admin" && role !== "security_lead") throw new Fail(403, "FORBIDDEN");
+  return (db.registries[orgId] ??= []);
+}
+
+function findRegistry(orgId: string, id: string): RegistryCredential {
+  const c = requireRegistries(orgId).find((x) => x.id === id);
+  if (!c) throw NOT_FOUND();
+  return c;
+}
+
+function checkRegistryFields(b: Record<string, unknown>, fields: Record<string, string>) {
+  if ("host" in b) {
+    const h = b.host;
+    if (typeof h !== "string" || h.length > 253 || !REGISTRY_HOST.test(h)) fields.host = "must be a lower case host name with a dot, and an optional port";
+    else if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(h)) fields.host = "must be a host name, not an IP address";
+  }
+  if ("username" in b && (typeof b.username !== "string" || b.username.length < 1 || b.username.length > 256)) fields.username = "1 to 256 characters";
+  if ("password" in b && (typeof b.password !== "string" || b.password.length < 1 || b.password.length > 4096)) fields.password = "1 to 4096 characters";
+}
+
+/** What signing in to a host gives in the mock: the refused credentials stay refused, hosts in
+ *  internal zones are blocked, `.invalid` doesn't answer. */
+function registryOutcome(host: string, current: RegistryError | null): RegistryError | null {
+  const name = host.replace(/:\d+$/, "");
+  if (/\.(internal|local)$/.test(name)) return "blocked";
+  if (name.endsWith(".invalid")) return "unreachable";
+  return current === "unauthorized" ? "unauthorized" : null;
+}
+
+/** Why a pull fails in the mock, from words in the reference (try ghcr.io/acme/private-app,
+ *  …/missing, …/huge, …/arm-only, …/flaky, or a host under .internal), or the host's credentials. */
+function pullOutcome(orgId: string, ref: string): string | null {
+  const host = ref.slice(0, ref.indexOf("/"));
+  const repo = ref.slice(host.length + 1, ref.indexOf("@"));
+  if (/\.(internal|local)(:\d+)?$/.test(host)) return "PULL_BLOCKED";
+  const cred = db.registries[orgId]?.find((c) => c.host === host);
+  if (repo.includes("private") || cred?.last_error === "unauthorized") return "PULL_UNAUTHORIZED";
+  if (repo.includes("missing")) return "PULL_NOT_FOUND";
+  if (repo.includes("huge")) return "PULL_TOO_LARGE";
+  if (repo.includes("arm")) return "PULL_PLATFORM";
+  if (repo.includes("flaky")) return "PULL_FAILED";
+  return null;
 }
 
 const O = "/orgs/([^/]+)";
@@ -739,7 +834,7 @@ const routes: [string, RegExp, Handler][] = [
     new RegExp(`^${O}/targets$`),
     (m, url) => {
       const kind = url.searchParams.get("kind");
-      if (kind !== null && !["source", "image", "history"].includes(kind)) throw new Fail(422, "VALIDATION_FAILED", { kind: "source, image or history" });
+      if (kind !== null && !["source", "image", "history", "import"].includes(kind)) throw new Fail(422, "VALIDATION_FAILED", { kind: "source, image, history or import" });
       const items = [...visibleProjects(m[1]!)]
         .sort((a, b) => a.key.localeCompare(b.key))
         .flatMap((p) => projectTargets(p).items.map((t) => ({ project_id: p.id, project_key: p.key, project_name: p.name, ...t })))
@@ -1069,6 +1164,84 @@ const routes: [string, RegExp, Handler][] = [
       return { items: items.map(({ _t: _omit, ...d }: WebhookDelivery & { _t?: number }) => d), next_cursor };
     },
   ],
+  // ---- v0.7 wave 2: registry credentials (manage_registries). The password is checked and
+  // dropped: the mock keeps none, and no answer contains one. ----
+  ["GET", new RegExp(`^${O}/registries$`), (m) => ({ items: [...requireRegistries(m[1]!)].sort((a, b) => a.host.localeCompare(b.host)) })],
+  [
+    "POST",
+    new RegExp(`^${O}/registries$`),
+    (m, _u, body) => {
+      const list = requireRegistries(m[1]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["host", "username", "password"].includes(k)) fields[k] = "unknown field";
+      for (const k of ["host", "username", "password"]) if (!(k in b)) fields[k] = "required";
+      checkRegistryFields(b, fields);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (db.mockFlags.registries === "unavailable") throw new Fail(409, "SECRETS_KEY_MISSING");
+      if (list.length >= 20 || list.some((c) => c.host === b.host)) throw new Fail(409, "CONFLICT");
+      const at = new Date().toISOString();
+      const c: RegistryCredential = {
+        id: db.uuid(),
+        host: b.host as string,
+        username: b.username as string,
+        created_by: meRef(),
+        created_at: at,
+        updated_at: at,
+        last_used_at: null,
+        last_error: null,
+      };
+      list.push(c);
+      audit("registry.created", "registry", c.id, { host: c.host, username: c.username });
+      return [201, c];
+    },
+  ],
+  [
+    "PATCH",
+    new RegExp(`^${O}/registries/([^/]+)$`),
+    (m, _u, body) => {
+      const c = findRegistry(m[1]!, m[2]!);
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      const keys = Object.keys(b);
+      if (keys.length === 0) fields.body = "nothing to change";
+      for (const k of keys) if (!["username", "password"].includes(k)) fields[k] = "unknown field";
+      checkRegistryFields(b, fields);
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if (db.mockFlags.registries === "unavailable") throw new Fail(409, "SECRETS_KEY_MISSING");
+      if (typeof b.username === "string") c.username = b.username;
+      // New credentials: the last failure no longer says anything about them.
+      c.last_error = null;
+      c.updated_at = new Date().toISOString();
+      audit("registry.updated", "registry", c.id, { host: c.host, username: c.username, fields: keys });
+      return c;
+    },
+  ],
+  [
+    "DELETE",
+    new RegExp(`^${O}/registries/([^/]+)$`),
+    (m) => {
+      const c = findRegistry(m[1]!, m[2]!);
+      const list = db.registries[m[1]!]!;
+      list.splice(list.indexOf(c), 1);
+      audit("registry.deleted", "registry", c.id, { host: c.host, username: c.username });
+      return [204, null];
+    },
+  ],
+  [
+    "POST",
+    new RegExp(`^${O}/registries/([^/]+)/test$`),
+    (m) => {
+      const c = findRegistry(m[1]!, m[2]!);
+      const hourAgo = db.now() - 3_600_000;
+      const calls = (registryTests[c.id] ?? []).filter((t) => t > hourAgo);
+      if (calls.length >= 10) throw new Fail(429, "RATE_LIMITED");
+      registryTests[c.id] = [...calls, db.now()];
+      const error = registryOutcome(c.host, c.last_error);
+      c.last_error = error;
+      return { ok: error === null, error };
+    },
+  ],
   // ---- v0.2 API tokens ----
   [
     "GET",
@@ -1369,10 +1542,14 @@ const routes: [string, RegExp, Handler][] = [
       if (!/^[0-9a-f]{64}$/.test(b.sha256)) throw new Fail(422, "VALIDATION_FAILED", { sha256: "must be 64 hex characters" });
       const kind = b.kind ?? "source";
       const fields: Record<string, string> = {};
+      // v0.8: imports have their own endpoint, and no scan chooses external.
+      if (kind === "import") fields.kind = "imports use POST …/scans/import";
+      if (b.tools?.some((t) => (t as string) === "external")) fields.tools = "external is never chosen";
       if (kind === "image") {
         if (!/\.tar$/i.test(b.file_name)) fields.file_name = "must be a .tar for an image scan";
         if (!b.target || b.target.length > 255 || !IMAGE_TARGET.test(b.target)) fields.target = "must be an image repository without tag, e.g. ghcr.io/acme/api";
-        if (b.tools && b.tools.some((t) => t !== "trivy")) fields.tools = "image scans run trivy only";
+        // v0.7 wave 2: Gitleaks reads the image's layers too.
+        if (b.tools && b.tools.some((t) => t !== "trivy" && t !== "gitleaks")) fields.tools = "image scans run trivy and gitleaks only";
         if (b.image_ref && b.image_ref.length > 512) fields.image_ref = "at most 512 characters";
         if (b.file_size > db.me.limits.image_upload_max_mb * 1024 * 1024) fields.file_size = "larger than image_upload_max_mb";
       } else if (kind === "history") {
@@ -1385,7 +1562,12 @@ const routes: [string, RegExp, Handler][] = [
         if (b.target || b.image_ref) fields[b.target ? "target" : "image_ref"] = "only for image scans";
       }
       if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
-      const tools = kind === "image" ? (["trivy"] as Scan["tools"]) : kind === "history" ? (["gitleaks"] as Scan["tools"]) : (b.tools ?? p.default_tools);
+      const tools =
+        kind === "image"
+          ? ((b.tools?.length ? IMAGE_TOOLS.filter((t) => b.tools!.some((x) => x === t)) : IMAGE_TOOLS) as Scan["tools"])
+          : kind === "history"
+            ? (["gitleaks"] as Scan["tools"])
+            : (b.tools ?? p.default_tools);
       const scan: Scan = {
         id: db.uuid(),
         project_id: p.id,
@@ -1407,12 +1589,130 @@ const routes: [string, RegExp, Handler][] = [
         sbom: null,
         history: null,
         org_rules: kind === "image" ? [] : orgRulesFor(p, tools),
+        pulled: false,
+        import: null,
         tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
       };
       db.scans.unshift(scan);
       audit("scan.created", "scan", scan.id, { project_key: p.key, file_name: scan.file_name, file_size: scan.file_size });
       const type = kind === "image" ? "application/x-tar" : "application/zip";
       return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": type }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
+    },
+  ],
+  // v0.8: another tool's report (SARIF or GitLab SAST), uploaded like a .zip, then started.
+  [
+    "POST",
+    new RegExp(`^${O}/projects/([^/]+)/scans/import$`),
+    (m, _u, body) => {
+      const p = orgProject(m[1]!, m[2]!);
+      if (p.archived_at) throw new Fail(409, "PROJECT_ARCHIVED");
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["tool", "format", "category", "file_name", "file_size", "sha256"].includes(k)) fields[k] = "unknown field";
+      const tool = b.tool;
+      if (typeof tool !== "string" || !IMPORT_TOOL_RE.test(tool)) fields.tool = "codeql, gitlab-sast, semgrep, snyk-code, sonarqube or external.<key>";
+      const format = b.format ?? "sarif";
+      if (format !== "sarif" && format !== "gitlab-sast") fields.format = "sarif or gitlab-sast";
+      const category = b.category ?? "";
+      if (typeof category !== "string" || !/^[A-Za-z0-9/:._=+-]{0,100}$/.test(category)) fields.category = "at most 100 letters, digits and / : . _ = + -";
+      const name = b.file_name;
+      if (typeof name !== "string" || name.length > 255 || !/^[^/\\]+\.(sarif|json)$/i.test(name)) fields.file_name = "must be a .sarif or .json file";
+      const size = b.file_size;
+      if (typeof size !== "number" || !Number.isInteger(size) || size < 1) fields.file_size = "must be at least 1";
+      else if (size > 50 * 1024 * 1024) fields.file_size = "larger than import_max_mb";
+      if (typeof b.sha256 !== "string" || !/^[0-9a-fA-F]{64}$/.test(b.sha256)) fields.sha256 = "must be 64 hex characters";
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      if ((name as string).includes("ratelimit")) throw new Fail(429, "RATE_LIMITED");
+      const at = new Date().toISOString();
+      const scan: Scan = {
+        id: db.uuid(),
+        project_id: p.id,
+        status: "pending_upload",
+        file_name: name as string,
+        file_size: size as number,
+        tools: ["external"],
+        error_code: null,
+        stats: { new: 0, fixed: 0, reopened: 0, total: 0 },
+        created_by: meRef(),
+        created_at: at,
+        queued_at: null,
+        started_at: null,
+        finished_at: null,
+        via_token: null,
+        kind: "import",
+        target: `${IMPORT_TARGET_PREFIX}${tool as string}${category ? ` ${category as string}` : ""}`,
+        image_ref: null,
+        sbom: null,
+        history: null,
+        org_rules: [],
+        pulled: false,
+        import: { tool: tool as string, category: category as string, format: format as "sarif" | "gitlab-sast", tool_version: null, results: null, dropped: null, screened: null },
+        tool_runs: [{ tool: "external", tool_version: "", status: "queued", findings_count: null, duration_ms: null, error: null }],
+      };
+      db.scans.unshift(scan);
+      audit("scan.created", "scan", scan.id, { project_key: p.key, file_name: scan.file_name, file_size: scan.file_size, import_tool: tool });
+      return [201, { scan, upload: { method: "PUT", url: "https://storage.mock.invalid/upload", headers: { "Content-Type": "application/json" }, expires_at: new Date(db.now() + 15 * 60_000).toISOString() } }];
+    },
+  ],
+  // v0.7 wave 2: an image the worker pulls by digest; nothing is uploaded, so it is queued at once.
+  [
+    "POST",
+    new RegExp(`^${O}/projects/([^/]+)/scans/pull$`),
+    (m, _u, body) => {
+      const p = orgProject(m[1]!, m[2]!);
+      if (p.archived_at) throw new Fail(409, "PROJECT_ARCHIVED");
+      const b = (body ?? {}) as Record<string, unknown>;
+      const fields: Record<string, string> = {};
+      for (const k of Object.keys(b)) if (!["image_ref", "tools"].includes(k)) fields[k] = "unknown field";
+      const ref = b.image_ref;
+      if (typeof ref !== "string" || ref.length > 512 || !PULL_REF.test(ref)) fields.image_ref = "must be registry/repository@sha256:<digest>";
+      if ("tools" in b) {
+        const t = b.tools;
+        if (!Array.isArray(t) || t.length < 1) fields.tools = "at least one tool";
+        else if (t.some((x) => !IMAGE_TOOLS.includes(x as never))) fields.tools = "image scans run trivy and gitleaks only";
+        else if (new Set(t).size !== t.length) fields.tools = "duplicate tool";
+      }
+      if (Object.keys(fields).length) throw new Fail(422, "VALIDATION_FAILED", fields);
+      const imageRef = ref as string;
+      const tools = IMAGE_TOOLS.filter((t) => !Array.isArray(b.tools) || (b.tools as string[]).includes(t));
+      const target = imageRef.slice(0, imageRef.indexOf("@"));
+      const at = new Date().toISOString();
+      const scan: Scan = {
+        id: db.uuid(),
+        project_id: p.id,
+        status: "queued",
+        file_name: `${target.slice(target.lastIndexOf("/") + 1)}.tar`,
+        file_size: 0,
+        tools,
+        error_code: null,
+        stats: { new: 0, fixed: 0, reopened: 0, total: 0 },
+        created_by: meRef(),
+        created_at: at,
+        queued_at: at,
+        started_at: null,
+        finished_at: null,
+        via_token: null,
+        kind: "image",
+        target,
+        image_ref: imageRef,
+        sbom: null,
+        history: null,
+        org_rules: [],
+        pulled: true,
+        import: null,
+        tool_runs: tools.map((tool) => ({ tool, tool_version: "mock", status: "queued", findings_count: null, duration_ms: null, error: null })),
+      };
+      const outcome = pullOutcome(m[1]!, imageRef);
+      Object.assign(scan, { _t: db.now(), _pull: outcome ?? undefined });
+      const cred = db.registries[m[1]!]?.find((c) => c.host === imageRef.slice(0, imageRef.indexOf("/")));
+      if (cred) {
+        cred.last_used_at = at;
+        if (outcome === "PULL_UNAUTHORIZED") cred.last_error = "unauthorized";
+        else if (outcome === "PULL_BLOCKED") cred.last_error = "blocked";
+      }
+      db.scans.unshift(scan);
+      audit("scan.created", "scan", scan.id, { project_key: p.key, image_ref: imageRef, pulled: true });
+      return [201, { ...scan, _t: undefined, _pull: undefined }];
     },
   ],
   [
@@ -1637,8 +1937,19 @@ const routes: [string, RegExp, Handler][] = [
 
 const verifyRuns: Record<string, number[]> = {};
 
+function sourceOf(i: Issue): "code" | "image" | "history" | "import" {
+  if (i.target === "") return "code";
+  if (i.target === "(history)") return "history";
+  if (i.tool === "external") return "import";
+  return "image";
+}
+
 /** GET /issues and (v0.5 wave 2) GET /issues/export.csv: the same filters and order. */
 function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorted: Issue[] } {
+  const ext = sp.get("external_tool");
+  if (ext !== null && !IMPORT_TOOL_RE.test(ext)) throw new Fail(422, "VALIDATION_FAILED", { external_tool: "not an import tool" });
+  const source = sp.get("source");
+  if (source !== null && !["code", "image", "history", "import"].includes(source)) throw new Fail(422, "VALIDATION_FAILED", { source: "code, image, history or import" });
   const statuses = sp.getAll("status");
   const want = statuses.length === 0 || statuses.includes("active") ? ACTIVE : (statuses as IssueStatus[]);
   const q = (sp.get("q") ?? "").toLowerCase();
@@ -1653,9 +1964,9 @@ function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorte
       (sp.get("kev") !== "true" || i.kev) &&
       (!sp.get("epss_min") || (i.epss ?? -1) >= Number(sp.get("epss_min"))) &&
       (!sp.get("kind") || (i.tool === "trivy" && kindOf(i.rule_id) === sp.get("kind"))) &&
-      // v0.4 wave 2: history issues have the target "(history)".
-      (!sp.get("source") ||
-        (sp.get("source") === "history" ? i.target === "(history)" : sp.get("source") === "image" ? i.target !== "" && i.target !== "(history)" : i.target === "")) &&
+      // v0.4 wave 2: history issues have the target "(history)"; v0.8 imported ones "(import) …".
+      (!sp.get("source") || sourceOf(i) === sp.get("source")) &&
+      (!sp.get("external_tool") || i.external_tool === sp.get("external_tool")) &&
       (!sp.get("target") || i.target === sp.get("target")) &&
       (!sp.get("assignee") ||
         (sp.get("assignee") === "me" ? i.assignee?.id === db.me.id : sp.get("assignee") === "none" ? !i.assignee : i.assignee?.id === sp.get("assignee"))) &&
@@ -1678,16 +1989,20 @@ function queryIssues(orgId: string, sp: URLSearchParams): { base: Issue[]; sorte
 
 const CSV_COLUMNS = ["key", "project", "title", "severity", "status", "tool", "rule_id", "file_path", "line", "target", "cve", "kev", "epss", "assignee", "due_at", "created_at", "updated_at"];
 
-/** A CSV cell as the server writes it: a spreadsheet would read a cell starting with =, +, -, @,
- *  tab or carriage return as a formula, so those get an apostrophe; then RFC 4180 quoting. */
+/** A CSV cell as the server writes it: control characters (CR and LF included) become spaces, so
+ *  every record is one line (v0.7's completeness check counts lines); a spreadsheet would read a
+ *  cell starting with =, +, -, @ as a formula, so those get an apostrophe; then RFC 4180 quoting. */
 function csvCell(v: string | number | boolean | string[] | null | undefined): string {
   let s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(" ") : String(v);
+  s = s.replace(/[\u0000-\u001f\u007f]/g, " ");
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** GET /issues/export.csv: the list's filters, fixed columns, an attachment. `?mock_export=`
- *  marks it truncated or makes it fail (fixtures.ts mockFlags). */
+/** GET /issues/export.csv: the list's filters, fixed columns, an attachment, and (v0.7) the end
+ *  line `#warden:end rows=<N>`. `?mock_export=` marks it truncated, makes it fail, or (v0.7)
+ *  cuts it short: `cut` drops the end line and the last row, `miscount` ends with a wrong N
+ *  (fixtures.ts mockFlags). */
 function exportCsv(orgId: string, url: URL): Response {
   const flag = db.mockFlags.export;
   if (flag === "rate_limited") return envelope(429, null, { code: "RATE_LIMITED", message: "rate limited" }, { "Retry-After": "120" });
@@ -1703,7 +2018,7 @@ function exportCsv(orgId: string, url: URL): Response {
       i.title,
       i.severity,
       i.status,
-      i.tool,
+      i.external_tool ? `external:${i.external_tool}` : i.tool,
       i.rule_id,
       i.file_path,
       i.start_line,
@@ -1727,7 +2042,10 @@ function exportCsv(orgId: string, url: URL): Response {
     "Content-Disposition": `attachment; filename="warden-issues-${slug}-${new Date().toISOString().slice(0, 10)}.csv"`,
   };
   if (flag === "truncated") headers["X-Warden-Truncated"] = "true";
-  return new Response([CSV_COLUMNS.join(","), ...rows, ""].join("\r\n"), { status: 200, headers });
+  const lines = [CSV_COLUMNS.join(","), ...rows, `#warden:end rows=${rows.length + (flag === "miscount" ? 1 : 0)}`];
+  // A stream that broke after some rows: no end line, and the response just ends.
+  if (flag === "cut") lines.splice(rows.length > 0 ? -2 : -1);
+  return new Response([...lines, ""].join("\r\n"), { status: 200, headers });
 }
 
 /** v0.4: Trivy issues are license-policy issues, malicious packages or vulnerabilities. */
@@ -1736,7 +2054,7 @@ function kindOf(ruleId: string): "license" | "malicious" | "vulnerability" {
 }
 
 function summary(i: Issue) {
-  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, ...rest } = i;
+  const { description: _d, remediation: _r, snippet: _s, end_line: _e, cwe: _c, cve: _v, first_seen_scan: _f, last_seen_scan: _l, occurrences: _o, version: _ver, allowed_transitions: _a, can_assign: _ca, can_request_exception: _cr, pending_exception_id: _p, epss_percentile: _ep, kev_added: _ka, kev_ransomware: _kr, commit: _cm, org_rule: _or, image_layer: _il, ...rest } = i;
   return rest;
 }
 

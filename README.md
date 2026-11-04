@@ -40,7 +40,8 @@ that threat model instead of bolting it on:
   change the schema, or rewrite the audit log.
 - **Uploaded source is short-lived.** The extracted source and the uploaded object are
   deleted on every exit path of a scan. Image tarballs are validated without being unpacked,
-  and Warden never pulls from a registry or holds registry credentials.
+  and Warden pulls from a registry only by digest, through the same address guard as webhooks,
+  and keeps registry credentials only encrypted.
 
 ## How it works
 
@@ -65,6 +66,10 @@ that threat model instead of bolting it on:
 Findings keep their identity when code moves: fingerprints hash the tool, rule, file and
 the whitespace-normalized flagged lines, plus the finding's order within the file.
 
+Severities come from each scanner, except Checkov's: open-source Checkov reports none, so Warden
+ships a table for the checks of the pinned Checkov release
+(`backend/internal/domain/severity/checkov_severity.json`); a check missing from it is Medium.
+
 ## Quick start
 
 Requirements: Go 1.27, Docker (Colima works on macOS), Node.js 22, `jq`, `openssl`.
@@ -88,9 +93,12 @@ set -a; source .env; set +a
 go -C backend run ./cmd/warden-admin org create --name "Acme" --admin you@example.com
 ```
 
-`warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API.
+`warden-admin` connects with the runtime role (`WARDEN_DATABASE__DSN`), like the API. It is in
+the release image too: with the production Compose, `docker compose -f docker-compose.prod.yml
+run --rm --entrypoint /usr/local/bin/warden-admin api org create …`.
 `warden-admin audit verify --org <org id>` checks an organization's audit-log hash chain.
-`warden-admin secrets rotate` re-encrypts every webhook URL and secret under the current
+`warden-admin secrets rotate` re-encrypts every webhook URL and secret, and every registry
+password, under the current
 `WARDEN_SECRETS__KEY` (see "Webhooks and Slack").
 `warden-admin org set-role --org <org id> --email them@example.com --role org_admin` is the
 break-glass path when nobody who manages members can sign in (for example, an admin lost
@@ -178,7 +186,17 @@ digest (pre-pull them: pull time counts against each Pod's deadline).
 - The chart takes every secret from an existing Secret (`existingSecret`; NOTES list the keys),
   mounts in each Pod only the keys it needs, runs migrations as a pre-install/pre-upgrade hook,
   and refreshes the mirror with a CronJob (no Docker). `helm install … -f values.yaml` with
-  image digests is the whole install; `values-prod-example.yaml` is a starting point.
+  image digests is the whole install; `values-prod-example.yaml` is a starting point. Each
+  release ships the chart (`warden-X.Y.Z.tgz`, in the checksums and the attestation).
+- *Network*: the worker reaches the API server only, at the addresses `helm install`/`upgrade`
+  looks up (`default/kubernetes`), or at `networkPolicy.egress.kubeAPI.cidrs` when you set them
+  (required for `helm template` and GitOps; run the upgrade again if they change). Object
+  storage at a private address goes in `networkPolicy.egress.storage.to`; by default only
+  public addresses are allowed there.
+- *Sandbox namespace*: one you create yourself must carry Pod Security `enforce=restricted`;
+  when the chart can't read it, set `sandbox.podSecurityConfirmed: true` to say you own the
+  label. Scanner Pods' `/tmp` is executable (Kubernetes can't mount an emptyDir `noexec`);
+  gVisor confines what runs there.
 
 **Schema version.** The API and worker refuse to start on a database migrated by a newer
 Warden. On an older schema the API reports not ready and the worker takes no jobs until
@@ -255,6 +273,9 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest source upload; the presigned URL pins the exact size and the worker refuses larger objects |
 | `WARDEN_SCAN__UNZIP_MAX_MB` / `WARDEN_SCAN__UNZIP_MAX_FILES` | `1024` / `100000` | Unpacked size and file count a source archive may have |
 | `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB` | `2048` | Largest `docker save` tarball for image scans |
+| `WARDEN_SCAN__IMPORT_MAX_MB` | `50` | Largest imported SARIF file or GitLab SAST report (`warden import`) |
+| `WARDEN_SCAN__PULL_MAX_MB` / `WARDEN_SCAN__PULL_PLATFORM` | `2048` / `linux/amd64` | Largest image the worker pulls from a registry (manifests and layers as sent, checked before any layer is fetched); the platform picked from a multi-platform image (`os/arch[/variant]`) |
+| `WARDEN_REGISTRY__ALLOW_HOSTS` | | Registry hosts (exact names or IPs, no port) that pulls may reach over `http`, at private addresses, or without a dot in the name, e.g. an internal registry. In prod it may not name localhost, a loopback, link-local (cloud metadata) or unspecified address |
 | `WARDEN_SCAN__HISTORY_UPLOAD_MAX_MB` / `WARDEN_SCAN__HISTORY_MAX_COMMITS` | `1024` / `50000` | Largest git bundle for history scans; commits Gitleaks reads (the newest are kept and the scan is marked truncated). The sandbox's `/tmp` and memory grow with the bundle limit (about 1.25 × the limit + 256 MiB of `/tmp`, and that + 1.5 GiB of memory) |
 | `WARDEN_SCAN__SBOM_RETENTION` | `8760h` | How long a scan's SBOM is kept before the purge job deletes it (at least `1h`) |
 | `WARDEN_SCAN__SCRATCH_DIR` / `WARDEN_SCAN__MIRROR_DIR` | `/scratch` / `/mirror` | Worker's per-scan working directory; offline scanner data (`make mirror`) |
@@ -269,7 +290,7 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SMTP__IMPLICIT_TLS` | `false` | TLS from the first byte (port 465) instead of STARTTLS |
 | `WARDEN_SMTP__PUBLIC_BASE_URL` | `http://localhost:5173` | Web UI address; links in emails are built from it |
 | `WARDEN_SMTP__DIGEST_HOUR` | `8` | UTC hour of the daily SLA digest |
-| `WARDEN_SECRETS__KEY` | | Encrypts webhook URLs and signing secrets: `<key id>:<base64 of 32 bytes>`, key id `[a-z0-9_-]{1,32}` (e.g. `k1:$(openssl rand -base64 32)`). Without it webhooks are unavailable |
+| `WARDEN_SECRETS__KEY` | | Encrypts webhook URLs and signing secrets, and registry passwords: `<key id>:<base64 of 32 bytes>`, key id `[a-z0-9_-]{1,32}` (e.g. `k1:$(openssl rand -base64 32)`). Without it webhooks and registry credentials are unavailable |
 | `WARDEN_SECRETS__OLD_KEYS` | | Comma-separated older keys, used only to decrypt (see "Webhooks and Slack") |
 | `WARDEN_WEBHOOK__ALLOW_HOSTS` | | Development only: exact host names or IPs (no scheme or port) that webhooks may reach over `http` and at private addresses. The worker logs a warning when it is set |
 | `WARDEN_WEBHOOK__FAILURE_LIMIT` | `10` | Failed deliveries in a row before a webhook is turned off (1–1000) |
@@ -452,7 +473,9 @@ How it behaves:
   `issues.exported` with the filters and row count; not for API tokens. Text from scanned code
   is defused for spreadsheets: a cell whose first visible character is `=`, `+`, `-` or `@`
   (or a full-width form) gets a leading `'`; control and line-break characters become spaces,
-  and bidi controls are dropped.
+  and bidi controls are dropped. A complete export ends with the line `#warden:end rows=<N>`
+  (N data rows): a file without it, or with another count, was cut off, and the web UI refuses
+  to save it.
 - **Audit verification.** `POST …/audit-log/verify` (org admins, security leads; 10 per org per
   hour) recomputes the org's hash chain like `warden-admin audit verify` and returns
   `{ok, entries, first_bad_id, verified_at}`; the check is recorded as `audit.verified`.
@@ -601,12 +624,34 @@ Limits: 200 rules per scanner, 64 KiB per rule and 1 MiB per org.
 **Container images.** An image scan takes the tarball from `docker save` (Docker and OCI
 layouts), at most `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB`. Warden checks it before Trivy sees it
 (`imagecheck`: one image, at most 4096 entries and 256 layers, only files and directories, every
-referenced blob present, safe names; it is never unpacked by Warden) and runs only Trivy, in the
-same sandbox as any scanner. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
+referenced blob present, safe names; the worker never unpacks it) and runs Trivy and Gitleaks,
+each in its own sandbox. Rejections are scan errors `IMAGE_INVALID`, `IMAGE_TOO_LARGE` and
 `IMAGE_MULTIPLE`. Issues are tracked per `target` (the image repository): an image scan only
-auto-fixes issues of the same target, never source-code issues or another image's. Secrets in
-image layers are not scanned, because Gitleaks is the only secret scanner (its output is the only
-output Warden redacts).
+auto-fixes issues of the same target, never source-code issues or another image's.
+
+**Secrets in image layers.** Inside the Gitleaks sandbox, `warden-layers` unpacks each layer in
+turn (regular files only, no links or devices, bytes and entries capped at four times the image
+limit) and Gitleaks reads it; the findings go through `warden-redact` like any other. A secret is
+reported once per image, at the lowest layer that holds it (`Issue.image_layer`: the layer's
+digest, its index and how many layers hold it), also when a later layer deletes the file: it is
+still in the image for anyone who pulls it. Rotate the secret; rebuilding without it is not
+enough while the old image exists. The issue's fingerprint doesn't include the digest, so a
+rebuilt image that still holds the secret keeps its issue.
+
+**Pulling from a registry.** `POST …/projects/{id}/scans/pull` (or *New scan → Image from a
+registry*) scans an image the worker pulls itself, by digest only (`repo@sha256:…`, never a
+tag), at most `WARDEN_SCAN__PULL_MAX_MB`, picking `WARDEN_SCAN__PULL_PLATFORM` from a
+multi-platform list. Every blob and the manifest are checked against their digests; every
+connection, including redirects to a CDN and token realms, refuses internal addresses, no proxy is
+used, and credentials go only to the registry's host (Basic) or to a token realm on the same site
+(same host or registrable domain, e.g. `auth.docker.io` for Docker Hub); a realm on another site
+ends the scan with `PULL_BLOCKED` and never gets them. Warden never runs the image, and checks it
+with `imagecheck` like an upload. A registry at a private address, over `http` or with a
+single-label name needs `WARDEN_REGISTRY__ALLOW_HOSTS`; with Helm, pulls and the credential test
+reach public addresses on 443 (`networkPolicy.egress.registries`). Org admins and security leads keep one credential per registry host under
+*Settings → Registries* (`/orgs/{org_id}/registries`): the password is write-only and stored
+encrypted under `WARDEN_SECRETS__KEY`. Failures end the scan with `PULL_UNAUTHORIZED`,
+`PULL_NOT_FOUND`, `PULL_TOO_LARGE`, `PULL_BLOCKED`, `PULL_PLATFORM` or `PULL_FAILED`.
 
 **SBOM.** Trivy writes one JSON report per scan; Warden converts it to SARIF for findings, to a
 CycloneDX SBOM (spec 1.7) named after the project key with a `warden:scan_id` property, and to an
@@ -653,7 +698,9 @@ are auto-fixed) and are audited as `org.license_policy_changed`.
 **Exploit data.** `make mirror` also downloads the [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
 catalog and the [FIRST EPSS](https://www.first.org/epss/) scores into the mirror
 (`scripts/sync-mirror.sh intel` refreshes only these and the OSV feeds; `WARDEN_KEV_URL` and `WARDEN_EPSS_URL`
-override the sources). The worker's `load_vuln_intel` job loads them hourly when they change,
+override the sources, `WARDEN_KEV_FALLBACK_URL` the copy tried when cisa.gov fails, and
+`WARDEN_MIRROR_SKIP_TRIVY=1` skips the Trivy DB step when something else fetches it, as the
+Helm chart's CronJob does). The worker's `load_vuln_intel` job loads them hourly when they change,
 after strict checks (sizes, gzip bomb, every row), and keeps the previous data if a file is bad.
 Issues then show whether a CVE is known exploited and its EPSS score; the issue list filters
 (`kev`, `epss_min`) and sorts (`-epss`) on them, and the gate can fail on KEV. They only rank
@@ -795,6 +842,51 @@ For history scans, add a scheduled job on the default branch with the full histo
 schedule with `GIT_DEPTH: 0` on GitLab, running `warden scan … --history`. The web UI's CI setup
 card (Project settings) builds both snippets for a project.
 
+### Importing other tools' results
+
+`warden import` brings another tool's findings into Warden, where they get owners, SLAs,
+exceptions, the audit log and the gate like Warden's own:
+
+```bash
+warden import --url … --org … --project … --tool codeql [--category /language:python/] \
+  [--fail-on high] [--comment auto] python.sarif
+warden import --url … --org … --project … --tool gitlab-sast --format gitlab-sast gl-sast-report.json
+```
+
+- **Input:** a SARIF 2.1.0 file, or a GitLab SAST report (schema 15.x), at most
+  `WARDEN_SCAN__IMPORT_MAX_MB`. `POST …/projects/{id}/scans/import` creates the scan, followed by
+  the usual upload and `…/start`.
+- **`--tool`:** `codeql`, `gitlab-sast`, `semgrep`, `snyk-code`, `sonarqube`, or
+  `external.<key>` for any other tool. It can never name one of Warden's scanners.
+- **Where issues are tracked:** imported issues have tool `external` and `external_tool` set, under
+  the target `(import) <tool>[ <category>]`. An import auto-fixes only the issues of its own tool
+  and category, with the usual guard ratio. Warden's own scans never fix an imported issue, and an
+  import never touches theirs.
+- **`--category`:** separates runs of one tool, like GitHub's category (CodeQL analyzes one
+  language per run). Without it, the CLI takes the SARIF's `runs[0].automationDetails.id` up to
+  its last `/`.
+- **What is read and kept:** the worker parses the file as hostile input and never runs or
+  unpacks anything in it. It reads at most 10 runs, 50,000 results and 5,000 rules; more is
+  `IMPORT_TOO_LARGE`, and a malformed file is `IMPORT_INVALID`. It keeps rule ids, titles,
+  messages, plain-text rule descriptions and help, CWEs, paths, lines, severities and partial
+  fingerprints. Snippets, code flows, related locations, fixes, attachments and markdown are
+  dropped, and control and bidi characters are removed.
+- **Paths:** paths must be relative to the source root, or under the run's `%SRCROOT%`;
+  otherwise the result is dropped.
+- **Secret screening:** every kept string is screened by Gitleaks in the sandbox, with the org's
+  Gitleaks rules too, before anything is stored. A matched string is dropped; a matched path or
+  rule id drops its result. The scan shows how many strings were screened out and how many results
+  were dropped. If Gitleaks can't run, the scan fails with `IMPORT_SCREEN_FAILED` and nothing is
+  stored.
+- **Severity:** from `security-severity` (≥ 9 Critical, ≥ 7 High, ≥ 4 Medium, else Low), else
+  the level (error High, warning Medium, note Low). GitLab's Info and Unknown are Low.
+- **Identity:** an issue keeps its identity through code moves when the tool writes partial
+  fingerprints, as CodeQL and GitLab do. Without them, the identity is the rule, the path and the
+  message.
+- **In CI:** in GitHub Actions, run it after `github/codeql-action/analyze` (with `output:`), once
+  per language's `.sarif`. In GitLab CI, run it after the SAST template's job, on
+  `gl-sast-report.json`. The web UI's CI setup card builds both snippets.
+
 ## Development
 
 | Command | |
@@ -874,7 +966,7 @@ logging, OpenTelemetry, health checks, the HTTP server and the response envelope
 
 Tags `vMAJOR.MINOR.PATCH` on `main` publish a [GitHub release](https://github.com/aupv9/warden/releases)
 after the full CI suite and the release self-scan gate pass: static Linux binaries
-(`warden-api`, `warden-worker`, `warden-migrate` and the `warden` CI client; amd64 and arm64) with SPDX SBOMs and
+(`warden-api`, `warden-worker`, `warden-migrate`, `warden-admin` and the `warden` CI client; amd64 and arm64) with SPDX SBOMs and
 checksums, and the image `ghcr.io/aupv9/warden` (amd64 and arm64; the web UI is bundled in
 the image's `warden-api`, not in the binary tarballs). The version is stamped
 into the binaries and served at `/info`.
@@ -899,7 +991,9 @@ Changes that weaken one of these need an explicit discussion in the pull request
 - Archives are only ever extracted by `zipcheck.Extract`; the one other tar reader is
   `sandboxio`, which moves a scan's input into and reports out of a scanner Pod (Kubernetes
   backend) with the same refusals. Image tarballs are checked by
-  `imagecheck` and never extracted by Warden; Trivy reads them inside the sandbox.
+  `imagecheck` and never extracted by the worker; Trivy reads them, and `warden-layers`
+  (`layerscan`) unpacks their layers for Gitleaks, only inside the sandbox, with the same
+  refusals and caps.
 - A history upload is a git bundle checked by `bundlecheck` without unpacking; git reads it only
   in the Gitleaks sandbox, fetched into a fresh bare repository with no system or global config,
   no hooks and `fsck` on. The scan mode and commit limit come from the sandbox, never the upload.
@@ -926,7 +1020,8 @@ Changes that weaken one of these need an explicit discussion in the pull request
   and refuses anything younger than a day.
 - The CSV export holds no descriptions, snippets or comments, defuses spreadsheet formulas in
   text from scanned code, and is audited; API tokens can't use it.
-- Gitleaks is the only secret scanner, and raw secrets never leave its sandbox.
+- Gitleaks is the only secret scanner, and raw secrets never leave its sandbox, in any form a
+  reader could decode back (percent-encoding, path normalization).
 - Uploaded code can't configure its own scan. An org's own rules come only from the API, are
   re-rendered from a parsed subset that can only add findings (no allowlists, ignores, paths or
   fixes), carry `org.` ids, and never auto-fix issues of a rule that didn't run. Their versions
@@ -944,6 +1039,17 @@ Changes that weaken one of these need an explicit discussion in the pull request
   allow-listed columns as emails.
 - The CLI sends a CI token only to the CI's own `https` API, never to Warden. Text from scanned
   code is escaped in pull/merge request comments, with mentions and links broken.
+- An imported report is parsed as hostile input, never executed or unpacked, and nothing from it
+  is stored unless Gitleaks screened it in the sandbox; screening fails closed. Imported issues
+  are always tool `external`: an import never creates, reopens or fixes an issue of a Warden
+  scanner, and no Warden scan fixes an imported one.
+- Images are pulled only by digest, by one client that refuses internal addresses at dial time
+  and on every redirect and token realm, uses no proxy, and checks every manifest and blob
+  against its digest within `scan.pull_max_mb`; a pulled image is never run, and only
+  `imagecheck` and the sandbox read it. Registry passwords are stored only
+  AES-256-GCM-encrypted under `secrets.key`, bound to their org, row and column; they are sent
+  only to the registry's host or a token realm on the same site, never to a redirect target,
+  never returned by the API and never logged.
 - The identity provider (issuer, audience, keys) is server configuration only; no API or
   org setting can change it. An org's sign-in policy can only add requirements. Accounts are
   never linked by email: only `warden-admin user relink` moves one to a new subject.
@@ -959,6 +1065,14 @@ Issues and pull requests are welcome. Please run `make lint test` before opening
 request, and `make test-int` when touching the database. For changes to scanners, flags or
 images, run a sample archive through the real pipeline and check that no raw secret appears
 in any SARIF report.
+
+Merge only when CI is green. Branch protection on `main` requires these status checks, the
+jobs of [`ci.yml`](.github/workflows/ci.yml): `lint`, `vulncheck`, `test`, `fuzz`,
+`integration`, `frontend`, `image`, `helm`, `helm-cluster`, `selfscan` and `kube`; a job added to `ci.yml`
+joins the list. [`nightly.yml`](.github/workflows/nightly.yml) fuzzes every target for 10
+minutes and runs `scripts/upgrade-test.sh` (the last baseline release, upgraded on Compose to
+an image built from `main`: data, audit chain, API and the schema gate); a failure opens an
+issue titled `Nightly fuzz: <target>` or `Nightly upgrade test`.
 
 ## Reporting a vulnerability
 

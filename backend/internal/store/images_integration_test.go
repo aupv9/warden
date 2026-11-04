@@ -21,7 +21,7 @@ func TestImageScanRoundTrip(t *testing.T) {
 	created := must(w.svc.CreateScan(ctx, dev, f.project, service.CreateScanInput{Kind: "image", FileName: "api.tar", FileSize: 500 << 20,
 		SHA256: strings.Repeat("d", 64), Target: &target, ImageRef: &ref}))
 	sc := must(w.svc.Scan(ctx, dev, created.Scan.ID))
-	if sc.Kind != "image" || sc.Target != target || sc.ImageRef == nil || *sc.ImageRef != ref || sc.Tools[0] != "trivy" || len(sc.Tools) != 1 ||
+	if sc.Kind != "image" || sc.Target != target || sc.ImageRef == nil || *sc.ImageRef != ref || len(sc.Tools) != 2 || sc.Tools[0] != "trivy" || sc.Tools[1] != "gitleaks" || sc.Pulled ||
 		sc.ObjectKey != "scans/"+f.id.String()+"/"+sc.ID.String()+".tar" {
 		t.Fatalf("%+v", sc)
 	}

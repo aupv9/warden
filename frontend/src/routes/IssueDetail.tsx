@@ -8,12 +8,12 @@ import { useOrg } from "../api/hooks/orgs";
 import { useProject } from "../api/hooks/projects";
 import type { ExceptionType, Issue, IssueEvent, IssueStatus, ProjectRole } from "../api/types";
 import { Avatar } from "../components/Avatar";
-import { OrgRuleTag, SeverityMark, StatusMark } from "../components/Badges";
+import { ImportTag, OrgRuleTag, SeverityMark, StatusMark } from "../components/Badges";
 import { Button, ButtonLink } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dialog } from "../components/Dialog";
 import { focusFirstInvalid, TextArea, TextField } from "../components/Field";
-import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, CommitIcon, LockIcon, RefreshIcon } from "../components/Icons";
+import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, CommitIcon, LayersIcon, LockIcon, RefreshIcon } from "../components/Icons";
 import { CopyButton } from "../components/CopyButton";
 import { PageHeader } from "../components/PageHeader";
 import { ActionError, ErrorState, Loading, NotFoundState, Skeleton, SkeletonBlock } from "../components/States";
@@ -37,6 +37,8 @@ import type { IssueAction } from "../lib/issueActions";
 import { formatEpss, isVulnIssue, KEV_CATALOG_URL, licenseOf, nvdUrl, percentileText } from "../lib/intel";
 import { maliciousAdvisory, MALICIOUS_REMEDIATION } from "../lib/malicious";
 import { HISTORY_ROTATE, historyWhere, isHistoryIssue, moreCommitsText, shortSha } from "../lib/history";
+import { IMAGE_LAYER_ROTATE, layerTitle, moreLayersText, shortLayerDigest } from "../lib/imageLayers";
+import { importToolLabel, importToolOf, isImportIssue, parseImportTarget } from "../lib/imports";
 import { issueListHref, parseIssueFilters } from "../lib/issueFilters";
 import { canComment } from "../lib/permissions";
 import { orgRuleLink } from "../lib/scanRules";
@@ -238,6 +240,7 @@ function IssueView({
             <SeverityMark severity={issue.severity} />
             <StatusMark status={issue.status} />
             {issue.org_rule && <OrgRuleTag />}
+            {isImportIssue(issue) && <ImportTag tool={importToolOf(issue)} />}
             {issue.due_at && (
               <span className={due.overdue || issue.past_sla ? "danger-text" : "muted"}>
                 SLA: {due.text} <span className="faint-in">(due {formatDate(issue.due_at)})</span>
@@ -253,8 +256,10 @@ function IssueView({
       <div className="detail-grid">
         <div className="stack detail-main">
           <HistoryCard issue={issue} />
+          <ImageLayerCard issue={issue} />
           <MaliciousCard issue={issue} />
           <OrgRuleCard issue={issue} />
+          <ImportCard issue={issue} />
           <ExploitCard issue={issue} />
           <WhereCard issue={issue} />
           {issue.description && (
@@ -269,8 +274,10 @@ function IssueView({
               <p className="prose">{MALICIOUS_REMEDIATION}</p>
             ) : isHistoryIssue(issue) ? (
               <p className="prose">{HISTORY_ROTATE}</p>
+            ) : issue.image_layer ? (
+              <p className="prose">{IMAGE_LAYER_ROTATE}</p>
             ) : (
-              <p className="muted">The scanner gave no fix advice for this rule.</p>
+              <p className="muted">{isImportIssue(issue) ? "The report gave no fix advice for this rule." : "The scanner gave no fix advice for this rule."}</p>
             )}
           </Card>
           <Comments issue={issue} projectRole={project.data?.my_role} />
@@ -413,6 +420,58 @@ function HistoryCard({ issue }: { issue: Issue }) {
   );
 }
 
+/** v0.7 wave 2: a secret Gitleaks found in an image's layers. Shown first, like a secret in git
+ *  history: deleting the file in a later layer doesn't help, the secret has to be rotated. The
+ *  layer digest comes from the scanned image: text with a copy button, never a link. */
+function ImageLayerCard({ issue }: { issue: Issue }) {
+  const l = issue.image_layer;
+  if (!l) return null;
+  const more = moreLayersText(l.count);
+  const where = issue.file_path ? `${issue.file_path}${issue.start_line ? `:${issue.start_line}` : ""}` : null;
+  return (
+    <Card title={layerTitle(l)} titleId={`layer-${issue.id}`} className="history-card">
+      <div className="stack" style={{ gap: 12 }}>
+        <p className="layer-line">
+          <LayersIcon />
+          <span>
+            {l.index === 0 ? "The base layer" : `Layer ${l.index}, counting the base layer as 0`}
+            {where && (
+              <>
+                {" "}
+                · <span className="mono">{where}</span>
+              </>
+            )}
+            {issue.target && (
+              <>
+                {" "}
+                in <span className="mono">{issue.target}</span>
+              </>
+            )}
+          </span>
+        </p>
+        <p className="layer-line">
+          <span>
+            Digest{" "}
+            <span className="mono sha layer-digest" title={l.digest}>
+              <span aria-hidden="true">{shortLayerDigest(l.digest)}</span>
+              <span className="visually-hidden">{l.digest}</span>
+            </span>
+          </span>
+          <CopyButton text={l.digest} label="Copy digest" copiedText={`Layer digest ${l.digest} copied to the clipboard.`} />
+        </p>
+        {more && <p>{more} This is the lowest one.</p>}
+        <p className="history-rotate">
+          <strong>{IMAGE_LAYER_ROTATE}</strong>
+        </p>
+        <p className="faint small">
+          Rebuild the image so that no layer ever holds the secret (a build secret mount, or a multi-stage build that copies only what
+          it needs), and push it. The issue moves to Fixed when a scan of this image no longer finds it in any layer.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 /** v0.4: an OSV malicious-package advisory lists this package version. Shown first: unlike a
  *  vulnerability, there is no safe version of the same release to upgrade to. The OSV link is
  *  built only from a well-formed MAL id (lib/malicious.ts); package names stay text. */
@@ -500,8 +559,39 @@ function OrgRuleCard({ issue }: { issue: Issue }) {
   );
 }
 
+/** v0.8: the issue comes from another tool's report (`warden import`), not from a Warden scanner.
+ *  The tool, its category and every text come from the report: text only, never links or markup. */
+function ImportCard({ issue }: { issue: Issue }) {
+  const tool = importToolOf(issue);
+  if (!tool) return null;
+  const label = importToolLabel(tool);
+  const category = parseImportTarget(issue.target)?.category ?? "";
+  return (
+    <Card title={`Imported from ${label}`} titleId={`import-${issue.id}`} className="import-card">
+      <div className="stack">
+        <p>
+          Found by <strong>{label}</strong>
+          {category && (
+            <>
+              {" "}
+              (category <span className="mono">{category}</span>)
+            </>
+          )}{" "}
+          and imported from its report with <code>warden import</code>. Warden didn't run this tool.
+        </p>
+        <p className="faint small">
+          It moves to Fixed when a later import of the same tool and category no longer has it; Warden's own scans never fix it.
+          The report's texts were screened by Gitleaks before they were stored, and its code snippets were left out.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 function WhereCard({ issue }: { issue: Issue }) {
-  const lines = issue.snippet ? issue.snippet.replace(/\n$/, "").split("\n") : [];
+  const imported = isImportIssue(issue);
+  // v0.8: an imported issue has no snippet (the worker drops the report's); none is shown.
+  const lines = issue.snippet && !imported ? issue.snippet.replace(/\n$/, "").split("\n") : [];
   const first = issue.start_line ?? 1;
   const last = issue.end_line ?? issue.start_line ?? 0;
   const where = issue.file_path ?? issue.package_name ?? "";
@@ -541,7 +631,9 @@ function WhereCard({ issue }: { issue: Issue }) {
               );
             })}
           </pre>
-        ) : issue.package_name ? null : (
+        ) : issue.package_name ? null : imported ? (
+          <p className="muted small">Imported results carry no code. Open the file at this line in your repository.</p>
+        ) : (
           <p className="muted">No code snippet for this finding.</p>
         )}
         {license && (
@@ -623,6 +715,8 @@ function DetailsCard({ issue }: { issue: Issue }) {
   const sla = issue.severity !== "info" ? org.data?.sla_days[issue.severity] : undefined;
   const license = licenseOf(issue);
   const advisory = maliciousAdvisory(issue);
+  const importTool = importToolOf(issue);
+  const importCategory = parseImportTarget(issue.target)?.category ?? "";
   const scanLink = (scan: { id: string; created_at: string }) => (
     <Link to={`/orgs/${orgId}/projects/${issue.project_id}/scans?scan=${encodeURIComponent(scan.id)}`}>
       Scan of {formatDateTime(scan.created_at)}
@@ -658,8 +752,25 @@ function DetailsCard({ issue }: { issue: Issue }) {
             <span className="muted">No SLA</span>
           )}
         </dd>
-        <dt>Scanner</dt>
-        <dd>{TOOL_LABELS[issue.tool]}</dd>
+        {importTool ? (
+          <>
+            <dt>Imported from</dt>
+            <dd>
+              {importToolLabel(importTool)}
+              {importCategory && (
+                <span className="muted">
+                  {" · "}
+                  <span className="mono">{importCategory}</span>
+                </span>
+              )}
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Scanner</dt>
+            <dd>{TOOL_LABELS[issue.tool]}</dd>
+          </>
+        )}
         <dt>Rule</dt>
         <dd className="mono">{issue.rule_id}</dd>
         {advisory && (
@@ -731,7 +842,8 @@ function DetailsCard({ issue }: { issue: Issue }) {
             )}
           </>
         ) : (
-          issue.target && (
+          issue.target &&
+          !importTool && (
             <>
               <dt>Image</dt>
               <dd className="mono">{issue.target}</dd>

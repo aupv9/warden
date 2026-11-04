@@ -18,7 +18,8 @@ func (f *Fake) AuditSince(_ context.Context, q service.AuditCount) (int, time.Ti
 	for k, r := range f.st.Audit {
 		at := f.st.AuditAt[k]
 		if r.OrgID != q.OrgID || r.OrgID != f.org || r.Action != q.Action || !at.After(q.Since) ||
-			(q.ActorID != nil && (r.ActorID == nil || *r.ActorID != *q.ActorID)) {
+			(q.ActorID != nil && (r.ActorID == nil || *r.ActorID != *q.ActorID)) ||
+			(q.TargetID != nil && r.TargetID != *q.TargetID) {
 			continue
 		}
 		n++
@@ -69,7 +70,7 @@ func (f *Fake) ExportIssues(ctx context.Context, q service.IssueQuery, fn func(s
 		}
 		i := f.st.Issues[s.ID]
 		e := service.IssueExportRow{Key: s.Key, ProjectName: f.st.Projects[s.ProjectID].Name, Title: s.Title, Severity: s.Severity,
-			Status: s.Status, Tool: s.Tool, RuleID: s.RuleID, FilePath: s.FilePath, Line: s.StartLine, Target: s.Target, CVE: i.CVE,
+			Status: s.Status, Tool: s.Tool, ExternalTool: s.ExternalTool, RuleID: s.RuleID, FilePath: s.FilePath, Line: s.StartLine, Target: s.Target, CVE: i.CVE,
 			KEV: s.KEV, EPSS: s.EPSS, DueAt: s.DueAt, CreatedAt: s.UpdatedAt, UpdatedAt: s.UpdatedAt}
 		if s.Assignee != nil {
 			e.Assignee = &s.Assignee.Email

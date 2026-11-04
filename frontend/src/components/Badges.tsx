@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { IssueStatus, ScanStatus, Severity, ToolStatus } from "../api/types";
 import { SCAN_STATUS_LABELS, SEVERITY_LABELS, STATUS_LABELS, TOOL_STATUS_LABELS } from "../lib/format";
+import { importToolLabel } from "../lib/imports";
 import { MALICIOUS_LABEL } from "../lib/malicious";
 
 /** v0.4: a red "Malicious" tag (an OSV malicious-package advisory), with its full accessible
@@ -20,6 +21,18 @@ export function OrgRuleTag() {
   return (
     <span className="tag org-rule-tag" title="Found by one of your org's own scan rules">
       Org rule
+    </span>
+  );
+}
+
+/** v0.8: an issue imported from another tool's report ("Imported · CodeQL"), beside the title. A
+ *  dashed border sets it apart from what Warden's own scanners found. The tool comes from the
+ *  uploader: text only. */
+export function ImportTag({ tool }: { tool: string | null }) {
+  const label = tool ? importToolLabel(tool) : null;
+  return (
+    <span className="tag import-tag" title={`Imported from ${label ?? "another tool"}'s report; Warden didn't run this tool`}>
+      Imported{label ? ` · ${label}` : ""}
     </span>
   );
 }

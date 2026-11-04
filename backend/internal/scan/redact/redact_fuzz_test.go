@@ -12,19 +12,28 @@ import (
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // leaked walks every string of the redacted document, object keys included,
-// and returns the first that still contains a secret. The content key Warden
-// adds after scrubbing (a property name and an HMAC) is not scanner output.
-func leaked(v any, secrets []string) (string, bool) {
+// and returns the first that still contains a secret, as is or in any of its
+// readings (decoded the way the parser or a browser could). The content key
+// Warden adds after scrubbing (a property name and an HMAC) is not scanner
+// output.
+func leaked(v any, secrets []string) (string, bool) { return leakedAs(v, secrets, readings) }
+
+func asIs(s string) []string { return []string{s} }
+
+// leakedAs is leaked with read giving the readings of a string.
+func leakedAs(v any, secrets []string, read func(string) []string) (string, bool) {
 	switch t := v.(type) {
 	case string:
-		for _, s := range secrets {
-			if strings.Contains(t, s) {
-				return t, true
+		for _, r := range read(t) {
+			for _, s := range secrets {
+				if strings.Contains(r, s) {
+					return t, true
+				}
 			}
 		}
 	case []any:
 		for _, e := range t {
-			if s, ok := leaked(e, secrets); ok {
+			if s, ok := leakedAs(e, secrets, read); ok {
 				return s, true
 			}
 		}
@@ -38,11 +47,11 @@ func leaked(v any, secrets []string) (string, bool) {
 			// Doc adds these keys after scrubbing (a result whose properties
 			// key was masked gets a new one): they are Warden's, not output.
 			if k != "properties" && k != redact.ContentKeyProp {
-				if s, ok := leaked(k, secrets); ok {
+				if s, ok := leakedAs(k, secrets, read); ok {
 					return s, true
 				}
 			}
-			if s, ok := leaked(e, secrets); ok {
+			if s, ok := leakedAs(e, secrets, read); ok {
 				return s, true
 			}
 		}
@@ -51,29 +60,35 @@ func leaked(v any, secrets []string) (string, bool) {
 }
 
 // FuzzDoc: no secret Gitleaks reported survives anywhere in the redacted
-// document (messages, other results, object keys, commit messages), commit
-// details other than the sha and date are dropped, and every result gets a
-// content key. Secrets containing the mask character are left out of the
-// property: the mask itself ("****") would then count as a leak.
+// document (messages, other results, object keys, commit messages), neither
+// as is nor in any reading of a string (percent-decoded, nested, the parser's
+// path), commit details other than the sha and date are dropped, and every
+// result gets a content key. Secrets containing the mask character are left
+// out of the property: the mask itself ("****") would then count as a leak.
+// enc picks the encodings of the secrets that paths and keys are named with.
 func FuzzDoc(f *testing.F) {
-	f.Add(st.FakeSecret, "ghp_"+strings.Repeat("Q", 36), "aws-access-token has detected secret ", " in config", "add key")
-	f.Add("abcdefghijkl", "abcdefghijklMNOPQRSTUVWX", "x", "y", "z")
-	f.Add("abc123", "abc123abc123", "abc", "123", "abc123")
-	f.Add("ĀĀĀĀĀĀĀĀĀĀĀĀ", "hunter2-xxxxxxxx", "Ā", "hunter2", "")
-	f.Add("abcdEFGHabcd", "EFGHabcdEFGH", "abcdEFGH", "abcd", "EFGH")
-	f.Fuzz(func(t *testing.T, secret1, secret2, before, after, commitMsg string) {
+	f.Add(st.FakeSecret, "ghp_"+strings.Repeat("Q", 36), "aws-access-token has detected secret ", " in config", "add key", uint16(0))
+	f.Add("abcdefghijkl", "abcdefghijklMNOPQRSTUVWX", "x", "y", "z", uint16(1))
+	f.Add("abc123", "abc123abc123", "abc", "123", "abc123", uint16(2))
+	f.Add("ĀĀĀĀĀĀĀĀĀĀĀĀ", "hunter2-xxxxxxxx", "Ā", "hunter2", "", uint16(3))
+	f.Add("abcdEFGHabcd", "EFGHabcdEFGH", "abcdEFGH", "abcd", "EFGH", uint16(4))
+	f.Add("ab/cd%ef gh€ij+kl", "x+y z%2Fw/QQQQQQQQQ", "%", "%2", "+", uint16(0x5a7))
+	f.Add("\xffzq"+strings.Repeat("W", 12), `a//b/./c\d`, "%ff", "%FE", "/", uint16(0xb6c))
+	f.Fuzz(func(t *testing.T, secret1, secret2, before, after, commitMsg string, enc uint16) {
 		if len(secret1)+len(secret2)+len(before)+len(after)+len(commitMsg) > 4096 {
 			return
 		}
 		const author, email = "Author Q7xR2", "q7xr2@example.test"
 		c := st.Commit{SHA: strings.Repeat("a1", 20), Date: "2026-10-28T21:36:59Z", Author: author, Email: email,
 			Message: commitMsg + secret1 + secret2}
-		r1 := st.HistoryResult("rule-a", "a/"+before+".py", 1, secret1, c)
+		forms1, forms2 := encodings(secret1), encodings(secret2)
+		form1, form2 := forms1[int(enc&0xff)%len(forms1)], forms2[int(enc>>8)%len(forms2)]
+		r1 := st.HistoryResult("rule-a", "a/"+before+form2+".py", 1, secret1, c)
 		r1["message"] = st.M{"text": before + secret2 + after + secret1}
-		r2 := st.HistoryResult("rule-b", after, 2, secret2, c)
+		r2 := st.HistoryResult("rule-b", "file:///src/"+after+form1+before, 2, secret2, c)
 		r2["properties"] = st.M{before + secret1 + after: secret2 + before, "tags": []any{after + secret2}}
 		doc := st.Doc([]any{r1, r2})
-		doc["runs"].([]any)[0].(st.M)["invocations"] = []any{st.M{"commandLine": before + secret1 + secret2 + after, secret2: secret1}}
+		doc["runs"].([]any)[0].(st.M)["invocations"] = []any{st.M{"commandLine": before + secret1 + secret2 + after, secret2: secret1, form1: form2}}
 		rt := st.RoundTrip(doc)
 
 		// The secrets as the redactor sees them (the JSON round trip makes
@@ -104,7 +119,7 @@ func FuzzDoc(f *testing.F) {
 		// Author and email never leave the sandbox (unless the fuzzer put
 		// them in another field).
 		if in := secret1 + secret2 + before + after + commitMsg; !strings.Contains(in, "Q7xR2") && !strings.Contains(in, "q7xr2") {
-			if s, ok := leaked(out, []string{"Q7xR2", "q7xr2"}); ok {
+			if s, ok := leakedAs(out, []string{"Q7xR2", "q7xr2"}, asIs); ok {
 				t.Fatalf("commit author or email left in %q", s)
 			}
 		}

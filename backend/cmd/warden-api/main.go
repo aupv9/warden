@@ -29,6 +29,7 @@ import (
 	"github.com/aupv9/warden/backend/internal/config"
 	"github.com/aupv9/warden/backend/internal/db"
 	"github.com/aupv9/warden/backend/internal/domain/rbac"
+	"github.com/aupv9/warden/backend/internal/registry"
 	"github.com/aupv9/warden/backend/internal/service"
 	"github.com/aupv9/warden/backend/internal/storage"
 	"github.com/aupv9/warden/backend/internal/store"
@@ -156,9 +157,13 @@ func ServiceConfig(c *config.Config) service.Config {
 	return service.Config{
 		Webhooks: service.WebhookConfig{Keys: keys,
 			Checker: &webhook.Checker{Policy: webhook.Policy{AllowHosts: c.Webhook.AllowHosts}}},
+		// Checker is the guarded client pulls go through (registry.allow_hosts).
+		Registries: service.RegistryConfig{Keys: keys, AllowHosts: c.Registry.AllowHosts,
+			Checker: registry.NewClient(registry.Options{AllowHosts: c.Registry.AllowHosts})},
 		UploadMaxBytes:        int64(c.Scan.UploadMaxMB) << 20,
 		ImageUploadMaxBytes:   int64(c.Scan.ImageUploadMaxMB) << 20,
 		HistoryUploadMaxBytes: int64(c.Scan.HistoryUploadMaxMB) << 20,
+		ImportMaxBytes:        int64(c.Scan.ImportMaxMB) << 20,
 		RateLimitPerHour:      c.Scan.RateLimitPerHour,
 		UploadURLTTL:          15 * time.Minute,
 		RequireMFARoles:       roles(c.OIDC.RequireMFARoles),

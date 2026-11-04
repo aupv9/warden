@@ -18,7 +18,7 @@ spec:
 ---
 # api: HTTP from the ingress controller / Gateway only; the admin port from
 # the metrics scrapers. Out: DNS, database, object store, the identity
-# provider, SMTP.
+# provider, SMTP, registries (the credential test).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -45,10 +45,11 @@ spec:
     {{- include "warden.egressRule" $e.storage | nindent 4 }}
     {{- include "warden.egressRule" $e.oidc | nindent 4 }}
     {{- include "warden.egressRule" $e.smtp | nindent 4 }}
+    {{- include "warden.egressRule" $e.registries | nindent 4 }}
 ---
 # worker: no HTTP in but the admin port from the metrics scrapers. Out: DNS,
-# database, object store, the Kubernetes API (scanner Pods and exec), SMTP,
-# webhooks and Slack.
+# database, object store, the Kubernetes API server's addresses only (scanner
+# Pods and exec), SMTP, webhooks and Slack, registries (image pulls).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -70,9 +71,10 @@ spec:
     {{- include "warden.egressRule" $e.dns | nindent 4 }}
     {{- include "warden.egressRule" $e.database | nindent 4 }}
     {{- include "warden.egressRule" $e.storage | nindent 4 }}
-    {{- include "warden.egressRule" $e.kubeAPI | nindent 4 }}
+    {{- include "warden.kubeAPIRule" . | nindent 4 }}
     {{- include "warden.egressRule" $e.smtp | nindent 4 }}
     {{- include "warden.egressRule" $e.webhooks | nindent 4 }}
+    {{- include "warden.egressRule" $e.registries | nindent 4 }}
 ---
 # migrate: DNS and the database. (On the first install the hook runs before
 # any policy exists; on upgrades this one applies.)
