@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 
 	"github.com/aupv9/warden/backend/internal/scan/layerscan"
 	"github.com/aupv9/warden/backend/internal/scan/sarif"
@@ -59,10 +60,13 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	gitleaks := fs.Args()
-	if len(gitleaks) == 0 || *maxBytes <= 0 {
+	// The command after -- is always gitleaks: only its flags come from the
+	// wrapper, and the program name is fixed here rather than taken from argv.
+	cmd := fs.Args()
+	if len(cmd) < 2 || cmd[0] != "gitleaks" || *maxBytes <= 0 {
 		return errors.New("usage: warden-layers -max-bytes N [flags] -- gitleaks dir FLAGS")
 	}
+	gitleaks := cmd[1:]
 	batchReport := filepath.Join(filepath.Dir(*out), "batch.sarif")
 	var m layerscan.Merger
 	rep, err := layerscan.Extract(*image, *dir, layerscan.DefaultLimits(*maxBytes), func(b layerscan.Batch) error {
@@ -81,9 +85,9 @@ func run(args []string) error {
 	return writeJSON(*report, rep, 0o644)
 }
 
-// runGitleaks runs Gitleaks over one batch and reads its SARIF.
-func runGitleaks(argv []string, dir, report string) (map[string]any, error) {
-	cmd := exec.Command(argv[0], append(argv[1:], dir, "--report-path", report)...)
+// runGitleaks runs Gitleaks with flags over one batch and reads its SARIF.
+func runGitleaks(flags []string, dir, report string) (map[string]any, error) {
+	cmd := exec.Command("gitleaks", append(slices.Clone(flags), dir, "--report-path", report)...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("gitleaks: %w", err)
