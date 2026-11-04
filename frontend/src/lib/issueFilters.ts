@@ -1,6 +1,7 @@
 import type { QueryParams } from "../api/client";
 import { ISSUE_STATUSES, SEVERITIES, TOOLS } from "../api/types";
-import type { IssueSort, IssueStatus, Severity, Tool } from "../api/types";
+import type { IssueSort, IssueStatus, ScannerTool, Severity } from "../api/types";
+import { importToolLabel, isImportTool } from "./imports";
 import { formatEpss, isImageTarget } from "./intel";
 
 // Issue list filters live in the URL (shareable, back button works). The URL is untrusted
@@ -11,8 +12,8 @@ export type StatusFilter = "active" | "all" | IssueStatus;
  *  malicious packages (OSV MAL- advisories). */
 export type IssueKindFilter = "vulnerability" | "license" | "malicious";
 /** v0.3: issues from source scans or from image scans; v0.4 wave 2 adds history scans
- *  (secrets in git history, target `(history)`). */
-export type IssueSourceFilter = "code" | "image" | "history";
+ *  (secrets in git history, target `(history)`); v0.8 imports from another tool (tool external). */
+export type IssueSourceFilter = "code" | "image" | "history" | "import";
 
 export interface IssueFilters {
   q: string;
@@ -22,7 +23,8 @@ export interface IssueFilters {
   severity: Severity[];
   /** "" = anyone; "me"; "none"; or a user id. */
   assignee: string;
-  tool: Tool | "";
+  /** A Warden scanner. Imported issues are filtered by `externalTool` instead. */
+  tool: ScannerTool | "";
   pastSla: boolean;
   sort: IssueSort;
   /** v0.3 */
@@ -35,6 +37,8 @@ export interface IssueFilters {
   source: IssueSourceFilter | "";
   /** v0.3: one image repository ("" = any). */
   target: string;
+  /** v0.8: issues imported from this tool (an ImportTool; "" = any). Implies tool external. */
+  externalTool: string;
 }
 
 export const DEFAULT_FILTERS: IssueFilters = {
@@ -51,11 +55,12 @@ export const DEFAULT_FILTERS: IssueFilters = {
   epssMin: null,
   source: "",
   target: "",
+  externalTool: "",
 };
 
 export const SORTS: IssueSort[] = ["due_at", "-severity", "-updated_at", "-epss"];
 export const ISSUE_KINDS: IssueKindFilter[] = ["vulnerability", "malicious", "license"];
-export const ISSUE_SOURCES: IssueSourceFilter[] = ["code", "image", "history"];
+export const ISSUE_SOURCES: IssueSourceFilter[] = ["code", "image", "history", "import"];
 /** The EPSS presets offered in the UI; the URL may carry any value from 0 to 1. */
 export const EPSS_PRESETS = [0.01, 0.1, 0.5] as const;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -78,6 +83,7 @@ export function parseIssueFilters(sp: URLSearchParams): IssueFilters {
   const project = sp.get("project") ?? "";
   const severities = new Set(sp.getAll("severity"));
   const target = sp.get("target") ?? "";
+  const externalTool = sp.get("external_tool") ?? "";
   return {
     q: (sp.get("q") ?? "").trim().slice(0, MAX_Q),
     project: UUID_RE.test(project) ? project : "",
@@ -94,6 +100,7 @@ export function parseIssueFilters(sp: URLSearchParams): IssueFilters {
     epssMin: parseEpssMin(sp.get("epss_min")),
     source: oneOf(sp.get("source"), ISSUE_SOURCES) ?? "",
     target: isImageTarget(target) ? target : "",
+    externalTool: isImportTool(externalTool) ? externalTool : "",
   };
 }
 
@@ -112,6 +119,7 @@ export function issueFiltersToSearch(f: IssueFilters): URLSearchParams {
   if (f.epssMin !== null) sp.set("epss_min", String(f.epssMin));
   if (f.source) sp.set("source", f.source);
   if (f.target) sp.set("target", f.target);
+  if (f.externalTool) sp.set("external_tool", f.externalTool);
   if (f.sort !== DEFAULT_FILTERS.sort) sp.set("sort", f.sort);
   return sp;
 }
@@ -123,13 +131,14 @@ export type IssueFilterQuery = {
   status: IssueStatus[] | undefined;
   severity: Severity[] | undefined;
   assignee: string | undefined;
-  tool: Tool | undefined;
+  tool: ScannerTool | undefined;
   past_sla: "true" | undefined;
   kind: IssueKindFilter | undefined;
   kev: "true" | undefined;
   epss_min: string | undefined;
   source: IssueSourceFilter | undefined;
   target: string | undefined;
+  external_tool: string | undefined;
   q: string | undefined;
   sort: IssueSort | undefined;
 };
@@ -154,6 +163,7 @@ export function issueFilterQuery(f: IssueFilters, fixedProject?: string): IssueF
     epss_min: f.epssMin !== null ? String(f.epssMin) : undefined,
     source: f.source || undefined,
     target: f.target || undefined,
+    external_tool: f.externalTool || undefined,
     q: f.q || undefined,
     sort: f.sort === DEFAULT_FILTERS.sort ? undefined : f.sort,
   };
@@ -220,9 +230,9 @@ const STATUS_WORDS: Record<string, string> = {
   risk_accepted: "Risk accepted",
 };
 const SEVERITY_WORDS: Record<Severity, string> = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
-const TOOL_WORDS: Record<Tool, string> = { gitleaks: "Gitleaks", opengrep: "Opengrep", trivy: "Trivy", checkov: "Checkov" };
+const TOOL_WORDS: Record<ScannerTool, string> = { gitleaks: "Gitleaks", opengrep: "Opengrep", trivy: "Trivy", checkov: "Checkov" };
 export const KIND_LABELS: Record<IssueKindFilter, string> = { vulnerability: "Vulnerabilities", malicious: "Malicious packages", license: "Licenses" };
-export const SOURCE_LABELS: Record<IssueSourceFilter, string> = { code: "Source code", image: "Container images", history: "Git history" };
+export const SOURCE_LABELS: Record<IssueSourceFilter, string> = { code: "Source code", image: "Container images", history: "Git history", import: "Imported" };
 
 /** "EPSS ≥ 10%" */
 export function epssMinText(n: number): string {
@@ -240,6 +250,7 @@ export function describeFilters(f: IssueFilters, names: { project?: string; assi
   if (f.tool) words.push(TOOL_WORDS[f.tool]);
   if (f.source) words.push(SOURCE_LABELS[f.source]);
   if (f.target) words.push(`Image ${f.target}`);
+  if (f.externalTool) words.push(`Imported from ${importToolLabel(f.externalTool)}`);
   if (f.assignee) words.push(names.assignee ?? "One assignee");
   if (names.project) words.push(names.project);
   if (f.q) words.push(`“${f.q}”`);

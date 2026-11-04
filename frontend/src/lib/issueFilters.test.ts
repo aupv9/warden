@@ -40,6 +40,7 @@ describe("issue filters ↔ URL", () => {
       epssMin: 0.1,
       source: "image",
       target: "ghcr.io/acme/api",
+      externalTool: "codeql",
     };
     const sp = issueFiltersToSearch(f);
     expect(parseIssueFilters(new URLSearchParams(sp.toString()))).toEqual(f);
@@ -147,9 +148,10 @@ describe("issue filters → API query", () => {
       epssMin: 0.5,
       source: "image",
       target: "ghcr.io/acme/api",
+      externalTool: "external.bandit",
     });
     expect(buildQuery(q)).toBe(
-      `?project_id=${P1}&status=fixed&severity=critical&severity=high&assignee=me&tool=trivy&past_sla=true&kind=license&kev=true&epss_min=0.5&source=image&target=ghcr.io%2Facme%2Fapi&q=aws&sort=-updated_at&limit=50`,
+      `?project_id=${P1}&status=fixed&severity=critical&severity=high&assignee=me&tool=trivy&past_sla=true&kind=license&kev=true&epss_min=0.5&source=image&target=ghcr.io%2Facme%2Fapi&external_tool=external.bandit&q=aws&sort=-updated_at&limit=50`,
     );
   });
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fieldErrors } from "../../api/errors";
 import { useAssignRules, useProjectMembers, useSaveAssignRules } from "../../api/hooks/projects";
-import { SEVERITIES, TOOLS } from "../../api/types";
+import { SEVERITIES } from "../../api/types";
 import type { AssignRule, Project, ProjectMember, Severity, Tool } from "../../api/types";
 import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
@@ -17,6 +17,8 @@ import {
   hasErrors,
   MAX_RULES,
   moveRule,
+  RULE_TOOL_LABELS,
+  RULE_TOOLS,
   sameRules,
   serverRuleErrors,
   toDraft,
@@ -24,7 +26,7 @@ import {
 } from "../../lib/assignRules";
 import type { RuleDraft, RuleErrors } from "../../lib/assignRules";
 import { PROJECT_ROLE_LABELS } from "../../lib/permissions";
-import { SEVERITY_LABELS, TOOL_LABELS, userName } from "../../lib/format";
+import { SEVERITY_LABELS, userName } from "../../lib/format";
 import { showToast } from "../../lib/toast";
 
 export function AssignRulesCard({ project, canEdit }: { project: Project; canEdit: boolean }) {
@@ -219,7 +221,7 @@ function RulesEditor({ project, saved, members }: { project: Project; saved: Ass
                       label="Scanner"
                       value={d.tool}
                       onChange={(ev) => update(i, { tool: ev.target.value as Tool | "" })}
-                      options={[anyOption, ...TOOLS.map((t) => ({ value: t, label: TOOL_LABELS[t] }))]}
+                      options={[anyOption, ...RULE_TOOLS.map((t) => ({ value: t, label: RULE_TOOL_LABELS[t] }))]}
                     />
                     <Select
                       label="Severity at least"

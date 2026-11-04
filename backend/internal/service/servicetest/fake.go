@@ -70,6 +70,8 @@ type IssueRow struct {
 	CVE        []string
 	Target     string
 	ImageLayer *service.IssueImageLayer
+	// ExternalTool: imported issues (Tool external) only.
+	ExternalTool *string
 }
 
 type eventRow struct {
@@ -712,6 +714,11 @@ func (f *Fake) InsertScan(_ context.Context, s service.NewScan) error {
 		Status: "pending_upload", FileName: s.FileName, FileSize: s.FileSize, Tools: s.Tools, CreatedAt: service.Time(f.Now),
 		ObjectKey: s.ObjectKey, SHA256: s.SHA256, Kind: cmp.Or(s.Kind, "source"), Target: s.Target, ImageRef: s.ImageRef,
 		Pulled: s.Pulled}, ViaToken: s.ViaToken}
+	if im := s.Import; im != nil {
+		row := f.st.Scans[s.ID]
+		row.Import = &service.ScanImport{Tool: im.Tool, Category: im.Category, Format: im.Format}
+		f.st.Scans[s.ID] = row
+	}
 	return nil
 }
 
@@ -809,7 +816,7 @@ func (f *Fake) summary(id uuid.UUID, now time.Time) service.IssueSummary {
 	i := f.st.Issues[id]
 	out := service.IssueSummary{ID: id, Key: f.st.Projects[i.ProjectID].Key + "-" + itoa(i.Number), ProjectID: i.ProjectID,
 		Title: i.Title, Severity: i.Severity, Status: i.Status, Tool: i.Tool, RuleID: i.RuleID, FilePath: i.FilePath,
-		Assignee: f.refp(i.AssigneeID), UpdatedAt: service.Time(i.UpdatedAt), Target: i.Target}
+		Assignee: f.refp(i.AssigneeID), UpdatedAt: service.Time(i.UpdatedAt), Target: i.Target, ExternalTool: i.ExternalTool}
 	in := f.intel(i.CVE)
 	out.KEV, out.EPSS = in.KEVAdded != nil, in.EPSS
 	if i.DueAt != nil {
@@ -836,6 +843,7 @@ func (f *Fake) match(q service.IssueQuery, id uuid.UUID, i IssueRow) bool {
 		q.AssigneeNone && i.AssigneeID != nil,
 		q.AssigneeID != nil && (i.AssigneeID == nil || *i.AssigneeID != *q.AssigneeID),
 		q.Tool != "" && q.Tool != i.Tool,
+		q.ExternalTool != "" && (i.ExternalTool == nil || *i.ExternalTool != q.ExternalTool),
 		q.PastSLA && (i.DueAt == nil || !i.DueAt.Before(q.Now) || !active(i.Status)),
 		q.KeyProject != "" && (f.st.Projects[i.ProjectID].Key != q.KeyProject || i.Number != q.KeyNumber),
 		!f.matchIntel(q, i),
