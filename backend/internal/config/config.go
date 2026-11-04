@@ -232,6 +232,9 @@ type ScanSection struct {
 	AutocloseGuardRatio float64           `koanf:"autoclose_guard_ratio" validate:"min=0,max=1"`
 	// ImageUploadMaxMB caps image tarballs (docker save), which run larger than source zips.
 	ImageUploadMaxMB int `koanf:"image_upload_max_mb" validate:"min=1"`
+	// ImportMaxMB caps an imported SARIF file or GitLab SAST report
+	// (POST …/scans/import).
+	ImportMaxMB int `koanf:"import_max_mb" validate:"min=1"`
 	// SBOMRetention: how long a scan's SBOM is kept (then deleted by the purge job).
 	SBOMRetention time.Duration `koanf:"sbom_retention" validate:"min=1h"`
 	// HistoryUploadMaxMB caps git bundles (history scans); HistoryMaxCommits
@@ -296,6 +299,7 @@ func settingsDefaults() *Settings {
 			AutocloseGuardRatio: 0.5,
 			SBOMRetention:       365 * 24 * time.Hour,
 			ImageUploadMaxMB:    2048,
+			ImportMaxMB:         50,
 			HistoryUploadMaxMB:  1024,
 			HistoryMaxCommits:   50_000,
 			PullMaxMB:           2048,
