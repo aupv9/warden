@@ -45,7 +45,9 @@ type Issue struct {
 }
 
 var (
-	Tools = []string{"gitleaks", "opengrep", "trivy", "checkov"}
+	// Tools a rule can match: Warden's scanners, and external for any imported
+	// tool (an issue's tool is external whatever its external_tool).
+	Tools = []string{"gitleaks", "opengrep", "trivy", "checkov", "external"}
 	// Severities, most severe first.
 	Severities = []string{"critical", "high", "medium", "low", "info"}
 )
@@ -79,7 +81,7 @@ func Validate(r Rule) map[string]string {
 		}
 	}
 	if m.Tool != nil && !slices.Contains(Tools, *m.Tool) {
-		errs["match.tool"] = "must be one of gitleaks, opengrep, trivy, checkov"
+		errs["match.tool"] = "must be one of gitleaks, opengrep, trivy, checkov, external"
 	}
 	if m.SeverityAtLeast != nil && !slices.Contains(Severities, *m.SeverityAtLeast) {
 		errs["match.severity_at_least"] = "must be one of critical, high, medium, low, info"
