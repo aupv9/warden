@@ -337,6 +337,8 @@ export interface IssueSummary {
   epss: number | null;
   /** v0.4: Trivy license category, for license-policy issues (null otherwise). */
   license_category: LicenseCategory | null;
+  /** v0.8: the tool an imported issue (tool `external`) came from; null otherwise. */
+  external_tool: ImportTool | null;
 }
 
 export interface IssuePage extends Page<IssueSummary> {
@@ -375,9 +377,6 @@ export interface Issue extends IssueSummary {
   /** v0.7 wave 2: a secret Gitleaks found in an image's layers: the lowest layer that holds it,
    *  set even when a later layer deletes the file (it is still in the image). */
   image_layer: IssueImageLayer | null;
-  /** v0.8: the tool an imported issue (tool `external`) came from; null otherwise. Only on the
-   *  full issue: a list row reads it from its target, `(import) <tool>[ <category>]`. */
-  external_tool: ImportTool | null;
 }
 
 export interface IssueImageLayer {

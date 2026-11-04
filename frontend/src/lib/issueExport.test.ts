@@ -4,7 +4,7 @@
 // saved only when complete (the end line `#warden:end rows=<N>` with the right N).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiDeps } from "../api/client";
-import { DEFAULT_FILTERS, issueExportQuery } from "./issueFilters";
+import { DEFAULT_FILTERS, issueFilterQuery } from "./issueFilters";
 import {
   checkComplete,
   countNewlines,
@@ -73,7 +73,7 @@ describe("issue CSV export", () => {
 
   it("sends the list's filters with the token in the Authorization header, never in the URL", async () => {
     const sent = stubFetch(() => csvResponse());
-    const res = await exportIssuesCsv(ORG, issueExportQuery(filters, PROJECT), { api: deps, save });
+    const res = await exportIssuesCsv(ORG, issueFilterQuery(filters, PROJECT), { api: deps, save });
     expect(sent).toHaveLength(1);
     const { url, init } = sent[0]!;
     const u = new URL(url, "http://localhost");
@@ -102,7 +102,7 @@ describe("issue CSV export", () => {
 
   it("refreshes the token once on 401; the new one also goes only in the header", async () => {
     const sent = stubFetch((n) => (n === 1 ? errorResponse(401, "UNAUTHORIZED") : csvResponse()));
-    await exportIssuesCsv(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save });
+    await exportIssuesCsv(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save });
     expect(sent.map((s) => (s.init.headers as Record<string, string>).Authorization)).toEqual([`Bearer ${TOKEN}`, `Bearer ${FRESH}`]);
     for (const s of sent) expect(s.url).not.toContain(TOKEN);
     expect(saved).toHaveLength(1);
@@ -110,12 +110,12 @@ describe("issue CSV export", () => {
 
   it("a success toast names the file; a truncated export warns that only 50,000 rows were exported", async () => {
     stubFetch(() => csvResponse());
-    expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
+    expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
     expect(currentToasts()).toMatchObject([{ tone: "success", message: "Issues exported as warden-issues-acme-engineering-2026-11-02.csv." }]);
 
     clearToasts();
     stubFetch(() => csvResponse({ "X-Warden-Truncated": "true" }));
-    expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
+    expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
     expect(EXPORT_TRUNCATED).toBe("Only the first 50,000 rows were exported. Narrow the filters to export the rest.");
     expect(currentToasts()).toMatchObject([{ tone: "warning", message: EXPORT_TRUNCATED }]);
     // Saved anyway: the file holds the first 50,000 rows.
@@ -124,22 +124,22 @@ describe("issue CSV export", () => {
 
   it("429 says when to try again (Retry-After); 422 asks to clear the filters; nothing is saved", async () => {
     stubFetch(() => errorResponse(429, "RATE_LIMITED", { "Retry-After": "120" }));
-    expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(false);
+    expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(false);
     expect(currentToasts()).toMatchObject([{ tone: "warning", title: "Slow down.", message: "Too many requests in a short time. Try again in 2 minutes." }]);
 
     clearToasts();
     stubFetch(() => errorResponse(429, "RATE_LIMITED"));
-    await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save });
+    await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save });
     expect(currentToasts()[0]!.message).toBe("Too many requests in a short time. Wait a minute, then try again.");
 
     clearToasts();
     stubFetch(() => errorResponse(422, "VALIDATION_FAILED"));
-    await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save });
+    await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save });
     expect(currentToasts()).toMatchObject([{ tone: "error", message: EXPORT_INVALID }]);
 
     clearToasts();
     stubFetch(() => errorResponse(503, "INTERNAL"));
-    await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save });
+    await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save });
     expect(currentToasts()).toMatchObject([{ tone: "error", message: expect.stringMatching(/^Warden didn't answer/), reference: "req-1" }]);
     // The server's message is never shown.
     expect(JSON.stringify(currentToasts())).not.toContain("server words");
@@ -148,7 +148,7 @@ describe("issue CSV export", () => {
 
   it("a proxy's HTML error page is neither saved nor shown", async () => {
     stubFetch(() => new Response("<html><script>alert(1)</script></html>", { status: 502, headers: { "Content-Type": "text/html" } }));
-    expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(false);
+    expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(false);
     expect(saved).toEqual([]);
     expect(JSON.stringify(currentToasts())).not.toContain("script");
   });
@@ -250,7 +250,7 @@ describe("export completeness (v0.7)", () => {
 
   it("truncated at 50,000 rows with its end line: saved, with the warning; cut or miscounted: nothing saved", async () => {
     stubFetch(() => csvResponse({ "X-Warden-Truncated": "true" }, csv(4)));
-    expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
+    expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
     expect(currentToasts()).toMatchObject([{ tone: "warning", title: "Export cut off.", message: EXPORT_TRUNCATED }]);
     expect(saved).toHaveLength(1);
 
@@ -258,7 +258,7 @@ describe("export completeness (v0.7)", () => {
       for (const headers of [{}, { "X-Warden-Truncated": "true" }] as Record<string, string>[]) {
         clearToasts();
         stubFetch(() => csvResponse(headers, body));
-        expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(false);
+        expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(false);
         expect(EXPORT_INCOMPLETE).toBe("The export was cut off. Nothing was saved; try again.");
         expect(currentToasts()).toMatchObject([{ tone: "error", message: EXPORT_INCOMPLETE }]);
       }
@@ -277,7 +277,7 @@ describe("export completeness (v0.7)", () => {
     }
     const body = csv(2_000);
     stubFetch(() => csvResponse({}, body));
-    expect(await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
+    expect(await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps, save })).toBe(true);
     expect(saved).toHaveLength(1);
     expect(saved[0]!.blob.size).toBe(body.length);
     expect(reads.length).toBeGreaterThan(0);
@@ -314,7 +314,7 @@ describe("export completeness (v0.7)", () => {
 
     for (const b of [body, body.replace("rows=1", "rows=2")]) {
       stubFetch(() => csvResponse({}, b));
-      await runIssueExport(ORG, issueExportQuery(DEFAULT_FILTERS), { api: deps });
+      await runIssueExport(ORG, issueFilterQuery(DEFAULT_FILTERS), { api: deps });
     }
     // The complete one was handed to the browser as a download, the other wasn't.
     expect(created).toEqual(["a"]);

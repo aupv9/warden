@@ -1,7 +1,7 @@
 import { ApiError, apiFile } from "../api/client";
 import type { ApiDeps } from "../api/client";
 import { errorMessage, supportReference } from "../api/errors";
-import type { IssueExportQuery } from "./issueFilters";
+import type { IssueFilterQuery } from "./issueFilters";
 import { showToast } from "./toast";
 
 // v0.5 wave 2: "Export CSV" on the issue list (DESIGN.md "Issue triage").
@@ -152,7 +152,7 @@ export interface ExportResult {
 }
 
 /** Fetches the CSV for these filters and saves it. Throws ApiError on failure. */
-export async function exportIssuesCsv(orgId: string, query: IssueExportQuery, deps: ExportDeps = {}): Promise<ExportResult> {
+export async function exportIssuesCsv(orgId: string, query: IssueFilterQuery, deps: ExportDeps = {}): Promise<ExportResult> {
   const { blob, headers } = await apiFile(`/orgs/${encodeURIComponent(orgId)}/issues/export.csv`, { query, accept: "text/csv" }, deps.api);
   const fileName = safeFileName(dispositionFilename(headers.get("Content-Disposition")), fallbackFileName(deps.now?.() ?? new Date()));
   // A cut-off file is never saved: the user would take it for the whole export.
@@ -173,7 +173,7 @@ export function exportErrorMessage(err: unknown): string {
  *  warning that stays until dismissed, since the file is missing rows; one that ended early
  *  (no end line, or a different count) is an error and nothing is saved. Resolves true when a
  *  file was saved. */
-export async function runIssueExport(orgId: string, query: IssueExportQuery, deps: ExportDeps = {}): Promise<boolean> {
+export async function runIssueExport(orgId: string, query: IssueFilterQuery, deps: ExportDeps = {}): Promise<boolean> {
   try {
     const { fileName, truncated } = await exportIssuesCsv(orgId, query, deps);
     if (truncated) showToast({ tone: "warning", title: "Export cut off.", message: EXPORT_TRUNCATED });
