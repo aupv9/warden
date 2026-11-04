@@ -24,6 +24,9 @@ export const TOOL_LABELS: Record<Tool, string> = {
   opengrep: "Opengrep",
   trivy: "Trivy",
   checkov: "Checkov",
+  // v0.8: imported from another tool. Screens name that tool instead where they know it
+  // (issueToolLabel, scanToolLabel in lib/imports.ts).
+  external: "Imported",
 };
 
 export const TOOL_KIND: Record<Tool, string> = {
@@ -31,6 +34,7 @@ export const TOOL_KIND: Record<Tool, string> = {
   opengrep: "code",
   trivy: "dependencies",
   checkov: "IaC",
+  external: "imported",
 };
 
 export const SCAN_STATUS_LABELS: Record<ScanStatus, string> = {

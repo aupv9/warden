@@ -158,7 +158,7 @@ func bodyClient() client {
 
 func checkBody(t *testing.T, c client, body string) {
 	t.Helper()
-	if !strings.HasPrefix(body, commentMarker(c.o.project, c.o.target)+"\n") || len(body) > maxCommentBody || !utf8.ValidString(body) {
+	if !strings.HasPrefix(body, commentMarker(c.o.project, c.o.commentTarget())+"\n") || len(body) > maxCommentBody || !utf8.ValidString(body) {
 		t.Fatalf("marker/size: %d %q", len(body), body[:min(len(body), 200)])
 	}
 	rows := 0
@@ -204,6 +204,10 @@ func hostileIssue(i int) issue {
 	}
 	if i%5 == 0 {
 		is.ID = "not-a-uuid)](https://evil.example)"
+	}
+	if i%7 == 0 { // an imported issue: the tool joins the rule's code span
+		t := s(7)
+		is.ExternalTool = &t
 	}
 	return is
 }

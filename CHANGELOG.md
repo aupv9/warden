@@ -6,6 +6,22 @@ All notable changes to Warden are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Import another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, Snyk Code, SonarQube, …)
+  or a GitLab SAST report, through `POST …/scans/import` and `warden import`. The file is parsed
+  as hostile input, and every kept string is screened by Gitleaks in the sandbox before anything
+  is stored. Imported issues have tool `external` and `external_tool`, and are tracked per tool
+  and category (`--category`, like GitHub's). They get SLA, exceptions, auto-assign and the gate,
+  and can be filtered with `source=import` or `external_tool`. The CSV tool cell reads
+  `external:<tool>`. The web UI shows imports and the CI setup card has CodeQL and GitLab SAST
+  snippets. New setting: `WARDEN_SCAN__IMPORT_MAX_MB`.
+
+### Fixed
+
+- The pull/merge request comment of a history scan used the source scan's marker, so the next
+  source scan overwrote it.
+
 ## [0.7.0-alpha.1] - 2026-11-04
 
 ### Added

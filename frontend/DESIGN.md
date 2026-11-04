@@ -1,4 +1,4 @@
-# Warden web UI: design spec (v0.7)
+# Warden web UI: design spec (v0.8)
 
 v0.1 was the first usable release: a team uploads code, sees issues, and works them to closed.
 v0.2 adds CI (API tokens and a gate), notifications, an SLA policy, auto-assign rules, archived
@@ -13,7 +13,9 @@ the screen sections below say what changed. v0.6 wave 1 adds the org's own scan 
 Gitleaks rules that only add findings); see "v0.6 screens: Scan rules". v0.7 wave 1 checks that
 an exported CSV is complete before saving it and links a scan's org rules by id; its second wave
 lets Warden pull an image by digest from a registry (with the org's registry credentials, or
-anonymously) and finds secrets in an image's layers; see "v0.7 screens". The images below are screenshots of the app running on its
+anonymously) and finds secrets in an image's layers; see "v0.7 screens". v0.8 wave 1 shows results
+imported from another tool (CodeQL, GitLab SAST, any SARIF file) that CI uploads with `warden
+import`; see "v0.8 screens: imported results". The images below are screenshots of the app running on its
 mock data (`npm run dev:mock`), so names and numbers are examples. Earlier wireframes and the
 design concepts live on a canvas that only maintainers can open; this file is the source of
 truth for contributors.
@@ -42,7 +44,7 @@ enforces them anyway.
 | # | Screen | Who | Main content |
 |---|---|---|---|
 | 1 | Projects | everyone | Org summary (open issues, Critical + High, past SLA, exceptions to review); a card per project with open issues by severity, your role, the last scan and the number past SLA; an empty state for a project with no scan |
-| 2 | Upload & scans (project) | owner, developer, security lead | Drop zone with the real limits (200 MB zipped, 1 GB unpacked, 100,000 files); scanner checkboxes (project defaults); live progress per scanner (queued, running, succeeded, failed, timeout); scan history with new / fixed / reopened counts, *partial* (a scanner failed) and *rejected* (archive refused, with the reason) |
+| 2 | Upload & scans (project) | owner, developer, security lead | Drop zone with the real limits (200 MB zipped, 1 GB unpacked, 100,000 files); scanner checkboxes (project defaults); live progress per scanner (queued, running, succeeded, failed, timeout); scan history with new / fixed / reopened counts, *partial* (a scanner failed) and *rejected* (archive refused, with the reason). v0.8: imports from CI show as **Imported** with the tool, never as an upload choice |
 | 3 | Issue list | everyone with access | Saved views (Active, Assigned to me, Past SLA, Secrets); search (title, rule, file, `WEB-41`); filter chips for severity, status, project, assignee, scanner, past SLA; grouped by severity; bulk assign; sorted by due date; Export CSV (v0.5). See "Issue triage" |
 | 4 | Issue detail | everyone with access | Opens beside the list on wide screens, as a page otherwise. Severity, status, SLA due date; status stepper; location with the masked snippet; what was found; how to fix; comments; details (assignee, rule, CWE/CVE, package and fixed version, first and last scan seen, number of scans it appeared in); activity from `issue_event`. Actions: start progress, reassign, request exception |
 | 5 | Exceptions | security lead decides; others see their own | Tabs: pending, approved, rejected, expiring soon. A queue on the left and a review panel on the right: reason, "accepted until" (≤ 180 days), decision note (required to reject), approve or reject |
@@ -1049,6 +1051,109 @@ except the refused one, hosts under `.internal` / `.local` (blocked) and `.inval
 `private` (or the host's credentials are refused), `missing`, `huge`, `arm` or `flaky`, or the
 host is under `.internal`; anything else runs like an uploaded image.
 
+## v0.8 screens: imported results
+
+v0.8 wave 1 imports another tool's results: a SARIF 2.1.0 file (CodeQL, Semgrep, Snyk Code,
+SonarQube, any other as `external.<name>`) or a GitLab SAST report. Only CI makes an import:
+`warden import --tool <tool> [--format gitlab-sast] [--category <c>] <file>` creates a scan of kind
+`import` (tools `["external"]`, target `(import) <tool>[ <category>]`), uploads the file and
+starts it, like `warden scan`. The worker treats the report as hostile input: it drops snippets,
+code flows and fixes, keeps paths inside the source root, and screens every text it keeps with
+Gitleaks before storing it. Its issues have tool `external` and `external_tool` naming the tool;
+an import fixes only issues of its own tool and category, never a Warden scanner's.
+
+Warden's own scanners and imported tools stay apart everywhere: separate filters, a tag with a
+dashed border on imported issues (the word says it; the border is a second cue), and the imported
+tool's name instead of "external". Every tool name, category, version and text from a report is
+rendered as text, never as markup or a link (`src/test/imports.test.tsx` renders hostile ones).
+
+### Scans tab
+
+- **New scan:** no import button. The card stays Source code / Container image / Image from a
+  registry; the note under it, which already says history scans come from CI, adds "Results of
+  another tool (CodeQL, GitLab SAST, any SARIF file) are imported from CI with `warden import`"
+  and links to the CI setup card. A browser has nothing to import: the report is made in CI.
+- **History rows:** the file name (`python.sarif`, `gl-sast-report.json`) and an **Imported** tag
+  with "CodeQL · /language:python/" (the tool's name and the category, when there is one).
+- **Panel:** the first line as for an upload (file, size, time, who). Then the **Imported** tag
+  with tool and category, the format ("SARIF" or "GitLab SAST report") and "version 2.23.1"
+  (`tool_version`, when the report had one). Once processed: **"14 results read · 1 dropped · 2
+  screened by Gitleaks"**, explained under it: "Dropped: results Warden refused (a path outside
+  the source root, or over a limit). Screened: strings left out because they looked like secrets;
+  Gitleaks checked every text and path from the report before anything was stored." Then "An
+  import fixes only issues of its own tool and category, never those Warden's scanners found."
+  Before processing the counts are left out. The scanner table is headed **Tool** and its one
+  row names the imported tool ("CodeQL"), never `external`. "View issues" opens the issue list
+  with `?source=import&external_tool=<tool>`.
+- **Failures:** `IMPORT_INVALID` and `IMPORT_TOO_LARGE` read **Report rejected**;
+  `IMPORT_SCREEN_FAILED` reads **Import failed** (see "Scan error_code"). Either way "Imports run
+  from CI with warden import; run the job again once it is fixed." There is no "Upload a new …".
+  A cancelled import reads "Import cancelled".
+
+### Issue list
+
+- An imported issue carries **Imported · CodeQL** beside its title (from `external_tool`, on list
+  rows and the issue alike). Its target is never shown as an image;
+  the Source column and the compact rows name the tool ("CodeQL").
+- **Source** gains **Imported** (`source=import`).
+- **Imported from** (`external_tool=<tool>`) is a filter of its own, apart from **Scanner**, which
+  keeps Warden's four scanners only. In "+ Filter" it sits under a line after the others; its
+  menu says "Results of other tools, imported from CI with warden import.", and Scanner's says
+  "Warden's own scanners. Results of other tools are under Imported from." Its choices are the
+  tools of the import targets in scope (a project's `GET …/targets`, else
+  `GET /orgs/{org}/targets?kind=import`), by name; it is offered only when there are some, and a
+  tool already in the URL stays listed. Picking one clears Scanner, and the other way round (an
+  issue is either). On a phone both are selects in the Filters sheet. The URL value must match
+  the contract's ImportTool pattern, or it is dropped.
+- **Export CSV** takes both filters like every other; an imported issue's tool cell reads
+  `external:<tool>` (`external:codeql`), as the server writes it.
+
+### Issue page
+
+- **Imported · CodeQL** next to severity and status.
+- An **Imported from CodeQL** card, after the Org rule card: "Found by CodeQL (category
+  /language:python/) and imported from its report with `warden import`. Warden didn't run this
+  tool." and, small: "It moves to Fixed when a later import of the same tool and category no
+  longer has it; Warden's own scans never fix it. The report's texts were screened by Gitleaks
+  before they were stored, and its code snippets were left out."
+- **Where** shows the file and line as for any issue, and no snippet section: "Imported results
+  carry no code. Open the file at this line in your repository." (never "No code snippet for this
+  finding").
+- **Details:** "Imported from" with the tool and the category instead of "Scanner"; no Image row.
+  How to fix falls back to "The report gave no fix advice for this rule." (a rule text that
+  Gitleaks matched was dropped, and the title is then the rule id).
+
+### Auto-assign rules and CI setup
+
+- The rule editor's Scanner select adds **Imported (any tool)** (`match.tool: external`), so a rule
+  can route imported issues, and one set through the API isn't widened to "Any" when edited. Its
+  sentence reads "Imported from another tool → …".
+- **CI setup** gains a third switch: **Import CodeQL results** on GitHub Actions, **Import GitLab
+  SAST results** on GitLab CI. GitHub: a `codeql` job with a language matrix runs
+  `github/codeql-action/init` and `analyze` (`category: "/language:<lang>/"`, `output:
+  codeql-results`, `upload: never`; both pinned by commit SHA by the user, as the comment says),
+  then `warden import --tool codeql --category "/language:<lang>/" … codeql-results/<lang>.sarif`
+  with the same `--url`, `--org`, `--project`, `--fail-on` (the gate applies to an import as to a
+  scan) and `WARDEN_TOKEN` as the scan job, the file last; the category is explicit, though the
+  CLI would take it from the SARIF's `automationDetails.id` without it; one category per
+  language, so each import fixes only its own language's issues. GitLab: `include:` of
+  `Jobs/SAST.gitlab-ci.yml` and a `warden-import-sast` job (`needs: [semgrep-sast]`) running
+  `warden import --tool gitlab-sast --format gitlab-sast … gl-sast-report.json`. The note names
+  the other tools (`--tool semgrep`, `snyk-code`, `sonarqube`, `external.<name>`). With history on,
+  the import jobs skip scheduled runs. No snippet contains a token (`src/lib/imports.test.ts`).
+
+### Mock mode (v0.8 wave 1)
+
+WEB has a CodeQL import from GitHub Actions (`/language:python/`, SARIF, version 2.23.1, 14 results
+read, 1 dropped, 2 screened), a GitLab SAST import (no category, 1 result) and an older Semgrep
+import rejected with `IMPORT_INVALID`. Three imported issues: a High CodeQL path injection, a
+Medium CodeQL issue whose rule text was screened out (its title is the rule id, no fix text) and a
+Medium GitLab SAST SQL injection; none has a snippet. `POST …/scans/import` checks the contract's
+patterns (a Warden scanner as the tool is a 422) and the import finishes a few seconds after it is
+started; name the file `…invalid…`, `…toolarge…` or `…screenfail…` to see each `IMPORT_*` code.
+`external` as a chosen scan tool, `kind: import` on `POST …/scans`, and a malformed
+`external_tool` or `source` on the issue list are 422s.
+
 ## Audit log
 
 - Data: `GET /orgs/{org_id}/audit-log`, newest first, paginated with "Load older entries"
@@ -1158,9 +1263,10 @@ people can search for it or quote it. Unknown codes fall back to the last row of
 
 ### Scan `error_code`
 
-A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*` or `CHECKSUM_MISMATCH` code is shown as
-**Rejected** (the archive was refused before any scanner ran); any other failed scan is
-**Failed**. There is no `rejected` status in the API. History rows use the short text; the scan
+A scan with status `failed` and a `ZIP_*`, `IMAGE_*`, `BUNDLE_*`, `IMPORT_INVALID`, `IMPORT_TOO_LARGE` or
+`CHECKSUM_MISMATCH` code is shown as **Rejected** (the archive or report was refused before any
+scanner ran); any other failed scan is **Failed** (v0.8: `IMPORT_SCREEN_FAILED` too, and the card's
+title reads "Import failed"). There is no `rejected` status in the API. History rows use the short text; the scan
 card uses the full text. v0.7: a `PULL_*` code (the worker couldn't pull the image) is **Failed**,
 and the scan card's title reads "Pull failed": nothing was refused, the image never arrived. The
 server's details (registry answers, addresses) are never shown.
@@ -1190,6 +1296,9 @@ server's details (registry answers, addresses) are never shown.
 | `PULL_BLOCKED` (v0.7) | registry address blocked | Warden doesn't pull from this registry: its host resolves to a private or internal address, or it redirected there. Use the registry's public host, or ask your operator. |
 | `PULL_PLATFORM` (v0.7) | no image for this platform | The digest names images for other platforms only, not the one this server scans (linux/amd64 unless your operator changed it). Pin the digest of that platform's image, or of a list that includes it. |
 | `PULL_FAILED` (v0.7) | pull failed | Warden couldn't pull the image: the registry didn't answer, or sent something Warden can't read. Check that the registry is up, then scan again. If it keeps happening, tell your operator. |
+| `IMPORT_INVALID` (v0.8) | not a SARIF or GitLab SAST report | The file isn't a SARIF 2.1.0 file or a GitLab SAST report Warden can read. Import the file the tool wrote as it is, and pass `--format gitlab-sast` for a GitLab report. |
+| `IMPORT_TOO_LARGE` (v0.8) | report too large | The report has more than Warden imports at once (10 runs, 50,000 results or 5,000 rules). Import each run or language separately, with its own `--category`. |
+| `IMPORT_SCREEN_FAILED` (v0.8) | secret check couldn't run | Gitleaks couldn't check the report's texts for secrets, so nothing was imported and no issues changed. Run the CI job again; if it keeps happening, tell your operator. |
 | anything else | failed | The scan failed (`<code>`). Tell your operator; the worker log has the details. |
 
 The numbers are the server defaults (`WARDEN_SCAN__UPLOAD_MAX_MB`, `__UNZIP_MAX_MB`,

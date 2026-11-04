@@ -122,6 +122,22 @@ export function scanErrorMessages(code: string, limits: Limits = DEFAULT_LIMITS)
         short: "pull failed",
         full: "Warden couldn't pull the image: the registry didn't answer, or sent something Warden can't read. Check that the registry is up, then scan again. If it keeps happening, tell your operator.",
       };
+    // v0.8: imports of another tool's report (`warden import`), checked before anything is stored.
+    case "IMPORT_INVALID":
+      return {
+        short: "not a SARIF or GitLab SAST report",
+        full: "The file isn't a SARIF 2.1.0 file or a GitLab SAST report Warden can read. Import the file the tool wrote as it is, and pass --format gitlab-sast for a GitLab report.",
+      };
+    case "IMPORT_TOO_LARGE":
+      return {
+        short: "report too large",
+        full: "The report has more than Warden imports at once (10 runs, 50,000 results or 5,000 rules). Import each run or language separately, with its own --category.",
+      };
+    case "IMPORT_SCREEN_FAILED":
+      return {
+        short: "secret check couldn't run",
+        full: "Gitleaks couldn't check the report's texts for secrets, so nothing was imported and no issues changed. Run the CI job again; if it keeps happening, tell your operator.",
+      };
     case "CHECKSUM_MISMATCH":
       return {
         short: "file changed in upload",
@@ -155,14 +171,20 @@ export function isPullFailure(scan: { status: ScanStatus; error_code: string | n
   return scan.status === "failed" && !!scan.error_code?.startsWith("PULL_");
 }
 
-/** A failed scan whose archive (.zip, an image .tar in v0.3, a git bundle in v0.4 wave 2) was
- *  refused before any scanner ran is shown as "Rejected"; any other failed scan is "Failed".
+/** A failed scan whose archive (.zip, an image .tar in v0.3, a git bundle in v0.4 wave 2) or
+ *  (v0.8) imported report was refused before anything ran is shown as "Rejected"; any other
+ *  failed scan is "Failed" (IMPORT_SCREEN_FAILED too: the report was fine, the check didn't run).
  *  The API has no "rejected" status. */
 export function isRejected(scan: { status: ScanStatus; error_code: string | null }): boolean {
   const code = scan.error_code;
   return (
     scan.status === "failed" &&
     !!code &&
-    (code.startsWith("ZIP_") || code.startsWith("IMAGE_") || code.startsWith("BUNDLE_") || code === "CHECKSUM_MISMATCH")
+    (code.startsWith("ZIP_") ||
+      code.startsWith("IMAGE_") ||
+      code.startsWith("BUNDLE_") ||
+      code === "IMPORT_INVALID" ||
+      code === "IMPORT_TOO_LARGE" ||
+      code === "CHECKSUM_MISMATCH")
   );
 }

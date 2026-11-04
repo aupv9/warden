@@ -273,6 +273,7 @@ secret can be given as `file:/path`, for Docker and Kubernetes secrets.
 | `WARDEN_SCAN__UPLOAD_MAX_MB` | `200` | Largest source upload; the presigned URL pins the exact size and the worker refuses larger objects |
 | `WARDEN_SCAN__UNZIP_MAX_MB` / `WARDEN_SCAN__UNZIP_MAX_FILES` | `1024` / `100000` | Unpacked size and file count a source archive may have |
 | `WARDEN_SCAN__IMAGE_UPLOAD_MAX_MB` | `2048` | Largest `docker save` tarball for image scans |
+| `WARDEN_SCAN__IMPORT_MAX_MB` | `50` | Largest imported SARIF file or GitLab SAST report (`warden import`) |
 | `WARDEN_SCAN__PULL_MAX_MB` / `WARDEN_SCAN__PULL_PLATFORM` | `2048` / `linux/amd64` | Largest image the worker pulls from a registry (manifests and layers as sent, checked before any layer is fetched); the platform picked from a multi-platform image (`os/arch[/variant]`) |
 | `WARDEN_REGISTRY__ALLOW_HOSTS` | | Registry hosts (exact names or IPs, no port) that pulls may reach over `http`, at private addresses, or without a dot in the name, e.g. an internal registry. In prod it may not name localhost, a loopback, link-local (cloud metadata) or unspecified address |
 | `WARDEN_SCAN__HISTORY_UPLOAD_MAX_MB` / `WARDEN_SCAN__HISTORY_MAX_COMMITS` | `1024` / `50000` | Largest git bundle for history scans; commits Gitleaks reads (the newest are kept and the scan is marked truncated). The sandbox's `/tmp` and memory grow with the bundle limit (about 1.25 × the limit + 256 MiB of `/tmp`, and that + 1.5 GiB of memory) |
@@ -841,6 +842,51 @@ For history scans, add a scheduled job on the default branch with the full histo
 schedule with `GIT_DEPTH: 0` on GitLab, running `warden scan … --history`. The web UI's CI setup
 card (Project settings) builds both snippets for a project.
 
+### Importing other tools' results
+
+`warden import` brings another tool's findings into Warden, where they get owners, SLAs,
+exceptions, the audit log and the gate like Warden's own:
+
+```bash
+warden import --url … --org … --project … --tool codeql [--category /language:python/] \
+  [--fail-on high] [--comment auto] python.sarif
+warden import --url … --org … --project … --tool gitlab-sast --format gitlab-sast gl-sast-report.json
+```
+
+- **Input:** a SARIF 2.1.0 file, or a GitLab SAST report (schema 15.x), at most
+  `WARDEN_SCAN__IMPORT_MAX_MB`. `POST …/projects/{id}/scans/import` creates the scan, followed by
+  the usual upload and `…/start`.
+- **`--tool`:** `codeql`, `gitlab-sast`, `semgrep`, `snyk-code`, `sonarqube`, or
+  `external.<key>` for any other tool. It can never name one of Warden's scanners.
+- **Where issues are tracked:** imported issues have tool `external` and `external_tool` set, under
+  the target `(import) <tool>[ <category>]`. An import auto-fixes only the issues of its own tool
+  and category, with the usual guard ratio. Warden's own scans never fix an imported issue, and an
+  import never touches theirs.
+- **`--category`:** separates runs of one tool, like GitHub's category (CodeQL analyzes one
+  language per run). Without it, the CLI takes the SARIF's `runs[0].automationDetails.id` up to
+  its last `/`.
+- **What is read and kept:** the worker parses the file as hostile input and never runs or
+  unpacks anything in it. It reads at most 10 runs, 50,000 results and 5,000 rules; more is
+  `IMPORT_TOO_LARGE`, and a malformed file is `IMPORT_INVALID`. It keeps rule ids, titles,
+  messages, plain-text rule descriptions and help, CWEs, paths, lines, severities and partial
+  fingerprints. Snippets, code flows, related locations, fixes, attachments and markdown are
+  dropped, and control and bidi characters are removed.
+- **Paths:** paths must be relative to the source root, or under the run's `%SRCROOT%`;
+  otherwise the result is dropped.
+- **Secret screening:** every kept string is screened by Gitleaks in the sandbox, with the org's
+  Gitleaks rules too, before anything is stored. A matched string is dropped; a matched path or
+  rule id drops its result. The scan shows how many strings were screened out and how many results
+  were dropped. If Gitleaks can't run, the scan fails with `IMPORT_SCREEN_FAILED` and nothing is
+  stored.
+- **Severity:** from `security-severity` (≥ 9 Critical, ≥ 7 High, ≥ 4 Medium, else Low), else
+  the level (error High, warning Medium, note Low). GitLab's Info and Unknown are Low.
+- **Identity:** an issue keeps its identity through code moves when the tool writes partial
+  fingerprints, as CodeQL and GitLab do. Without them, the identity is the rule, the path and the
+  message.
+- **In CI:** in GitHub Actions, run it after `github/codeql-action/analyze` (with `output:`), once
+  per language's `.sarif`. In GitLab CI, run it after the SAST template's job, on
+  `gl-sast-report.json`. The web UI's CI setup card builds both snippets.
+
 ## Development
 
 | Command | |
@@ -993,6 +1039,10 @@ Changes that weaken one of these need an explicit discussion in the pull request
   allow-listed columns as emails.
 - The CLI sends a CI token only to the CI's own `https` API, never to Warden. Text from scanned
   code is escaped in pull/merge request comments, with mentions and links broken.
+- An imported report is parsed as hostile input, never executed or unpacked, and nothing from it
+  is stored unless Gitleaks screened it in the sandbox; screening fails closed. Imported issues
+  are always tool `external`: an import never creates, reopens or fixes an issue of a Warden
+  scanner, and no Warden scan fixes an imported one.
 - Images are pulled only by digest, by one client that refuses internal addresses at dial time
   and on every redirect and token realm, uses no proxy, and checks every manifest and blob
   against its digest within `scan.pull_max_mb`; a pulled image is never run, and only

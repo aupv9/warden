@@ -1,15 +1,15 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { Link, useLocation, useMatch, useNavigate, useSearchParams } from "react-router";
-import { useOrgImageTargets, useProjectTargets } from "../api/hooks/components";
+import { useOrgImageTargets, useOrgImportTargets, useProjectTargets } from "../api/hooks/components";
 import { useIssues } from "../api/hooks/issues";
 import { useOrgMembers } from "../api/hooks/orgs";
 import { useProjects } from "../api/hooks/projects";
 import { flattenPages } from "../api/paging";
 import { ISSUE_STATUSES, SEVERITIES, TOOLS } from "../api/types";
-import type { IssueSort, IssueStatus, IssueSummary, OrgMember, Project, Severity, SeverityCounts, Tool } from "../api/types";
+import type { IssueSort, IssueStatus, IssueSummary, OrgMember, Project, ScannerTool, Severity, SeverityCounts } from "../api/types";
 import { Avatar, ProjectDot } from "../components/Avatar";
-import { HistoryTag, MaliciousTag, SeverityMark, StatusMark } from "../components/Badges";
+import { HistoryTag, ImportTag, MaliciousTag, SeverityMark, StatusMark } from "../components/Badges";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Select } from "../components/Field";
@@ -47,6 +47,7 @@ import type { IssueFilters, IssueKindFilter, IssueSourceFilter, SavedView, Statu
 import { formatEpss, isLicenseIssue, isVulnIssue, KEV_LABEL } from "../lib/intel";
 import { isMaliciousIssue } from "../lib/malicious";
 import { isHistoryIssue } from "../lib/history";
+import { importToolChoices, importToolLabel, importToolOf, isImportIssue, issueToolLabel } from "../lib/imports";
 import { runIssueExport } from "../lib/issueExport";
 import { useIssueCounts } from "../api/hooks/metrics";
 import type { IssueCounts } from "../api/types";
@@ -276,7 +277,8 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
     (filters.kind ? 1 : 0) +
     (filters.source ? 1 : 0) +
     (filters.epssMin !== null ? 1 : 0) +
-    (filters.target ? 1 : 0);
+    (filters.target ? 1 : 0) +
+    (filters.externalTool ? 1 : 0);
   // v0.4: the Image filter picks from the image repositories scanned in the project in scope
   // (GET …/projects/{p}/targets). v0.5 wave 2: without a project in scope, from every visible
   // project's (GET /orgs/{org}/targets?kind=image), grouped by project. A target already in the
@@ -286,6 +288,11 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
   const orgTargets = useOrgImageTargets(orgId, !scopeProject);
   const targetGroups = imageTargetGroups(!!scopeProject, projectTargets.data, orgTargets.data, filters.target);
   const targetsLoading = scopeProject ? projectTargets.isPending : orgTargets.isPending;
+  // v0.8: the "Imported from" filter picks from the tools of the import targets in scope, the same
+  // way. Warden's scanners and imported tools are separate filters (Scanner, Imported from).
+  const orgImportTargets = useOrgImportTargets(orgId, !scopeProject);
+  const importTools = importToolChoices(scopeProject ? projectTargets.data : orgImportTargets.data, filters.externalTool);
+  const importToolsLoading = scopeProject ? projectTargets.isPending : orgImportTargets.isPending;
 
   const phoneFilters = (
     <>
@@ -312,9 +319,18 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
       <Select
         label="Scanner"
         value={filters.tool}
-        onChange={(e) => update({ ...filters, tool: e.target.value as Tool | "" })}
+        onChange={(e) => update({ ...filters, tool: e.target.value as ScannerTool | "", externalTool: e.target.value ? "" : filters.externalTool })}
         options={[{ value: "", label: "All scanners" }, ...TOOLS.map((t) => ({ value: t, label: TOOL_LABELS[t] }))]}
       />
+      {importTools.length > 0 && (
+        <Select
+          label="Imported from"
+          hint="Results of other tools, imported from CI"
+          value={filters.externalTool}
+          onChange={(e) => update({ ...filters, externalTool: e.target.value, tool: e.target.value ? "" : filters.tool })}
+          options={[{ value: "", label: "Any imported tool" }, ...importTools.map((t) => ({ value: t, label: importToolLabel(t) }))]}
+        />
+      )}
       <Select label="Type" value={filters.kind} onChange={(e) => update({ ...filters, kind: e.target.value as IssueKindFilter | "" })} options={KIND_OPTIONS} />
       <Select
         label="Exploit probability"
@@ -382,6 +398,8 @@ export function IssueList({ fixedProject, selectedId }: { fixedProject?: Project
         meId={me.id}
         targetGroups={targetGroups}
         targetsLoading={targetsLoading}
+        importTools={importTools}
+        importToolsLoading={importToolsLoading}
       />
       <span className="filter-bar-end">
         {canAssign && selected.size > 0 && (
@@ -750,7 +768,7 @@ function SearchBox({ value, onChange, inputRef }: { value: string; onChange: (q:
 
 // ---- Filter chips ("Severity is Critical, High ×") and the "+ Filter" menu ----
 
-type Field = "severity" | "status" | "project" | "assignee" | "tool" | "pastSla" | "kind" | "kev" | "epss" | "source" | "target";
+type Field = "severity" | "status" | "project" | "assignee" | "tool" | "pastSla" | "kind" | "kev" | "epss" | "source" | "target" | "externalTool";
 const FIELD_LABELS: Record<Field, string> = {
   severity: "Severity",
   status: "Status",
@@ -763,6 +781,7 @@ const FIELD_LABELS: Record<Field, string> = {
   epss: "Exploit probability",
   source: "Source",
   target: "Image",
+  externalTool: "Imported from",
 };
 /** On/off filters: picking one in "+ Filter" applies it, and its chip has nothing to edit. */
 const TOGGLES: Partial<Record<Field, (f: IssueFilters) => IssueFilters>> = {
@@ -782,6 +801,9 @@ interface ChipCtx {
    *  without one, every visible project's, grouped by project. */
   targetGroups: TargetGroup[];
   targetsLoading: boolean;
+  /** v0.8: the imported tools in scope (from the import targets), for "Imported from". */
+  importTools: string[];
+  importToolsLoading: boolean;
 }
 
 function FilterChips(ctx: ChipCtx) {
@@ -806,10 +828,17 @@ function FilterChips(ctx: ChipCtx) {
   if (f.kind) chips.push({ field: "kind", k: "Type is", v: KIND_LABELS[f.kind], clear: { ...f, kind: "" } });
   if (f.source) chips.push({ field: "source", k: "Source is", v: SOURCE_LABELS[f.source], clear: { ...f, source: "" } });
   if (f.target) chips.push({ field: "target", k: "Image is", v: f.target, clear: { ...f, target: "" } });
+  if (f.externalTool) chips.push({ field: "externalTool", k: "Imported from", v: importToolLabel(f.externalTool), clear: { ...f, externalTool: "" } });
 
   const available: Field[] = (
-    ["severity", "status", "project", "assignee", "tool", "pastSla", "kev", "epss", "kind", "source", "target"] as Field[]
-  ).filter((x) => !(x === "project" && !projects) && !(x === "target" && ctx.targetGroups.length === 0) && !chips.some((c) => c.field === x));
+    ["severity", "status", "project", "assignee", "tool", "pastSla", "kev", "epss", "kind", "source", "target", "externalTool"] as Field[]
+  ).filter(
+    (x) =>
+      !(x === "project" && !projects) &&
+      !(x === "target" && ctx.targetGroups.length === 0) &&
+      !(x === "externalTool" && ctx.importTools.length === 0) &&
+      !chips.some((c) => c.field === x),
+  );
 
   return (
     <div className="fchips" role="group" aria-label="Active filters">
@@ -868,7 +897,7 @@ function AddFilter({ ctx, fields }: { ctx: ChipCtx; fields: Field[] }) {
               <button
                 key={x}
                 type="button"
-                className="menu-item"
+                className={x === "externalTool" ? "menu-item menu-item-import" : "menu-item"}
                 onClick={() => {
                   const toggle = TOGGLES[x];
                   if (toggle) {
@@ -993,11 +1022,32 @@ function FieldEditor({ field, ctx, close, onBack }: { field: Field; ctx: ChipCtx
       );
       break;
     case "tool":
-      body = radio(
-        TOOLS.map((t) => ({ value: t, label: TOOL_LABELS[t] })),
-        f.tool,
-        (v) => ({ ...f, tool: v as Tool }),
+      // Warden's own scanners only; results of other tools are under "Imported from".
+      body = (
+        <>
+          {radio(
+            TOOLS.map((t) => ({ value: t, label: TOOL_LABELS[t] })),
+            f.tool,
+            (v) => ({ ...f, tool: v as ScannerTool, externalTool: "" }),
+          )}
+          {ctx.importTools.length > 0 && <p className="faint small menu-note">Warden's own scanners. Results of other tools are under Imported from.</p>}
+        </>
       );
+      break;
+    case "externalTool":
+      body =
+        ctx.importTools.length > 0 ? (
+          <>
+            {radio(
+              ctx.importTools.map((t) => ({ value: t, label: importToolLabel(t) })),
+              f.externalTool,
+              (v) => ({ ...f, externalTool: v, tool: "" }),
+            )}
+            <p className="faint small menu-note">Results of other tools, imported from CI with warden import.</p>
+          </>
+        ) : (
+          <p className="faint small menu-note">{ctx.importToolsLoading ? "Loading tools…" : "Nothing has been imported."}</p>
+        );
       break;
     case "kind":
       body = radio(
@@ -1084,7 +1134,8 @@ function whereText(i: IssueSummary): string {
     where = i.file_path ? `${i.file_path} · ${v}` : v;
   } else where = location(i.file_path, i.start_line);
   // v0.4 wave 2: a history issue's target is "(history)"; the History tag says it instead.
-  if (isHistoryIssue(i)) return where;
+  // v0.8: an imported issue's is "(import) <tool> …"; its Imported tag says it.
+  if (isHistoryIssue(i) || isImportIssue(i)) return where;
   // v0.3: issues from an image scan say which image first.
   return i.target ? [i.target, where].filter(Boolean).join(" · ") : where;
 }
@@ -1092,6 +1143,14 @@ function whereText(i: IssueSummary): string {
 /** v0.3: KEV and EPSS beside the title of a dependency vulnerability (ranking signals, never
  *  instead of the severity), and a tag on license-policy issues. */
 function IntelMarks({ issue: i }: { issue: IssueSummary }) {
+  // v0.8: found by another tool, imported from its report.
+  if (isImportIssue(i)) {
+    return (
+      <span className="intel-marks">
+        <ImportTag tool={importToolOf(i)} />
+      </span>
+    );
+  }
   // v0.4 wave 2: a secret found in git history (a history scan).
   if (isHistoryIssue(i)) {
     return (
@@ -1213,7 +1272,7 @@ function IssueRow(p: RowProps & { showSource: boolean }) {
       <td>
         <StatusMark status={i.status} />
       </td>
-      {p.showSource && <td className="text-2">{TOOL_LABELS[i.tool]}</td>}
+      {p.showSource && <td className="text-2">{issueToolLabel(i)}</td>}
       <td>
         <Assignee issue={i} />
       </td>
@@ -1259,7 +1318,7 @@ function QueueItem(p: RowProps & { showSeverity: boolean; phone: boolean }) {
         <span className="q-title">{i.title}</span>
         <span className="q-meta">
           {where && <span className="mono">{where}</span>}
-          <span>{TOOL_LABELS[i.tool]}</span>
+          <span>{issueToolLabel(i)}</span>
           <span>{i.assignee ? userName(i.assignee) : "Unassigned"}</span>
         </span>
       </Link>
