@@ -163,6 +163,7 @@ func ServiceConfig(c *config.Config) service.Config {
 		UploadMaxBytes:        int64(c.Scan.UploadMaxMB) << 20,
 		ImageUploadMaxBytes:   int64(c.Scan.ImageUploadMaxMB) << 20,
 		HistoryUploadMaxBytes: int64(c.Scan.HistoryUploadMaxMB) << 20,
+		ImportMaxBytes:        int64(c.Scan.ImportMaxMB) << 20,
 		RateLimitPerHour:      c.Scan.RateLimitPerHour,
 		UploadURLTTL:          15 * time.Minute,
 		RequireMFARoles:       roles(c.OIDC.RequireMFARoles),

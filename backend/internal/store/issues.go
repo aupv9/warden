@@ -29,7 +29,7 @@ func issueSummaryCols(now string) string {
 		i.file_path, i.start_line, i.package_name, i.package_version, i.fixed_version,
 		au.id, au.email::text, au.display_name, i.due_at,
 		(i.due_at IS NOT NULL AND i.due_at < ` + now + ` AND i.status IN ` + activeStatuses + `), i.updated_at,
-		i.target, coalesce(vi.kev, false), vi.epss, i.license_category`
+		i.target, coalesce(vi.kev, false), vi.epss, i.license_category, i.external_tool`
 }
 
 // issueBase is the issue/project join every issue query filters on.
@@ -61,7 +61,7 @@ func summaryDest(s *service.IssueSummary, aID **uuid.UUID, aEmail, aName **strin
 	return []any{&s.ID, &s.Key, &s.ProjectID, &s.Title, &s.Severity, &s.Status, &s.Tool, &s.RuleID,
 		&s.FilePath, &s.StartLine, &s.PackageName, &s.PackageVersion, &s.FixedVersion,
 		aID, aEmail, aName, &s.DueAt, &s.PastSLA, &s.UpdatedAt,
-		&s.Target, &s.KEV, &s.EPSS, &s.LicenseCategory}
+		&s.Target, &s.KEV, &s.EPSS, &s.LicenseCategory, &s.ExternalTool}
 }
 
 func scanSummary(row pgx.CollectableRow) (service.IssueSummary, error) {
@@ -106,6 +106,9 @@ func issueWhere(a *args, q service.IssueQuery) string {
 	if q.Tool != "" {
 		w = append(w, `i.tool = `+a.add(q.Tool))
 	}
+	if q.ExternalTool != "" {
+		w = append(w, `i.external_tool = `+a.add(q.ExternalTool))
+	}
 	if q.PastSLA {
 		w = append(w, `i.due_at < `+a.add(q.Now)+` AND i.status IN `+activeStatuses)
 	}
@@ -129,9 +132,13 @@ func issueWhere(a *args, q service.IssueQuery) string {
 	case "code":
 		w = append(w, `i.target = ''`)
 	case "image":
-		w = append(w, `i.target <> '' AND i.target <> `+a.add(service.HistoryTarget))
+		w = append(w, `i.target <> '' AND i.target <> `+a.add(service.HistoryTarget)+` AND i.tool <> `+a.add(service.ToolExternal))
 	case "history":
 		w = append(w, `i.target = `+a.add(service.HistoryTarget))
+	case "import":
+		// Imported issues are exactly those of tool external, and all of
+		// them have an '(import) …' target (issue_external_tool/_target).
+		w = append(w, `i.tool = `+a.add(service.ToolExternal))
 	}
 	if q.Target != "" {
 		w = append(w, `i.target = `+a.add(q.Target))
@@ -220,7 +227,7 @@ func (r *Repo) CountIssues(ctx context.Context, q service.IssueQuery, limit int)
 func buildIssueExport(q service.IssueQuery) (string, args) {
 	var a args
 	q.After = nil
-	return `SELECT p.key || '-' || i.number, p.name, i.title, i.severity::text, i.status::text, i.tool, i.rule_id,
+	return `SELECT p.key || '-' || i.number, p.name, i.title, i.severity::text, i.status::text, i.tool, i.external_tool, i.rule_id,
 		i.file_path, i.start_line, i.target, i.cve, coalesce(vi.kev, false), vi.epss, au.email::text, i.due_at, i.created_at, i.updated_at` +
 		issueFrom + issueWhere(&a, q) + issueOrder(q.Sort) + ` LIMIT ` + a.add(q.Limit), a
 }
@@ -236,7 +243,7 @@ func (r *Repo) ExportIssues(ctx context.Context, q service.IssueQuery, fn func(s
 	defer rows.Close()
 	for rows.Next() {
 		var e service.IssueExportRow
-		if err := rows.Scan(&e.Key, &e.ProjectName, &e.Title, &e.Severity, &e.Status, &e.Tool, &e.RuleID, &e.FilePath, &e.Line,
+		if err := rows.Scan(&e.Key, &e.ProjectName, &e.Title, &e.Severity, &e.Status, &e.Tool, &e.ExternalTool, &e.RuleID, &e.FilePath, &e.Line,
 			&e.Target, &e.CVE, &e.KEV, &e.EPSS, &e.Assignee, &e.DueAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return err
 		}

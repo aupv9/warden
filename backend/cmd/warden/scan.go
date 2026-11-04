@@ -46,6 +46,7 @@ type issue struct {
 	StartLine *int    `json:"start_line"`
 	// For --comment.
 	RuleID         string  `json:"rule_id"`
+	ExternalTool   *string `json:"external_tool"` // imported issues
 	PackageName    *string `json:"package_name"`
 	PackageVersion *string `json:"package_version"`
 	KEV            bool    `json:"kev"`
@@ -169,7 +170,11 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 	defer os.RemoveAll(tmp)
 	var zipPath string
 	var body map[string]any
+	create := "/orgs/" + o.org.String() + "/projects/" + o.project.String() + "/scans"
 	switch {
+	case o.importFile != "":
+		// The report is uploaded as it is: the server parses and screens it.
+		zipPath, body, create = o.importFile, c.importBody(), create+"/import"
 	case o.history:
 		if zipPath, body, err = c.historyArtifact(ctx, tmp); err != nil {
 			return exitError, err
@@ -202,7 +207,7 @@ func scan(ctx context.Context, o options, d deps) (int, error) {
 		body["tools"] = o.tools
 	}
 	var created createdScan
-	if err := c.call(ctx, "POST", "/orgs/"+o.org.String()+"/projects/"+o.project.String()+"/scans", body, &created); err != nil {
+	if err := c.call(ctx, "POST", create, body, &created); err != nil {
 		return exitError, err
 	}
 	scanID := created.Scan.ID
